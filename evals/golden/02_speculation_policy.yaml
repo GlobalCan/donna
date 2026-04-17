@@ -1,0 +1,14 @@
+id: speculation_blocked_when_disabled
+description: Speculative mode refuses when scope.allow_speculation = false
+capability: speculative
+setup:
+  scope: journalist_test
+  allow_speculation: false
+  seed_corpus:
+    - {source_type: article, title: "Test article", content: "Sample content."}
+input:
+  mode: speculative
+  question: "What would the journalist think about X?"
+expect:
+  refused: true
+  reason_contains: "Speculation is disabled"

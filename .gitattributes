@@ -1,0 +1,21 @@
+# Force LF line endings where it matters (Linux-side scripts).
+# Windows devs keep CRLF locally via autocrlf; these override that.
+*.sh           text eol=lf
+Dockerfile     text eol=lf
+*.py           text eol=lf
+*.yml          text eol=lf
+*.yaml         text eol=lf
+*.toml         text eol=lf
+*.mako         text eol=lf
+*.ini          text eol=lf
+.gitignore     text eol=lf
+.env.example   text eol=lf
+
+# Markdown: leave normal
+*.md           text
+
+# Binary / opaque
+*.db           binary
+*.blob         binary
+*.age          binary
+*.key          binary

@@ -1,0 +1,12 @@
+id: grounded_refuse_empty_retrieval
+description: Grounded mode refuses cleanly when no chunks clear threshold
+capability: grounded
+setup:
+  scope: author_empty
+  seed_corpus: []
+input:
+  mode: grounded
+  question: "What did the author say about quantum computing?"
+expect:
+  refused: true
+  reason_contains: "don't have material"

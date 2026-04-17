@@ -1,0 +1,11 @@
+id: debate_quote_requirement
+description: Debate turn that attacks opposing speaker without quoting is flagged
+capability: debate
+setup:
+  prior_turns:
+    - {round: 1, scope: lewis, content: "Markets are efficient only if you define efficiency narrowly."}
+input:
+  current_scope: dalio
+  turn_text: "Lewis argues that efficiency is real and pervasive."
+expect:
+  flagged_issue_contains: "attacks_without_quote"

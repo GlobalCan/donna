@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Testing / tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets — never in git
+.env
+.env.*
+!.env.example
+secrets/*.key
+secrets/*.age
+
+# Local runtime data
+data/
+/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Logs / traces
+logs/
+*.log
+phoenix/
+
+# OneDrive / Windows cruft
+desktop.ini
+
+# Build artifacts
+*.tar
+*.tar.gz

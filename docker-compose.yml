@@ -1,0 +1,65 @@
+# Donna — production compose (droplet)
+# Local dev: use .env + `python -m donna.main` directly.
+services:
+  bot:
+    image: ${DONNA_IMAGE:-ghcr.io/globalcan/donna:latest}
+    container_name: donna-bot
+    restart: unless-stopped
+    command: ["python", "-m", "donna.main"]
+    env_file: .env
+    environment:
+      DONNA_PROCESS_ROLE: bot
+    volumes:
+      - /data/donna:/data:rw
+      - /etc/bot/age.key:/run/secrets/age.key:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 512m
+    cpus: 1.0
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      - phoenix
+
+  worker:
+    image: ${DONNA_IMAGE:-ghcr.io/globalcan/donna:latest}
+    container_name: donna-worker
+    restart: unless-stopped
+    command: ["python", "-m", "donna.worker"]
+    env_file: .env
+    environment:
+      DONNA_PROCESS_ROLE: worker
+    volumes:
+      - /data/donna:/data:rw
+      - /etc/bot/age.key:/run/secrets/age.key:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 512m
+    cpus: 1.0
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      - phoenix
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: donna-phoenix
+    restart: unless-stopped
+    environment:
+      PHOENIX_WORKING_DIR: /phoenix
+      PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "30"
+      PHOENIX_GRPC_PORT: "4317"
+      PHOENIX_PORT: "6006"
+    volumes:
+      - /data/phoenix:/phoenix
+    ports:
+      # Bind to localhost only — reachable via SSH tunnel
+      - "127.0.0.1:6006:6006"
+      - "127.0.0.1:4317:4317"
+    mem_limit: 768m

@@ -1,0 +1,46 @@
+# syntax=docker/dockerfile:1.6
+FROM python:3.12-slim AS base
+
+# System deps for sqlite-vec, pypdf, sops, age
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential \
+      libffi-dev \
+      libssl-dev \
+      ca-certificates \
+      curl \
+      gnupg \
+      sqlite3 \
+      age \
+      tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install sops
+RUN curl -fsSL -o /tmp/sops.deb \
+      https://github.com/getsops/sops/releases/download/v3.9.1/sops_3.9.1_amd64.deb \
+    && dpkg -i /tmp/sops.deb \
+    && rm /tmp/sops.deb
+
+FROM base AS app
+
+# Non-root user
+RUN useradd -m -u 10001 -s /bin/bash bot
+WORKDIR /app
+
+# Python deps first, for layer caching
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+RUN pip install --no-cache-dir -e .
+
+# Entrypoint decrypts sops secrets if present, then exec's the command
+COPY scripts/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+USER bot
+VOLUME ["/data"]
+ENV DONNA_ENV=prod \
+    DONNA_DATA_DIR=/data \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
+CMD ["python", "-m", "donna.main"]
