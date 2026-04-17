@@ -1,14 +1,18 @@
 """Grounded mode — strict-citation Q&A over a scope's corpus.
 
-Used when the user asks a scope (e.g. author_lewis) a question and wants only
-answers that can be cited to retrieved chunks. If retrieval returns nothing
-above threshold, the mode refuses rather than generating.
+Rewritten to use JobContext (Codex review #2+#15 — every mode shares the same
+primitives: model_step, checkpoint, consent, etc.).
+
+Codex review #11: response schema now requires a `quoted_span` per claim that
+must appear verbatim in the cited chunk. Weak lexical overlap was theater;
+this is constrained transparency.
 """
 from __future__ import annotations
 
 from typing import Any
 
 from ..agent.compose import compose_system
+from ..agent.context import JobContext
 from ..agent.model_adapter import model
 from ..logging import get_logger
 from ..observability import otel
@@ -20,78 +24,121 @@ log = get_logger(__name__)
 
 
 GROUNDED_RESPONSE_SCHEMA = """
-Respond with valid JSON matching this schema:
+Respond with valid JSON matching this schema exactly:
 {
   "claims": [
-    {"text": "<natural-language claim>", "citations": ["<chunk_id>", ...]},
+    {
+      "text": "<natural-language claim>",
+      "citations": ["<chunk_id>", ...],
+      "quoted_span": "<a literal substring from one of the cited chunks that supports this claim — at least 20 characters, copied verbatim including punctuation and case>"
+    },
     ...
   ],
   "prose": "<stitched-together natural-language answer with [#chunk_id] markers inline>"
 }
-Every claim MUST cite at least one chunk id (without the '#' prefix) from the
-retrieved context. Prose is the human-readable reply; claims are machine-verifiable.
-Output ONLY the JSON object. No preamble, no code fences.
+
+Rules:
+- Every claim MUST cite at least one chunk id from the retrieved context.
+- Every claim MUST include a `quoted_span` that is a literal verbatim substring
+  (>=20 chars) of one of its cited chunks. If no such span exists, OMIT the claim.
+- Never fabricate chunk ids.
+- Output ONLY the JSON object. No preamble, no code fences, no commentary.
 """
 
 
-async def answer_grounded(
-    scope: str, question: str, *, job_id: str | None = None,
-) -> dict[str, Any]:
+async def run_grounded(ctx: JobContext) -> None:
+    """Entry point invoked by agent.loop.run_job for JobMode.GROUNDED."""
+    scope = ctx.job.agent_scope
+    question = ctx.job.task
+
     retrieval = await retrieve_knowledge(scope=scope, query=question, top_k=8)
     chunks = retrieval.get("chunks", [])
 
     if not chunks:
-        return {
-            "mode": "grounded",
-            "refused": True,
-            "reason": f"I don't have material from {scope} on this topic.",
-        }
+        ctx.state.final_text = (
+            f"[grounded · refused] I don't have {scope} material on this topic."
+        )
+        ctx.state.done = True
+        ctx.checkpoint_or_raise()
+        return
 
     system_blocks = compose_system(
         scope=scope, task=question, mode=JobMode.GROUNDED,
         retrieved_chunks=chunks,
     )
-    # Extend the final (task) block with the response schema
     system_blocks[-1]["text"] += "\n\n" + GROUNDED_RESPONSE_SCHEMA
 
     with otel.span("grounded.generate", **{"agent.scope": scope}):
-        result = await model().generate(
-            system=system_blocks,
+        result = await ctx.model_step(
+            system_blocks=system_blocks,
             messages=[{"role": "user", "content": question}],
             tier=ModelTier.STRONG,
-            job_id=job_id,
             max_tokens=2048,
         )
 
     validation = validate_grounded(result.text, chunks)
 
+    # One retry with a tighter instruction if validation failed
     if not validation.ok:
-        # One-shot retry with stricter instruction
-        fixup_prompt = (
-            "Previous response failed citation validation. Issues: "
-            + "; ".join(f"{i.reason}: {i.claim[:80]}" for i in validation.issues[:5])
-            + "\nRegenerate. Every claim must cite a valid chunk id from the "
-            "retrieved context. If you cannot support a claim, omit it."
+        issue_summary = "; ".join(
+            f"{i.reason}: {i.claim[:80]}" for i in validation.issues[:5]
         )
-        system_blocks[-1]["text"] += "\n\n" + fixup_prompt
+        fixup = (
+            f"Previous response failed citation validation. Issues: {issue_summary}. "
+            "Regenerate. Every claim must have a verbatim quoted_span from a "
+            "cited chunk. If you cannot support a claim, omit it."
+        )
+        system_blocks[-1]["text"] += "\n\n" + fixup
         with otel.span("grounded.regenerate", **{"agent.scope": scope}):
-            result = await model().generate(
-                system=system_blocks,
+            result = await ctx.model_step(
+                system_blocks=system_blocks,
                 messages=[{"role": "user", "content": question}],
                 tier=ModelTier.STRONG,
-                job_id=job_id,
                 max_tokens=2048,
             )
         validation = validate_grounded(result.text, chunks)
 
+    ctx.state.final_text = _format_output(result.text, validation, chunks)
+    ctx.state.done = True
+    ctx.checkpoint_or_raise()
+
+
+def _format_output(raw: str, validation, chunks) -> str:
+    badge = "✅ validated" if validation.ok else "⚠️ partial validation"
+    sources = sorted({c.source_title or c.source_id for c in chunks})
+    out = raw
+    if not validation.ok:
+        issues = "\n".join(
+            f"- {i.reason}: {i.claim[:120]}" for i in validation.issues[:10]
+        )
+        out += f"\n\n_Validation issues:_\n{issues}"
+    out += f"\n\n_{badge} · sources: {', '.join(sources[:10])}_"
+    return out
+
+
+# Kept for test compatibility; prefer run_grounded() going forward.
+async def answer_grounded(scope: str, question: str, *, job_id: str | None = None):
+    """Legacy API — returns a dict instead of updating a JobContext."""
+    retrieval = await retrieve_knowledge(scope=scope, query=question, top_k=8)
+    chunks = retrieval.get("chunks", [])
+    if not chunks:
+        return {
+            "mode": "grounded", "refused": True,
+            "reason": f"I don't have material from {scope} on this topic.",
+        }
+    system_blocks = compose_system(
+        scope=scope, task=question, mode=JobMode.GROUNDED, retrieved_chunks=chunks,
+    )
+    system_blocks[-1]["text"] += "\n\n" + GROUNDED_RESPONSE_SCHEMA
+    result = await model().generate(
+        system=system_blocks, messages=[{"role": "user", "content": question}],
+        tier=ModelTier.STRONG, job_id=job_id, max_tokens=2048,
+    )
+    validation = validate_grounded(result.text, chunks)
     return {
-        "mode": "grounded",
-        "scope": scope,
-        "raw": result.text,
+        "mode": "grounded", "scope": scope, "raw": result.text,
         "validated": validation.ok,
-        "issues": [
-            {"claim": i.claim[:200], "reason": i.reason} for i in validation.issues
-        ],
+        "issues": [{"claim": i.claim[:200], "reason": i.reason} for i in validation.issues],
         "chunks_used": [c.id for c in chunks],
         "sources": sorted({c.source_title or c.source_id for c in chunks}),
     }

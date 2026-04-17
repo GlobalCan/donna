@@ -49,23 +49,48 @@ def validate_grounded(response_json: str, chunks: list[Chunk]) -> ValidationResu
     for c in claims:
         text = (c or {}).get("text", "").strip()
         cits = (c or {}).get("citations", []) or []
+        quoted_span = (c or {}).get("quoted_span", "").strip()
         if not text:
             continue
         if not cits:
             issues.append(ValidationIssue(claim=text, reason="uncited", cited=[]))
             continue
+
+        # Codex #11 fix — prefer verbatim quoted_span check over lexical overlap.
+        span_ok = False
+        bad_citations: list[str] = []
         for cid in cits:
             cid_clean = str(cid).lstrip("#")
             ch = chunk_by_id.get(cid_clean)
             if ch is None:
-                issues.append(ValidationIssue(claim=text, reason=f"bad_citation:{cid}", cited=cits))
+                bad_citations.append(cid_clean)
+                continue
+            if quoted_span and _verbatim_in(quoted_span, ch.content):
+                span_ok = True
                 break
-            if not _supports(ch.content, text):
-                issues.append(
-                    ValidationIssue(claim=text, reason=f"weak_support:{cid}", cited=cits)
-                )
-                break
+
+        if bad_citations and not span_ok:
+            issues.append(ValidationIssue(
+                claim=text, reason=f"bad_citation:{','.join(bad_citations)}", cited=cits,
+            ))
+            continue
+
+        if not span_ok:
+            reason = ("quoted_span_missing" if not quoted_span
+                      else "quoted_span_not_in_chunk")
+            issues.append(ValidationIssue(claim=text, reason=reason, cited=cits))
+
     return ValidationResult(ok=not issues, issues=issues)
+
+
+def _verbatim_in(span: str, chunk_text: str, min_len: int = 20) -> bool:
+    """Is `span` a literal (whitespace-normalized, case-insensitive) substring
+    of `chunk_text`, at least `min_len` chars? Codex #11 enforcement."""
+    if len(span) < min_len:
+        return False
+    s_norm = " ".join(span.lower().split())
+    c_norm = " ".join(chunk_text.lower().split())
+    return s_norm in c_norm
 
 
 def _validate_inline(text: str, chunk_by_id: dict[str, Chunk]) -> ValidationResult:

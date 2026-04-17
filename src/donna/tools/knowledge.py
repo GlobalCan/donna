@@ -95,7 +95,8 @@ async def recall_heuristics(scope: str) -> dict[str, Any]:
     scope="write_knowledge", cost="low",
     description=(
         "Propose a new heuristic for a scope. Status begins as 'proposed'. "
-        "User must approve via Discord for it to become active. Never auto-applies."
+        "User must approve via Discord for it to become active. Never auto-applies. "
+        "The `reasoning` is persisted alongside the heuristic for audit."
     ),
 )
 async def propose_heuristic(
@@ -110,6 +111,7 @@ async def propose_heuristic(
             conn, agent_scope=scope, heuristic=heuristic,
             provenance=f"reflection:job:{job_id}" if job_id else "user",
             status="proposed",
+            reasoning=reasoning or None,
         )
     finally:
         conn.close()

@@ -84,14 +84,21 @@ def insert_heuristic(
     heuristic: str,
     provenance: str = "user",
     status: str = "proposed",
+    reasoning: str | None = None,
 ) -> str:
+    """Codex review #14 — `reasoning` is now persisted into the provenance
+    field (which was already a free-text column). Previously it was accepted
+    by the tool wrapper and silently dropped."""
     hid = ids.heuristic_id()
+    combined_prov = provenance
+    if reasoning:
+        combined_prov = f"{provenance} | reasoning: {reasoning}"
     conn.execute(
         """
         INSERT INTO agent_heuristics (id, agent_scope, heuristic, status, provenance)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (hid, agent_scope, heuristic, status, provenance),
+        (hid, agent_scope, heuristic, status, combined_prov),
     )
     if status == "active":
         conn.execute(

@@ -57,11 +57,11 @@ src/donna/
 ## Principles
 
 - **Foundation first** — v1 is one agent; every infra piece gold-plated so specialists slot in later
-- **Hand-rolled** — direct `anthropic` SDK, no framework
-- **Strictly personal** — hardcoded Discord user allowlist
-- **Agent-first, pipelined at the edges** — deterministic sub-tasks stay as single tool calls
-- **Structural safety** — taint tracking + citation-validated grounding + egress allowlist
-- **No autonomous loops in v1** — cron only; watchers/reflections earn their way in v2
+- **Hand-rolled** — direct `anthropic` SDK, no framework. V1 is Anthropic-shaped; the `AnthropicAdapter` class is a boundary, not a vendor-agnostic protocol (be honest about this until we need OpenAI).
+- **Strictly personal** — hardcoded Discord user allowlist. `agent_scope` is for per-persona knowledge isolation (e.g. `author_lewis` vs. `author_dalio`), **not** multi-tenancy.
+- **Agent-first, unified execution** — every mode (chat / grounded / speculative / debate) shares the same `JobContext` primitives: model step, tool step, consent wait, checkpoint, compact, finalize.
+- **Structural safety** — taint tracking (pre-scan before parallel tool batches) + dual-call sanitization on all untrusted content (fetch_url, search snippets, attachments) + citation-validated grounding with verbatim quoted-span requirement + egress allowlist.
+- **Cron-only triggers in v1** — explicit, inspectable, operator-authored. Watchers/reflections/self-scheduled deferred; when they land they'll have their own queue + dedupe key, not just "another schedule source."
 
 ## Status
 

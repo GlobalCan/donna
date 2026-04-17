@@ -103,7 +103,47 @@ def semantic_search(
     query_embedding: list[float],
     limit: int = 40,
 ) -> list[tuple[Chunk, float]]:
-    """Brute-force cosine similarity (fine for v1 scale)."""
+    """Semantic search using sqlite-vec's `vec_distance_cosine` scalar function
+    (Codex review #3+#7 fix). The math runs in C inside SQLite — no Python
+    brute-force scan, no loading every embedding into numpy. Streams results
+    ordered by similarity; memory stays O(limit), not O(corpus).
+
+    Returns chunks + their cosine similarity score (1 = identical, -1 = opposite).
+    `vec_distance_cosine` returns DISTANCE (0..2), so we convert to similarity.
+    """
+    q_blob = _pack_embedding(query_embedding)
+    try:
+        rows = conn.execute(
+            """
+            SELECT c.id, c.source_id, c.agent_scope, c.work_id, c.publication_date,
+                   c.source_type, c.content, c.chunk_index, c.is_style_anchor,
+                   s.title AS source_title,
+                   vec_distance_cosine(c.embedding, ?) AS dist
+            FROM knowledge_chunks c
+            JOIN knowledge_sources s ON s.id = c.source_id
+            WHERE c.agent_scope = ? AND c.embedding IS NOT NULL
+            ORDER BY dist ASC
+            LIMIT ?
+            """,
+            (q_blob, agent_scope, limit),
+        ).fetchall()
+    except sqlite3.OperationalError as e:
+        # Fallback if sqlite-vec isn't loaded for some reason — preserves
+        # correctness at the cost of the original performance profile.
+        if "vec_distance_cosine" in str(e):
+            return _python_fallback_search(conn, agent_scope, query_embedding, limit)
+        raise
+
+    return [
+        (_row_to_chunk(r, 1.0 - float(r["dist"])), 1.0 - float(r["dist"]))
+        for r in rows
+    ]
+
+
+def _python_fallback_search(
+    conn: sqlite3.Connection, agent_scope: str, query_embedding: list[float], limit: int,
+) -> list[tuple[Chunk, float]]:
+    """Slow fallback if sqlite-vec isn't loaded. Kept for robustness."""
     rows = conn.execute(
         """
         SELECT c.id, c.source_id, c.agent_scope, c.work_id, c.publication_date,
@@ -115,13 +155,10 @@ def semantic_search(
         """,
         (agent_scope,),
     ).fetchall()
-
     if not rows:
         return []
-
     q = np.asarray(query_embedding, dtype=np.float32)
     q_norm = q / (np.linalg.norm(q) + 1e-9)
-
     scored: list[tuple[Chunk, float]] = []
     for r in rows:
         v = _unpack_embedding(r["embedding"])
@@ -129,7 +166,6 @@ def semantic_search(
         vv_norm = vv / (np.linalg.norm(vv) + 1e-9)
         score = float(np.dot(q_norm, vv_norm))
         scored.append((_row_to_chunk(r, score), score))
-
     scored.sort(key=lambda x: x[1], reverse=True)
     return scored[:limit]
 

@@ -46,7 +46,14 @@ def search_facts_fts(
     agent_scope: str | None = None,
     limit: int = 10,
 ) -> list[dict[str, Any]]:
-    """FTS5 keyword search scoped by agent (and shared / NULL)."""
+    """FTS5 keyword search scoped by agent (and shared / NULL).
+
+    Codex review fix: `last_used_at` used to be mutated synchronously on the
+    read path, which made every recall() also a write and contributed to
+    SQLite contention. It's now updated via a fire-and-forget asyncio task
+    on a fresh connection — doesn't block the read, doesn't share the caller's
+    connection.
+    """
     if agent_scope:
         rows = conn.execute(
             """
@@ -74,14 +81,39 @@ def search_facts_fts(
             """,
             (query, limit),
         ).fetchall()
-    # touch last_used_at
+
     if rows:
-        now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            f"UPDATE facts SET last_used_at = ? WHERE id IN ({','.join('?'*len(rows))})",
-            (now, *[r["id"] for r in rows]),
-        )
+        _touch_last_used_async([r["id"] for r in rows])
     return [dict(r) for r in rows]
+
+
+def _touch_last_used_async(fact_ids: list[str]) -> None:
+    """Fire-and-forget `last_used_at` update. No-op if no running loop."""
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return  # synchronous context — skip silently
+    loop.create_task(_do_touch_last_used(fact_ids))
+
+
+async def _do_touch_last_used(fact_ids: list[str]) -> None:
+    from .db import connect, transaction
+    try:
+        conn = connect()
+        try:
+            with transaction(conn):
+                now = datetime.now(timezone.utc).isoformat()
+                placeholders = ",".join("?" * len(fact_ids))
+                conn.execute(
+                    f"UPDATE facts SET last_used_at = ? WHERE id IN ({placeholders})",
+                    (now, *fact_ids),
+                )
+        finally:
+            conn.close()
+    except Exception:
+        # Silently swallow — this is best-effort usage tracking
+        pass
 
 
 def _pack_embedding(vec: list[float]) -> bytes:

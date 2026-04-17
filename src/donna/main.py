@@ -14,6 +14,7 @@ from .config import settings
 from .logging import configure_logging, get_logger
 from .observability import otel
 from .observability.budget import BudgetWatcher
+from .observability.watchdog import Watchdog
 from .tools import register_all_v1_tools
 
 
@@ -42,13 +43,19 @@ async def _run() -> None:
         except Exception as e:  # noqa: BLE001
             log.warning("budget.dm_failed", error=str(e))
 
-    watcher = BudgetWatcher(notify)
+    budget_watcher = BudgetWatcher(notify)
+    ops_watchdog = Watchdog(notify)
 
     async def _budget_loop() -> None:
         await bot.wait_until_ready()
-        await watcher.loop()
+        await budget_watcher.loop()
+
+    async def _watchdog_loop() -> None:
+        await bot.wait_until_ready()
+        await ops_watchdog.loop(interval_seconds=300)
 
     bot.loop.create_task(_budget_loop())
+    bot.loop.create_task(_watchdog_loop())
 
     await bot.start(s.discord_bot_token)
 

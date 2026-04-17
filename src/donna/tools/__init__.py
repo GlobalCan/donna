@@ -4,7 +4,7 @@ Importing this package triggers decorator side-effects that register every
 @tool-decorated function into the REGISTRY.
 """
 from . import registry  # noqa: F401
-from . import artifacts, communicate, exec_py, knowledge  # noqa: F401
+from . import artifacts, attachments, communicate, exec_py, knowledge  # noqa: F401
 from . import memory as memory_tools  # noqa: F401  (shadows stdlib-like name)
 from . import web  # noqa: F401
 

@@ -75,5 +75,48 @@ Or via Discord: `/teach` (not wired in v1 — use CLI).
 ## If the droplet is lost
 
 - New droplet, run `harden-droplet.sh`
-- Restore `/data/donna.db` from backup (rsync/restic — not set up in v1; add this when you have active use)
+- Restore `/data/donna.db` from backup (see DR section below)
 - `first-deploy.sh` and you're back
+
+## Disaster recovery (v1 — honest story)
+
+### Age key
+- Generate on laptop: `age-keygen -o ~/.donna/age.key` → copy to droplet `/etc/bot/age.key`
+- **Add a second recipient** to `.sops.yaml` — ideally a paper-backup key stored offline or in a bank deposit box. With two recipients, losing either one still leaves you able to decrypt with the other. Re-encrypt every `secrets/*.enc.yaml` after adding the second recipient.
+- If you lose BOTH recipients, every committed encrypted secret is unreadable. Rotate all API keys at their providers and start fresh.
+
+### Database backups — use `litestream` (recommended)
+`litestream` streams SQLite WAL frames to a remote store (DO Spaces, S3, SFTP).
+Low overhead, continuous replication, point-in-time restore.
+
+```bash
+# on droplet
+apt-get install -y litestream
+# /etc/litestream.yml example (edit endpoints for your own DO Space)
+cat > /etc/litestream.yml <<'EOF'
+dbs:
+  - path: /data/donna/donna.db
+    replicas:
+      - type: s3
+        endpoint: https://nyc3.digitaloceanspaces.com
+        bucket: donna-backups
+        path: donna.db
+        access-key-id: ...
+        secret-access-key: ...
+EOF
+systemctl enable --now litestream
+```
+
+Restore: `litestream restore -o /data/donna/donna.db s3://donna-backups/donna.db`
+
+### Manual fallback (if no litestream yet)
+```bash
+# on droplet — run nightly via cron
+sqlite3 /data/donna/donna.db ".backup '/tmp/donna-$(date +%F).db'"
+# ship off-droplet somehow — rsync to laptop, or `doctl spaces upload`
+```
+
+### Quarterly restore drill
+Pick a random Saturday every 3 months. Provision a throwaway droplet, restore
+from your most recent backup, boot the bot, DM it "hello." If it answers, you're
+covered. If not, you have time to fix the DR story before you actually need it.

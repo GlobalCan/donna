@@ -97,6 +97,60 @@ def cost(today: bool = True) -> None:
 
 
 @app.command()
+def cache_hit_rate(since: str = typer.Option("1d", "--since", help="1h, 1d, 7d")) -> None:
+    """Show Anthropic prompt cache hit rate — is caching actually working?"""
+    # crude time parsing
+    unit = since[-1]
+    qty = int(since[:-1] or "1")
+    sql_window = {
+        "h": f"-{qty} hours", "d": f"-{qty} days", "m": f"-{qty} minutes",
+    }.get(unit, "-1 days")
+
+    conn = connect()
+    try:
+        row = conn.execute(
+            f"""
+            SELECT
+              SUM(input_tokens) AS input_sum,
+              SUM(cache_read_tokens) AS cache_read_sum,
+              SUM(cache_write_tokens) AS cache_write_sum,
+              SUM(output_tokens) AS output_sum,
+              SUM(cost_usd) AS cost_sum,
+              COUNT(*) AS n
+            FROM cost_ledger
+            WHERE kind = 'llm' AND created_at >= datetime('now', ?)
+            """,
+            (sql_window,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    input_tok = int(row["input_sum"] or 0)
+    cache_read = int(row["cache_read_sum"] or 0)
+    cache_write = int(row["cache_write_sum"] or 0)
+    output_tok = int(row["output_sum"] or 0)
+    cost = float(row["cost_sum"] or 0.0)
+    n = int(row["n"] or 0)
+
+    # "Hit rate" = what fraction of input tokens were served from cache
+    total_input = input_tok + cache_read
+    hit_rate = (cache_read / total_input * 100) if total_input else 0.0
+
+    t = Table("window", "calls", "input_tok", "cache_read", "cache_write", "output_tok", "hit %", "$")
+    t.add_row(
+        since, str(n), f"{input_tok:,}", f"{cache_read:,}", f"{cache_write:,}",
+        f"{output_tok:,}", f"{hit_rate:.1f}%", f"${cost:.4f}",
+    )
+    console.print(t)
+    if n == 0:
+        console.print("[yellow]No LLM calls recorded in this window — nothing to measure yet.[/yellow]")
+    elif hit_rate < 10:
+        console.print("[yellow]Low cache hit rate — check prompt composition ordering.[/yellow]")
+    else:
+        console.print(f"[green]Cache working — saving ~{cache_read:,} input tokens in this window.[/green]")
+
+
+@app.command()
 def teach(
     scope: str,
     path: str,

@@ -14,10 +14,11 @@ from typing import Any, Iterator
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from ..config import settings
+from .trace_store import SqliteSpanProcessor
 
 _initialized = False
 _tracer: trace.Tracer | None = None
@@ -38,6 +39,12 @@ def initialize_tracing() -> None:
     try:
         exporter = OTLPSpanExporter(endpoint=s.otel_endpoint, insecure=True)
         provider.add_span_processor(BatchSpanProcessor(exporter))
+    except Exception:
+        pass
+    # Codex review fix: wire the `traces` table that previously had no writer.
+    # This keeps a queryable-from-SQL audit trail independent of Phoenix.
+    try:
+        provider.add_span_processor(SqliteSpanProcessor())
     except Exception:
         pass
     trace.set_tracer_provider(provider)
