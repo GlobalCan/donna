@@ -35,8 +35,10 @@ async def save_artifact(
 @tool(
     scope="read_data", cost="low",
     description=(
-        "Read an artifact by id. Optionally slice with offset/length. If the "
-        "artifact is tainted, the read propagates taint onto the calling job."
+        "Read an artifact by id. Optionally slice with offset/length. "
+        "If the artifact is tainted (from fetch_url / PDF / untrusted source), "
+        "reading propagates taint onto the calling job — which in turn escalates "
+        "confirmation on future memory writes and code execution."
     ),
 )
 async def read_artifact(
@@ -52,12 +54,14 @@ async def read_artifact(
     if loaded is None:
         return {"error": "artifact_not_found", "artifact_id": artifact_id}
     data, meta = loaded
+    is_tainted = bool(meta.get("tainted"))
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         return {
             "artifact_id": artifact_id, "mime": meta["mime"], "bytes": meta["bytes"],
-            "binary": True, "message": "artifact is binary; ask to parse via a specialized tool",
+            "binary": True, "tainted": is_tainted,
+            "message": "artifact is binary; ask to parse via a specialized tool",
         }
     excerpt = text[offset: offset + length]
     return {
@@ -66,7 +70,13 @@ async def read_artifact(
         "offset": offset,
         "length_returned": len(excerpt),
         "total_chars": len(text),
-        "tainted": bool(meta.get("tainted")),
+        # Agent loop reads `tainted` from tool result to propagate onto state
+        "tainted": is_tainted,
+        "warning": (
+            "this artifact is tainted (untrusted source). Reading it has "
+            "escalated your job's confirmation policy for writes/execution."
+            if is_tainted else None
+        ),
     }
 
 

@@ -14,6 +14,10 @@ class OutgoingAsk:
     job_id: str
     question: str
     future: asyncio.Future[str]
+    # Populated by the Discord adapter after posting: the channel/thread id
+    # where the question was actually shown. Used to match the user's reply
+    # back to the right pending ask (H3 fix).
+    posted_channel_id: int | None = None
 
 
 @dataclass

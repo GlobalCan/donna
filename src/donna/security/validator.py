@@ -113,26 +113,51 @@ def validate_debate_turn(turn_text: str, prior_turns: list[dict], current_scope:
     Checks:
      - When attacking an opposing speaker, did the turn quote their prior text?
      - Did the turn use citation markers from its OWN scope only (validated by caller via chunk IDs)?
+
+    Codex audit: prior version required a literal 15-char substring match which
+    false-positive'd on legitimate paraphrases and punctuation-normalized quotes.
+    Now: normalize both texts (lowercase + collapse punctuation+whitespace),
+    accept a 10-char fuzzy substring OR a quoted span detected in the turn.
     """
     issues: list[str] = []
-    opposing_texts = [t["content"] for t in prior_turns if t["scope"] != current_scope]
 
-    # Heuristic: if the turn mentions an opposing scope by name and "argue"/"claim"/"says",
-    # require some substring overlap with opposing text.
+    # Scopes referenced with claim/argue/say/believe/think verbs
     for t in prior_turns:
         if t["scope"] == current_scope:
             continue
         other = t["scope"]
-        if other.lower() in turn_text.lower() and re.search(
-            rf"{re.escape(other)}[^.]*(argue|claim|say|believe|think)",
+        if other.lower() not in turn_text.lower():
+            continue
+        if not re.search(
+            rf"{re.escape(other)}[^.]*(argue|claim|say|believe|think|insist|contend)",
             turn_text, re.IGNORECASE,
         ):
-            # Require at least 15-char substring overlap with that speaker's content
-            if not _has_substring_overlap(turn_text, t["content"], min_len=15):
-                issues.append(
-                    f"attacks_without_quote:{other}"
-                )
+            continue
+
+        # Accept: literal quote (any length ≥ 5 inside "..." or '...')
+        quoted_spans = re.findall(r'"([^"]{5,})"|\'([^\']{5,})\'', turn_text)
+        quoted_flat = [q for pair in quoted_spans for q in pair if q]
+        if any(
+            _norm(q) in _norm(t["content"]) for q in quoted_flat
+        ):
+            continue
+
+        # Or: fuzzy 10-char normalized substring overlap
+        if _has_substring_overlap(
+            _norm(turn_text), _norm(t["content"]), min_len=10,
+        ):
+            continue
+
+        issues.append(f"attacks_without_quote:{other}")
     return issues
+
+
+def _norm(s: str) -> str:
+    """Normalize for quote-match: lowercase, collapse whitespace, strip punctuation."""
+    s = s.lower()
+    s = re.sub(r"[^\w\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 
 def _has_substring_overlap(a: str, b: str, min_len: int = 15) -> bool:

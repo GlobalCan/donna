@@ -88,16 +88,42 @@ def save_checkpoint(
     state: dict[str, Any],
     tainted: bool,
     taint_source_tool: str | None,
-    cost_usd: float,
     tool_call_count: int,
-) -> None:
+    worker_id: str | None = None,
+) -> bool:
+    """Write checkpoint. If worker_id is passed, write is conditional on
+    owner match — returns False if the lease has been taken by another worker.
+
+    Deliberately does NOT write `cost_usd` — that's incremented authoritatively
+    by the cost ledger (record_llm_usage) and must not be clobbered from
+    stale in-memory state.
+    """
+    if worker_id is not None:
+        cur = conn.execute(
+            """
+            UPDATE jobs
+            SET checkpoint_state = ?,
+                tainted = ?,
+                taint_source_tool = ?,
+                tool_call_count = ?
+            WHERE id = ? AND owner = ?
+            """,
+            (
+                json.dumps(state),
+                1 if tainted else 0,
+                taint_source_tool,
+                tool_call_count,
+                job_id,
+                worker_id,
+            ),
+        )
+        return cur.rowcount > 0
     conn.execute(
         """
         UPDATE jobs
         SET checkpoint_state = ?,
             tainted = ?,
             taint_source_tool = ?,
-            cost_usd = ?,
             tool_call_count = ?
         WHERE id = ?
         """,
@@ -105,11 +131,11 @@ def save_checkpoint(
             json.dumps(state),
             1 if tainted else 0,
             taint_source_tool,
-            cost_usd,
             tool_call_count,
             job_id,
         ),
     )
+    return True
 
 
 def set_status(
@@ -118,9 +144,22 @@ def set_status(
     status: JobStatus,
     *,
     error: str | None = None,
-) -> None:
+    worker_id: str | None = None,
+) -> bool:
+    """Transition job status. If worker_id is passed, transition is conditional
+    on owner match — returns False if the lease was lost."""
     finished = status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
     if finished:
+        if worker_id is not None:
+            cur = conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, finished_at = ?, error = ?, owner = NULL, lease_until = NULL
+                WHERE id = ? AND owner = ?
+                """,
+                (status.value, datetime.now(timezone.utc), error, job_id, worker_id),
+            )
+            return cur.rowcount > 0
         conn.execute(
             """
             UPDATE jobs
@@ -129,11 +168,12 @@ def set_status(
             """,
             (status.value, datetime.now(timezone.utc), error, job_id),
         )
-    else:
-        conn.execute(
-            "UPDATE jobs SET status = ?, error = ? WHERE id = ?",
-            (status.value, error, job_id),
-        )
+        return True
+    conn.execute(
+        "UPDATE jobs SET status = ?, error = ? WHERE id = ?",
+        (status.value, error, job_id),
+    )
+    return True
 
 
 def get_job(conn: sqlite3.Connection, job_id: str) -> Job | None:

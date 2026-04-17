@@ -17,6 +17,10 @@ from ..logging import get_logger
 log = get_logger(__name__)
 
 
+class OversizedRequestError(Exception):
+    """Raised when a single request estimate exceeds the per-minute cap."""
+
+
 @dataclass
 class Limits:
     rpm: int
@@ -38,13 +42,29 @@ class RateLimitLedger:
         self.lock = asyncio.Lock()
 
     async def reserve(self, tier: str, est_input: int, est_output: int) -> None:
-        """Block until projected usage fits under the caps, then record the reservation."""
+        """Block until projected usage fits under the caps, then record the reservation.
+
+        Raises OversizedRequestError if a single request is larger than the
+        per-minute cap — no amount of waiting will make it fit. (Codex audit:
+        prior behavior was infinite 5s sleeps on this path.)
+        """
+        lim = self.limits[tier]
+        if est_input > lim.itpm:
+            raise OversizedRequestError(
+                f"request estimated input tokens ({est_input}) exceeds "
+                f"tier '{tier}' ITPM cap ({lim.itpm}) — no wait can recover"
+            )
+        if est_output > lim.otpm:
+            raise OversizedRequestError(
+                f"request estimated output tokens ({est_output}) exceeds "
+                f"tier '{tier}' OTPM cap ({lim.otpm}) — no wait can recover"
+            )
+
         while True:
             async with self.lock:
                 now = time.time()
                 self._trim(tier, now)
                 wnd = self.windows[tier]
-                lim = self.limits[tier]
 
                 rpm = len(wnd) + 1
                 itpm = sum(i for _, i, _ in wnd) + est_input

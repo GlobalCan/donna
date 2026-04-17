@@ -67,15 +67,17 @@ class DonnaBot(discord.Client):
         if message.guild is not None and not isinstance(message.channel, discord.Thread):
             return
 
-        # If this message is a reply to a pending ask, resolve it
-        if isinstance(message.channel, discord.Thread):
-            # Find any ask tied to this thread's job
-            tid = str(message.channel.id)
-            for mid, ask in list(self._ask_msgs.items()):
-                if not ask.future.done():
-                    ask.future.set_result(message.content)
-                    self._ask_msgs.pop(mid, None)
-                    return
+        # H3: If this message is a reply to a pending ask, resolve it —
+        # BUT only match asks that were posted in THIS channel/thread.
+        incoming_channel_id = message.channel.id
+        for mid, ask in list(self._ask_msgs.items()):
+            if ask.future.done():
+                self._ask_msgs.pop(mid, None)
+                continue
+            if ask.posted_channel_id == incoming_channel_id:
+                ask.future.set_result(message.content)
+                self._ask_msgs.pop(mid, None)
+                return
 
         # Otherwise, treat as a new task
         content = (message.content or "").strip()
@@ -168,6 +170,8 @@ class DonnaBot(discord.Client):
             m = await ch.send(
                 f"❓ **Donna asks:**\n> {req.question}\n\n_Reply in this channel to answer._"
             )
+            # H3: record where the ask was posted so reply matching is accurate
+            req.posted_channel_id = ch.id
             self._ask_msgs[m.id] = req
         except Exception as e:  # noqa: BLE001
             log.warning("discord.ask_failed", error=str(e))

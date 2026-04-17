@@ -56,13 +56,20 @@ async def ingest_text(
     if not chunks:
         return {"source_id": src_id, "chunks_added": 0, "chunks_deduped": 0}
 
-    # Fingerprint + dedupe-against-scope
+    # Fingerprint + dedupe-against-scope AND within-batch
+    # (Codex audit: prior version embedded within-batch duplicates and then
+    # dropped them at insert time, wasting embedding tokens + overstating
+    # chunks_added counts.)
     to_embed: list[tuple[int, str, str, str]] = []  # (index, content, fingerprint, token_count-ish)
+    seen_fp_this_batch: set[str] = set()
     skipped_dup = 0
     conn = connect()
     try:
         for ch in chunks:
             fp = kn.fingerprint_text(ch.content)
+            if fp in seen_fp_this_batch:
+                skipped_dup += 1
+                continue
             existing = conn.execute(
                 "SELECT 1 FROM knowledge_chunks WHERE agent_scope = ? AND fingerprint = ? LIMIT 1",
                 (scope, fp),
@@ -70,6 +77,7 @@ async def ingest_text(
             if existing:
                 skipped_dup += 1
                 continue
+            seen_fp_this_batch.add(fp)
             to_embed.append((ch.index, ch.content, fp, ch.token_count))
     finally:
         conn.close()

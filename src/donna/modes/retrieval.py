@@ -112,15 +112,25 @@ def _apply_temporal_prior(
     if intent == "neutral":
         return pool
     if intent == "recent":
-        # Boost chunks with more recent publication_date
+        # Codex audit fix: scale the recency boost to be proportional to the
+        # actual fusion scores in this pool. Otherwise a trivial linear-in-year
+        # bump (which could easily equal 0.04+ for a 2024 chunk) outweighs RRF
+        # scores on the order of 1/(60+rank) and the whole retrieval collapses
+        # to "most recent thing" regardless of semantic relevance.
+        if not pool:
+            return pool
+        max_score = max(s for _, s in pool)
+        # Normalize: max boost is 25% of the top score
         def boost(ch: Chunk) -> float:
             if not ch.publication_date:
                 return 0.0
             try:
                 year = int(ch.publication_date[:4])
-                return (year - 1980) * 0.001
             except ValueError:
                 return 0.0
+            # Saturating: 1980 → 0, 2025 → 1.0
+            rel = max(0.0, min(1.0, (year - 1980) / 45.0))
+            return rel * max_score * 0.25
         return sorted(
             [(c, s + boost(c)) for c, s in pool],
             key=lambda x: x[1],
