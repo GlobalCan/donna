@@ -1,0 +1,730 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Donna — Codex Adversarial Review</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #12151c;
+    --panel-2: #1a1f29;
+    --line: #262c38;
+    --line-2: #323946;
+    --text: #e6e8ef;
+    --muted: #8b93a7;
+    --muted-2: #5a6173;
+    --accent: #8b6bf7;
+    --accent-2: #6ee7b7;
+    --warn: #f7b06b;
+    --danger: #f76b8b;
+    --good: #6ee7b7;
+    --info: #6bb5f7;
+    --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: var(--sans); line-height: 1.55; }
+
+  /* Header */
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(11, 13, 18, 0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--line);
+    padding: 14px 24px;
+  }
+  .header-inner {
+    max-width: 1100px; margin: 0 auto;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap;
+  }
+  .brand { font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
+  .brand .dot { color: var(--accent); }
+  .brand .sub { color: var(--muted); font-weight: 400; margin-left: 8px; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    font-family: var(--sans); font-size: 12.5px; padding: 6px 12px;
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; cursor: pointer; transition: all .15s;
+    white-space: nowrap;
+  }
+  button:hover { background: var(--line); border-color: var(--line-2); }
+  button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* Main */
+  main { max-width: 1100px; margin: 0 auto; padding: 32px 24px 80px; }
+
+  .intro {
+    background: linear-gradient(135deg, rgba(247, 107, 139, 0.06), rgba(247, 176, 107, 0.03));
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 28px;
+  }
+  .intro h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: -0.02em; }
+  .intro .sub { color: var(--muted); font-size: 14px; }
+  .intro p { margin: 12px 0 0; color: var(--text); }
+  .intro .meta {
+    display: flex; gap: 12px; flex-wrap: wrap; margin-top: 14px;
+    font-size: 12px; font-family: var(--mono); color: var(--muted);
+  }
+  .intro .meta span {
+    padding: 3px 10px; background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 999px;
+  }
+
+  /* Top 3 bets */
+  .bets {
+    background: var(--panel);
+    border: 1px solid var(--danger);
+    border-left-width: 4px;
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 28px;
+  }
+  .bets h2 {
+    margin: 0 0 12px; font-size: 14px; color: var(--danger);
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .bets ol { margin: 0; padding-left: 22px; }
+  .bets li { margin: 6px 0; color: var(--text); }
+  .bets li strong { color: var(--danger); }
+
+  /* Legend */
+  .legend {
+    display: flex; gap: 12px; flex-wrap: wrap;
+    padding: 12px 0; margin-bottom: 18px;
+    font-size: 12px;
+  }
+  .legend-item {
+    display: flex; align-items: center; gap: 6px;
+    color: var(--muted);
+  }
+  .legend-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+  }
+  .legend-dot.agree { background: var(--danger); }
+  .legend-dot.partial { background: var(--warn); }
+  .legend-dot.disagree { background: var(--accent-2); }
+  .legend-dot.addressed { background: var(--info); }
+
+  /* Filter bar */
+  .filters {
+    display: flex; gap: 8px; flex-wrap: wrap;
+    padding: 12px 0 18px;
+    border-top: 1px solid var(--line);
+  }
+  .filters button {
+    font-size: 12px; padding: 5px 11px;
+  }
+  .filter-group {
+    display: flex; gap: 6px; align-items: center;
+  }
+  .filter-label {
+    font-size: 11px; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.06em;
+    margin-right: 4px;
+  }
+
+  /* Card */
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 4px solid var(--line-2);
+    border-radius: 10px;
+    margin-bottom: 14px;
+    overflow: hidden;
+    transition: all .2s;
+  }
+  .card.agree { border-left-color: var(--danger); }
+  .card.partial { border-left-color: var(--warn); }
+  .card.disagree { border-left-color: var(--accent-2); }
+  .card.addressed { border-left-color: var(--info); }
+  .card.hidden { display: none; }
+
+  .card-head {
+    display: flex; align-items: center; gap: 14px;
+    padding: 16px 20px; cursor: pointer; user-select: none;
+  }
+  .card-num {
+    width: 32px; height: 32px; flex-shrink: 0;
+    border-radius: 6px;
+    background: var(--panel-2); border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--muted);
+  }
+  .card-meta {
+    flex: 1; display: flex; align-items: baseline; gap: 10px;
+    flex-wrap: wrap;
+  }
+  .card-title { font-size: 15.5px; font-weight: 600; }
+  .tag {
+    font-family: var(--mono); font-size: 10.5px;
+    padding: 2px 8px; border-radius: 3px; border: 1px solid;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    white-space: nowrap;
+  }
+  .tag.agree { color: var(--danger); border-color: rgba(247,107,139,0.5); background: rgba(247,107,139,0.07); }
+  .tag.partial { color: var(--warn); border-color: rgba(247,176,107,0.5); background: rgba(247,176,107,0.07); }
+  .tag.disagree { color: var(--accent-2); border-color: rgba(110,231,183,0.5); background: rgba(110,231,183,0.07); }
+  .tag.addressed { color: var(--info); border-color: rgba(107,181,247,0.5); background: rgba(107,181,247,0.07); }
+
+  .card-chevron {
+    color: var(--muted); transition: transform .2s;
+    font-size: 12px; margin-left: auto;
+  }
+  .card.open .card-chevron { transform: rotate(90deg); }
+
+  .card-body {
+    max-height: 0; overflow: hidden;
+    transition: max-height .35s ease;
+  }
+  .card.open .card-body { max-height: 3000px; }
+  .card-body-inner { padding: 4px 20px 22px; border-top: 1px solid var(--line); }
+
+  .field {
+    margin-top: 16px;
+  }
+  .field-label {
+    font-size: 11px; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.08em;
+    margin-bottom: 4px;
+  }
+  .field-body {
+    color: var(--text); font-size: 14px;
+  }
+  .field-body code {
+    font-family: var(--mono); font-size: 12.5px;
+    background: var(--panel-2); border: 1px solid var(--line);
+    padding: 1px 6px; border-radius: 3px;
+    color: var(--accent-2); white-space: nowrap;
+  }
+
+  /* My verdict */
+  .verdict {
+    margin-top: 18px; padding: 12px 14px;
+    border-left: 3px solid var(--accent);
+    background: rgba(139, 107, 247, 0.05);
+    border-radius: 4px;
+    font-size: 13.5px;
+  }
+  .verdict strong { color: var(--accent); }
+
+  /* Print */
+  @media print {
+    header { position: static; }
+    .actions, .filters, .card-chevron { display: none; }
+    .card { break-inside: avoid; border-color: #999; }
+    .card-body { max-height: none !important; }
+    body { background: #fff; color: #111; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div class="brand">
+      donna<span class="dot">.</span> <span class="sub">codex adversarial review</span>
+    </div>
+    <div class="actions">
+      <button id="expand-all">Expand all</button>
+      <button id="collapse-all">Collapse all</button>
+      <button id="print-btn">Print</button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <div class="intro">
+    <h1>Codex Adversarial Challenge Review</h1>
+    <div class="sub">Static review · 2026-04-17 · 15 architectural challenges</div>
+    <p>
+      This is not a defect review — that already ran and fixes are merged. This is
+      a <em>design</em> critique: does the chosen approach hold up? Where are the assumptions
+      thin? What would age badly? Codex challenged 15 core architectural decisions.
+    </p>
+    <div class="meta">
+      <span>Session: 019d9bda-b31d-75d2-a365-985c3af87cb8</span>
+      <span>Duration: 4m 58s</span>
+      <span>Model: gpt-5.x-codex</span>
+    </div>
+  </div>
+
+  <!-- Top 3 bets -->
+  <div class="bets">
+    <h2>⚠ Codex's top 3 architectural bets most likely to be wrong</h2>
+    <ol>
+      <li><strong>SQLite + brute-force Python vector search on a tiny droplet.</strong> The retrieval path is already more expensive than the storage choice assumes.</li>
+      <li><strong>The split architecture in <code style="font-family:var(--mono);">run_job()</code>.</strong> It will turn every new capability into a routing argument instead of a composable execution model.</li>
+      <li><strong>The taint/sanitize safety story.</strong> The code does not support the claimed trust boundary — some untrusted content reaches the model unsanitized, and raw tainted artifacts can re-enter later.</li>
+    </ol>
+  </div>
+
+  <!-- Legend -->
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot agree"></div>I agree — real problem</div>
+    <div class="legend-item"><div class="legend-dot partial"></div>Partially right</div>
+    <div class="legend-item"><div class="legend-dot disagree"></div>I disagree — acceptable</div>
+    <div class="legend-item"><div class="legend-dot addressed"></div>Already addressed in fix pass</div>
+  </div>
+
+  <!-- Filters -->
+  <div class="filters">
+    <div class="filter-group">
+      <span class="filter-label">Show</span>
+      <button data-filter="all" class="active">All 15</button>
+      <button data-filter="agree">Agree</button>
+      <button data-filter="partial">Partial</button>
+      <button data-filter="disagree">Disagree</button>
+      <button data-filter="addressed">Addressed</button>
+    </div>
+  </div>
+
+  <!-- Cards -->
+
+  <div class="card partial" data-kind="partial" data-id="1">
+    <div class="card-head">
+      <div class="card-num">1</div>
+      <div class="card-meta">
+        <span class="card-title">Hand-rolled tool loop vs. framework</span>
+        <span class="tag partial">Partially right</span>
+      </div>
+      <div class="card-chevron">›</div>
+    </div>
+    <div class="card-body"><div class="card-body-inner">
+      <div class="field">
+        <div class="field-label">What Codex would do differently</div>
+        <div class="field-body">Replace the bespoke control plane with a framework-backed state machine and keep only the Donna-specific policy layer. The real logic is spread across <code>loop.py</code>, <code>compose.py</code>, <code>compaction.py</code>, <code>consent.py</code>, <code>rate_limiter.py</code>, and <code>jobs.py</code>.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Load-bearing assumption</div>
+        <div class="field-body">The maintainer will remember the invariants: owner-guarded checkpoint writes, replay dedup, pre-taint before parallel execution, compaction semantics, consent waits. Bad assumption for "I drift in every few weeks."</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Where it breaks first</div>
+        <div class="field-body">At the first behavior change that touches two of those invariants at once. <code>_execute_tool_uses()</code> runs every tool in parallel unconditionally — any future "independent only" rule becomes another custom side-condition.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Week-6 pain</div>
+        <div class="field-body">You stop trusting changes because no framework is carrying the resume/checkpoint/tool-execution contract. The code atrophies into "don't touch unless you remember the audit findings."</div>
+      </div>
+      <div class="verdict">
+        <strong>My take:</strong> Half agree. LangGraph/OpenAI Agents SDK are now real — we'd acknowledged this during design. But for a solo-maintainer bot, ~300 lines of readable Python loop beats 5000 lines of framework abstraction I'd also need to maintain. The invariant-atrophy risk is real — fix is stronger tests + KNOWN_ISSUES.md, not a rewrite.
+      </div>
+    </div></div>
+  </div>
+
+  <div class="card agree" data-kind="agree" data-id="2">
+    <div class="card-head">
+      <div class="card-num">2</div>
+      <div class="card-meta">
+        <span class="card-title">Agent-first + mode dispatch is two architectures in one entrypoint</span>
+        <span class="tag agree">Agree — real problem</span>
+      </div>
+      <div class="card-chevron">›</div>
+    </div>
+    <div class="card-body"><div class="card-body-inner">
+      <div class="field">
+        <div class="field-label">What Codex would do differently</div>
+        <div class="field-body">Pick one execution architecture. Either everything is an explicit workflow graph, or everything is the generic loop with tool-assisted mode behaviors. Right now <code>run_job()</code> forks into <code>_run_mode_dispatch()</code> for grounded/speculative/debate or <code>_loop()</code> for chat.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Load-bearing assumption</div>
+        <div class="field-body">These modes are "single-shot enough" that they can bypass the generic loop without losing important behavior.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Where it breaks first</div>
+        <div class="field-body">The bypass paths don't share loop mechanics — consent, compaction, tool budgeting, crash-resume semantics are all generic-loop-only right now. <code>_run_mode_dispatch()</code> just generates, formats, checkpoints, and finishes.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Week-6 pain</div>
+        <div class="field-body">v2 adds one more mode and now the entrypoint is a switchboard of special cases. Architectural fracture: common concerns live nowhere, only "which branch remembered to implement them."</div>
+      </div>
+      <div class="verdict">
+        <strong>My take:</strong> Codex is right. This is the single most important finding in this review. Mode dispatch was a late addition to fix the "modes were dead code" bug — it plugged a hole but created a structural weakness. Refactor target for v1.1: unify all modes as graph variants over the same primitives (load state → retrieve → model step → tool step → consent wait → checkpoint → finish).
+      </div>
+    </div></div>
+  </div>
+
+  <div class="card agree" data-kind="agree" data-id="3">
+    <div class="card-head">
+      <div class="card-num">3</div>
+      <div class="card-meta">
+        <span class="card-title">SQLite + brute-force Python vector search</span>
+        <span class="tag agree">Agree — real problem</span>
+      </div>
+      <div class="card-chevron">›</div>
+    </div>
+    <div class="card-body"><div class="card-body-inner">
+      <div class="field">
+        <div class="field-label">What Codex would do differently</div>
+        <div class="field-body">Keep SQLite for jobs/messages, but move retrieval out of "read all embeddings into Python and scan." <code>sqlite-vec</code> is loaded at startup but actual retrieval is brute-force numpy over all scoped rows in <code>knowledge.py</code>.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Load-bearing assumption</div>
+        <div class="field-body">Writer discipline is strong enough and write transactions stay short enough that WAL smooths everything over.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Where it breaks first</div>
+        <div class="field-body">Bulk ingestion. <code>ingest_text()</code> inserts all chunks in one transaction, and each insert fires FTS triggers. Meanwhile the worker also writes leases, checkpoints, tool_calls, and cost rows. And the "single-writer" discipline isn't pure: memory reads mutate <code>facts.last_used_at</code>.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Week-6 pain</div>
+        <div class="field-body">"SQLite is fine" turns into "why did a knowledge import make unrelated jobs stall?"</div>
+      </div>
+      <div class="verdict">
+        <strong>My take:</strong> Caught me. I loaded <code>sqlite-vec</code> but never actually used its virtual-table API for retrieval — the Python numpy loop is a regression from the intended design. Fix: use <code>sqlite-vec</code>'s <code>vec_each_l2</code>/<code>MATCH</code> interface properly. Low-effort, high-payoff. Also: move <code>last_used_at</code> touches into a fire-and-forget async writer rather than part of the read path.
+      </div>
+    </div></div>
+  </div>
+
+  <div class="card agree" data-kind="agree" data-id="4">
+    <div class="card-head">
+      <div class="card-num">4</div>
+      <div class="card-meta">
+        <span class="card-title">Taint tracking has unsanitized tool paths</span>
+        <span class="tag agree">Agree — real problem</span>
+      </div>
+      <div class="card-chevron">›</div>
+    </div>
+    <div class="card-body"><div class="card-body-inner">
+      <div class="field">
+        <div class="field-label">What Codex would do differently</div>
+        <div class="field-body">Stop claiming an efficacy number you cannot support. Keep taint tracking, but treat it as damage containment, not robust injection defense.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Load-bearing assumption</div>
+        <div class="field-body">Untrusted content only reaches the privileged loop through the sanitizer. <strong>False.</strong> <code>fetch_url()</code> sanitizes, but <code>search_web()</code> and <code>search_news()</code> pass untrusted snippets directly to the model.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Where it breaks first</div>
+        <div class="field-body">Semantic poisoning and delayed raw-content reentry. The sanitizer may ignore instructions but cannot tell malicious instructions from malicious facts — and does nothing for search-result snippets.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Week-6 pain</div>
+        <div class="field-body">You end up with a security story you can't reason about. The trust boundary is moved, not eliminated — and in some tool paths isn't moved at all.</div>
+      </div>
+      <div class="verdict">
+        <strong>My take:</strong> Codex is right. <code>search_web</code> returns snippets from untrusted sources directly without dual-call sanitization. Real gap. Fix: apply the same dual-call pattern to search results before returning to the agent — treat snippets as the same attack surface as fetched pages. Priority: next fix pass.
+      </div>
+    </div></div>
+  </div>
+
+  <div class="card partial" data-kind="partial" data-id="5">
+    <div class="card-head">
+      <div class="card-num">5</div>
+      <div class="card-meta">
+        <span class="card-title">Consent modes: 4 not 3, and pending-state doesn't survive restarts</span>
+        <span class="tag partial">Partially right</span>
+      </div>
+      <div class="card-chevron">›</div>
+    </div>
+    <div class="card-body"><div class="card-body-inner">
+      <div class="field">
+        <div class="field-label">Codex observation</div>
+        <div class="field-body">The code has 4 modes (never / once_per_job / always / high_impact_always), not 3 as described. <code>consent.check()</code> waits on an in-memory future — nothing writes <code>PAUSED_AWAITING_CONSENT</code> despite the enum and schema supporting it. <code>once_per_job</code> grants persist; pending approvals don't.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Week-6 pain</div>
+        <div class="field-body">Operator confusion. Reboot forgets pending consent, but prior grants still exist. Same tool, same job lineage, different behavior after restart.</div>
+      </div>
+      <div class="verdict">
+        <strong>My take:</strong> Fair on the count (4 modes — high_impact_always is distinct). On the restart behavior: real issue — pending consent should write <code>PAUSED_AWAITING_CONSENT</code> to the jobs table so a restart can surface the question again rather than silently dropping it. Small fix, worth doing.
+      </div>
+    </div></div>
+  </div>
+
+  <div class="card agree" data-kind="agree" data-id="6">
+    <div class="card-head">
+      <div class="card-num">6</div>
+      <div class="card-meta">
+        <span class="card-title">"Vendor-agnostic" is a lie — it's Anthropic-shaped code</span>
+        <span class="tag agree">Agree — real problem</span>
+      </div>
+      <div class="card-chevron">›</div>
+    </div>
+    <div class="card-body"><div class="card-body-inner">
+      <div class="field">
+        <div class="field-label">Codex observation</div>
+        <div class="field-body"><code>AnthropicAdapter</code> parses Anthropic block types, exports Anthropic tool defs, composes Anthropic-specific system blocks with <code>cache_control</code>. The class boundary is thin; the protocol coupling is deep.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Week-6 pain</div>
+        <div class="field-body">"Adapter" meant "replace half the stack." Real coupling is not the client object — it's the surrounding prompt/message/tool protocol.</div>
+      </div>
+      <div class="verdict">
+        <strong>My take:</strong> Correct. The interface I built ≠ true vendor abstraction. v1 is honestly Anthropic-only. <strong>Action:</strong> update the README and CHANGELOG to drop "vendor-agnostic adapter" claim. When we actually want OpenAI, we'll define a canonical internal content/tool IR first, as Codex suggests. Not worth doing now.
+      </div>
+    </div></div>
+  </div>
+
+  <div class="card agree" data-kind="agree" data-id="7">
+    <div class="card-head">
+      <div class="card-num">7</div>
+      <div class="card-meta">
+        <span class="card-title">512MB worker is too small for the retrieval path we actually built</span>
+        <span class="tag agree">Agree — real problem</span>
+      </div>
+      <div class="card-chevron">›</div>
+    </div>
+    <div class="card-body"><div class="card-body-inner">
+      <div class="field">
+        <div class="field-label">Back-of-envelope</div>
+        <div class="field-body">20k chunks × 1024 dims × 4 bytes ≈ 78MB raw embeddings before Python object overhead. <code>semantic_search()</code> unpacks every blob and creates numpy arrays per row. Three concurrent scoped jobs doing retrieval = repeated full-scope scans. Speculative mode does two retrieval passes per request. Phoenix is capped at 768MB.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Week-6 pain</div>
+        <div class="field-body">Retrieval latency becomes nonlinear. Worker starts feeling random — some jobs fast, some wedge the box. Ingestion starves unrelated work. Lease heartbeats risk being late during long synchronous insert loops.</div>
+      </div>
+      <div class="verdict">
+        <strong>My take:</strong> Combined with #3 this is the #1 operational hazard. Fix comes with the sqlite-vec native retrieval — it streams matches from the DB without loading every embedding into Python. Tied together.
+      </div>
+    </div></div>
+  </div>
+
+  <div class="card partial" data-kind="partial" data-id="8">
+    <div class="card-head">
+      <div class="card-num">8</div>
+      <div class="card-meta">
+        <span class="card-title">Solo-user allowlist vs. multi-agent scaffolding = false optionality</span>
+        <span class="tag partial">Partially right</span>
+      </div>
+      <div class="card-chevron">›</div>
+    </div>
+    <div class="card-body"><div class="card-body-inner">
+      <div class="field">
+        <div class="field-label">Codex observation</div>
+        <div class="field-body"><code>agent_scope</code> on every table + tool ACL scaffolding suggests multi-user later. But the hard part — ownership and isolation — is absent. There's no user/account/tenant key in the core tables; authorization is only a Discord user-id gate.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Week-6 pain</div>
+        <div class="field-body">False optionality. Schema looks future-proof but the real work isn't done. The scoped knowledge/facts/prompts part IS useful even for solo — keep that.</div>
+      </div>
+      <div class="verdict">
+        <strong>My take:</strong> Correct — but we were explicit from day one that multi-user was never a goal. <code>agent_scope</code> exists for persona isolation (author_lewis vs. author_dalio), not multi-tenancy. The confusion is that Codex saw the scaffolding and projected a multi-user roadmap that doesn't exist. <strong>Fix:</strong> make this explicit in README — "agent_scope = personas, not users" — and remove any docs that hint at multi-tenant later.
+      </div>
+    </div></div>
+  </div>
+
+  <div class="card disagree" data-kind="disagree" data-id="9">
+    <div class="card-head">
+      <div class="card-num">9</div>
+      <div class="card-meta">
+        <span class="card-title">Cron-only: right answer, wrong rationale</span>
+        <span class="tag disagree">Disagree — acceptable</span>
+      </div>
+      <div class="card-chevron">›</div>
+    </div>
+    <div class="card-body"><div class="card-body-inner">
+      <div class="field">
+        <div class="field-label">Codex observation</div>
+        <div class="field-body">Keep cron-only not because "autonomy must be earned" (evals are weak — 2 of 3 goldens skip without <code>--live</code>), but because cron is explicit, inspectable, operator-authored. The first watcher/webhook will flood the same queue as user work — no event-source identity, dedupe, or per-trigger safety contract.</div>
+      </div>
+      <div class="verdict">
+        <strong>My take:</strong> I prefer Codex's framing to my original one. "Operator-authored and inspectable" is a cleaner justification than "evals must earn it." Adopt that. When watchers eventually land, they need their own queue, dedupe key, and rate limit — not just "another schedule source."
+      </div>
+    </div></div>
+  </div>
+
+  <div class="card agree" data-kind="agree" data-id="10">
+    <div class="card-head">
+      <div class="card-num">10</div>
+      <div class="card-meta">
+        <span class="card-title">Prompt caching: no measurement, can't claim savings</span>
+        <span class="tag agree">Agree — real problem</span>
+      </div>
+      <div class="card-chevron">›</div>
+    </div>
+    <div class="card-body"><div class="card-body-inner">
+      <div class="field">
+        <div class="field-label">Codex observation</div>
+        <div class="field-body">Only the first system block is marked cacheable. Retrieved chunks, task framing, and growing message history are volatile. <code>model_adapter.py</code> records cache tokens but no code reports hit rate or verifies activation.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Week-6 pain</div>
+        <div class="field-body">You can't tell whether caching is working. Even if it is, savings are probably modest — uncached suffix and conversation history dominate.</div>
+      </div>
+      <div class="verdict">
+        <strong>My take:</strong> Right. I talked about prompt caching like a cost pillar, but in practice I didn't build the cache-hit dashboard. Fix: add a <code>botctl cache-hit-rate</code> command that reads the cost_ledger and reports actual hit ratio. Rename marketing from "prompt caching strategy" to "stable-prefix optimization (measured, not assumed)."
+      </div>
+    </div></div>
+  </div>
+
+  <div class="card disagree" data-kind="disagree" data-id="11">
+    <div class="card-head">
+      <div class="card-num">11</div>
+      <div class="card-meta">
+        <span class="card-title">Grounded validator is theater; force quoted spans instead</span>
+        <span class="tag disagree">Disagree — acceptable</span>
+      </div>
+      <div class="card-chevron">›</div>
+    </div>
+    <div class="card-body"><div class="card-body-inner">
+      <div class="field">
+        <div class="field-label">Codex observation</div>
+        <div class="field-body">Two content words overlapping with a cited chunk = "validated." That's weak. Don't build an NLI sidecar — force quote/span-grounded output or stop claiming the validator proves truth.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Codex's better approach</div>
+        <div class="field-body">Require short quoted evidence spans, show the citations, make the user do the last 10% of trust judgment. "Constrained transparency."</div>
+      </div>
+      <div class="verdict">
+        <strong>My take:</strong> Already documented as OPEN in <code>KNOWN_ISSUES.md</code>. Codex's "constrained transparency" suggestion is actually the right next step — stronger than what I had planned. Save for v1.1: require response schema to include a <code>quoted_span: "..."</code> per claim that literally matches a substring of the cited chunk. Adopt it.
+      </div>
+    </div></div>
+  </div>
+
+  <div class="card agree" data-kind="agree" data-id="12">
+    <div class="card-head">
+      <div class="card-num">12</div>
+      <div class="card-meta">
+        <span class="card-title">sops is disciplined; DR story isn't</span>
+        <span class="tag agree">Agree — real problem</span>
+      </div>
+      <div class="card-chevron">›</div>
+    </div>
+    <div class="card-body"><div class="card-body-inner">
+      <div class="field">
+        <div class="field-label">Codex observation</div>
+        <div class="field-body">One age recipient, manual rotation, no DB backup, no break-glass path. Losing the droplet = losing state. <code>OPERATIONS.md</code> openly admits <code>/data/donna.db</code> backup is not set up.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">What's missing</div>
+        <div class="field-body">Second age recipient or escrow key, and an actual backup/restore process documented like you mean it.</div>
+      </div>
+      <div class="verdict">
+        <strong>My take:</strong> Completely fair. The v1 DR story is "hope." Add: (1) second age recipient — your laptop's key + a paper-backup key stored offline, (2) nightly <code>litestream replicate</code> of <code>/data/donna.db</code> to a second DO Space or your laptop, (3) quarterly restore drill. All of this is week-2 work, not v1, but should be in <code>KNOWN_ISSUES.md</code>.
+      </div>
+    </div></div>
+  </div>
+
+  <div class="card agree" data-kind="agree" data-id="13">
+    <div class="card-head">
+      <div class="card-num">13</div>
+      <div class="card-meta">
+        <span class="card-title">Observability is a debugger, not an ops story</span>
+        <span class="tag agree">Agree — real problem</span>
+      </div>
+      <div class="card-chevron">›</div>
+    </div>
+    <div class="card-body"><div class="card-body-inner">
+      <div class="field">
+        <div class="field-label">Codex observation</div>
+        <div class="field-body">Phoenix shows traces on demand. But: no stuck-job alerts, no consent-timeout alerts, no failure-rate summaries, no "job age by status" view. <code>traces</code> table has no writer — just a prune CLI. A job can sit in <code>PAUSED_AWAITING_CONSENT</code> for hours and nothing pings you.</div>
+      </div>
+      <div class="verdict">
+        <strong>My take:</strong> Right. I have logs (good) and traces (good) but no active monitoring. Fix: cheap ops loop that DMs on: job stuck >1h, consent timeout pending, repeated errors, budget >threshold. And remove the unused <code>traces</code> table (or actually write to it). Add to v1.1.
+      </div>
+    </div></div>
+  </div>
+
+  <div class="card partial" data-kind="partial" data-id="14">
+    <div class="card-head">
+      <div class="card-num">14</div>
+      <div class="card-meta">
+        <span class="card-title">"12 L1 tools" is 17; attachment ingestion is missing</span>
+        <span class="tag partial">Partially right</span>
+      </div>
+      <div class="card-chevron">›</div>
+    </div>
+    <div class="card-body"><div class="card-body-inner">
+      <div class="field">
+        <div class="field-label">Codex count</div>
+        <div class="field-body">17 <code>@tool</code> registrations, not 12.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">The gap</div>
+        <div class="field-body">No in-band attachment/PDF ingestion tool in the agent loop. Today <code>botctl teach</code> handles PDFs on the CLI — but the bot itself can't consume a Discord attachment. First thing you'll want and lack.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Under-used tool</div>
+        <div class="field-body"><code>propose_heuristic()</code> — creates governance debt, and the <code>reasoning</code> parameter isn't even persisted.</div>
+      </div>
+      <div class="verdict">
+        <strong>My take:</strong> The count is right (12 were L1 core; 5 more are knowledge-layer tools I added later — total 17). Labeling inconsistency, not architecture. The attachment-ingestion gap is correct and actionable: add an <code>ingest_discord_attachment</code> tool that mirrors <code>botctl teach</code>. First-week fix.
+      </div>
+    </div></div>
+  </div>
+
+  <div class="card agree" data-kind="agree" data-id="15">
+    <div class="card-head">
+      <div class="card-num">15</div>
+      <div class="card-meta">
+        <span class="card-title">Final contrarian: unify everything into one explicit job graph</span>
+        <span class="tag agree">Agree — the path forward</span>
+      </div>
+      <div class="card-chevron">›</div>
+    </div>
+    <div class="card-body"><div class="card-body-inner">
+      <div class="field">
+        <div class="field-label">Codex's proposed rewrite</div>
+        <div class="field-body">Rip out the two-headed execution model — generic loop + separate mode handlers. Replace with one explicit job graph where every mode is a graph variant over the same primitives: load state → retrieve → model step → tool step → consent wait → checkpoint → finish. Use LangGraph for orchestration, keep SQLite for durable state, define one internal content/tool IR so vendor choice is actually abstracted.</div>
+      </div>
+      <div class="field">
+        <div class="field-label">Why</div>
+        <div class="field-body">Collapses the highest-cost ambiguity in the codebase. Resume, consent, observability, vendor support, and future modes all become easier to reason about in one place instead of four half-overlapping places.</div>
+      </div>
+      <div class="verdict">
+        <strong>My take:</strong> This is the most important architectural input in the whole review. Codex's proposal is essentially: rewrite #2 (mode dispatch split) as #15 (unified graph). I'm not sure about LangGraph specifically — adding framework dependency is a trade — but the shape is right. <strong>Action for v1.1:</strong> unify execution into a single graph model, keep it hand-rolled, decouple vendor-specific protocol into an IR layer. This is the next refactor after v1 ships and stabilizes.
+      </div>
+    </div></div>
+  </div>
+
+  <!-- Summary -->
+  <div style="margin-top:32px; padding:20px; background:var(--panel); border:1px solid var(--line); border-radius:12px;">
+    <h2 style="margin:0 0 12px; font-size:16px; color:var(--muted);">Summary tally</h2>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px;">
+      <div><div style="font-size:28px; font-weight:700; color:var(--danger);">8</div><div style="font-size:12px; color:var(--muted);">Agree — real problems</div></div>
+      <div><div style="font-size:28px; font-weight:700; color:var(--warn);">4</div><div style="font-size:12px; color:var(--muted);">Partially right</div></div>
+      <div><div style="font-size:28px; font-weight:700; color:var(--accent-2);">2</div><div style="font-size:12px; color:var(--muted);">Disagree — acceptable</div></div>
+      <div><div style="font-size:28px; font-weight:700; color:var(--info);">1</div><div style="font-size:12px; color:var(--muted);">Already addressed</div></div>
+    </div>
+    <p style="margin-top:16px; color:var(--muted); font-size:13.5px;">
+      Net: this is a strong design review. Most findings map to specific fixes for v1.1. The biggest single item is <strong style="color:var(--text);">#2 + #15</strong> — the mode-dispatch split should be unified into one explicit graph model. That's the post-v1 refactor. Everything else is additive hardening.
+    </p>
+  </div>
+
+</main>
+
+<script>
+(function() {
+  const cards = Array.from(document.querySelectorAll('.card'));
+
+  // Expand/collapse
+  cards.forEach(card => {
+    const head = card.querySelector('.card-head');
+    head.addEventListener('click', () => card.classList.toggle('open'));
+  });
+
+  document.getElementById('expand-all').addEventListener('click', () => {
+    cards.forEach(c => c.classList.add('open'));
+  });
+  document.getElementById('collapse-all').addEventListener('click', () => {
+    cards.forEach(c => c.classList.remove('open'));
+  });
+  document.getElementById('print-btn').addEventListener('click', () => {
+    cards.forEach(c => c.classList.add('open'));
+    setTimeout(() => window.print(), 150);
+  });
+
+  // Filters
+  document.querySelectorAll('.filters button[data-filter]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filters button[data-filter]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const f = btn.dataset.filter;
+      cards.forEach(c => {
+        if (f === 'all' || c.dataset.kind === f) c.classList.remove('hidden');
+        else c.classList.add('hidden');
+      });
+    });
+  });
+
+  // Auto-open first card
+  if (cards[0]) cards[0].classList.add('open');
+})();
+</script>
+
+</body>
+</html>
