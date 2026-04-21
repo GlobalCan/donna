@@ -29,9 +29,16 @@ def isolated_data_dir(monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def fresh_db() -> None:
-    """Run migrations on the isolated DB."""
+    """Run migrations on the isolated DB.
+
+    Invoke alembic via the current Python interpreter (`-m alembic`) rather
+    than by name — on Windows the venv's alembic.exe isn't on the subprocess
+    PATH unless the venv is activated in the parent shell, which it often
+    isn't when pytest runs directly via `.venv/Scripts/python -m pytest`.
+    """
     import subprocess
+    import sys
     subprocess.check_call(
-        ["alembic", "upgrade", "head"],
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=Path(__file__).resolve().parent.parent,
     )

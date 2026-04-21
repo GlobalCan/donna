@@ -85,8 +85,10 @@ def test_read_artifact_clean_result_does_not_taint() -> None:
 
 
 def test_resume_dedup_finds_completed_tool_uses() -> None:
-    """H2 fix: completed tool_results in message history are detected on resume."""
-    from donna.agent.loop import _already_executed_tool_use_ids
+    """H2 fix: completed tool_results in message history are detected on resume.
+    The helper was refactored into context.py during the Pass-2 JobContext
+    unification — Pattern A Hermes steals kept it there."""
+    from donna.agent.context import _already_executed_tool_use_ids
     from donna.types import JobMode, JobState
 
     state = JobState(job_id="job_1", agent_scope="orchestrator", mode=JobMode.CHAT)

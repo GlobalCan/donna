@@ -195,9 +195,14 @@ def test_trace_store_processor_importable() -> None:
 
 
 def test_botctl_has_cache_hit_rate() -> None:
+    """Typer populates `.name` from the decorator kwarg; when the function
+    name is used as-is, `.name` is None. Inspect callback names instead."""
     from donna.cli import botctl
-    cmd_names = {cmd.name for cmd in botctl.app.registered_commands}
-    assert "cache-hit-rate" in cmd_names or "cache_hit_rate" in cmd_names
+    callback_names = {
+        cmd.callback.__name__ for cmd in botctl.app.registered_commands
+        if cmd.callback is not None
+    }
+    assert "cache_hit_rate" in callback_names, f"got callbacks: {callback_names}"
 
 
 # --- "Anything else logical" pass ---------------------------------------

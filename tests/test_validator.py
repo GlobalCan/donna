@@ -39,12 +39,17 @@ def test_bad_citation_fails() -> None:
 
 
 def test_valid_citation_passes() -> None:
+    """Pass-2 updated schema: response must include quoted_span (verbatim
+    substring of the cited chunk) for the claim to validate."""
     chunks = [_c("chunk_1",
                  "Lewis argues that outsiders systematically see what insiders miss, "
                  "exploiting structural blindspots in modern markets.")]
     resp = json.dumps({
-        "claims": [{"text": "Outsiders exploit structural blindspots in markets.",
-                    "citations": ["#chunk_1"]}],
+        "claims": [{
+            "text": "Outsiders exploit structural blindspots in markets.",
+            "citations": ["#chunk_1"],
+            "quoted_span": "exploiting structural blindspots in modern markets",
+        }],
         "prose": "Outsiders exploit structural blindspots [#chunk_1].",
     })
     r = validate_grounded(resp, chunks)
@@ -52,13 +57,21 @@ def test_valid_citation_passes() -> None:
 
 
 def test_debate_attack_without_quote_is_flagged() -> None:
+    """Attacks that invent a position AND share no substantive 10-char
+    substring with the actual prior turn must be flagged. (Post-Pass-2 the
+    matcher normalizes whitespace+case and allows 10-char fuzzy overlap, so
+    the test case needs to be blatant — imputing views with zero textual
+    grounding.)"""
     prior = [
         {"round": 1, "scope": "lewis",
-         "content": "Markets are efficient only if you define efficiency narrowly."},
+         "content": "Casino capitalism turned Wall Street into a speculative arena."},
     ]
-    turn = "Lewis argues that efficiency is real and pervasive."  # mischaracterizes + no quote
+    # Wholly different vocabulary — turn invents a Lewis position on crypto
+    # which shares no meaningful substring with the actual prior text.
+    turn = "Lewis argues that cryptocurrency is a genuine revolution in money."
     issues = validate_debate_turn(turn, prior, current_scope="dalio")
-    assert any("attacks_without_quote" in i for i in issues)
+    assert any("attacks_without_quote" in i for i in issues), \
+        f"expected flag; got: {issues}"
 
 
 def test_debate_quote_match_passes() -> None:
