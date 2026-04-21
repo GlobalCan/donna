@@ -65,4 +65,22 @@ src/donna/
 
 ## Status
 
-v1 foundation — under active initial build.
+**v1.1** · Python 3.14 · 60/60 tests green · ready for local live run.
+
+- Foundation built and survived three Codex review passes (defect, adversarial
+  challenge, Hermes comparison)
+- Unified execution graph (`JobContext`), persistent consent, taint tracking on
+  every untrusted path, quoted-span grounded validator
+- ModelRuntime registry (vendor abstraction as data, not slogan)
+- Compaction audit trail preserves pre-compaction history as artifact
+- Stuck-job watchdog + cache-hit rate telemetry
+- Not yet live-tested against real Anthropic / Discord / Tavily / Voyage keys —
+  that's Phase 1 (see `docs/morning.html` for the step-by-step)
+
+**Next planned addition:** extract the knowledge / retrieval / graph-RAG layer
+into a sibling `src/corpus/` package inside this monorepo. The oracle mode
+("what would Michael Lewis say about X?") and cross-author synthesis ("where
+do Lewis and Dalio overlap?") are the target use cases. See
+`docs/CORPUS_BRIEF.md` for the full bootstrap brief.
+
+**History:** see `CHANGELOG.md` for the full v0.1.0 → v0.2.0 evolution.

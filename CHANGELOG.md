@@ -1,9 +1,147 @@
 # Changelog
 
+## [0.2.0] — 2026-04-20 — v1.1 hardening + Python 3.14 + Corpus brief
+
+Three Codex review passes absorbed (defect, adversarial-challenge, Hermes
+comparison). v1 foundation upgraded with ~20 additional hardening fixes.
+Corpus architecture extraction planned and briefed but not yet built.
+
+### Added
+
+**Python 3.14 upgrade**
+- `requires-python>=3.12`, actually running 3.14.3 in venv + `python:3.14-slim`
+  Docker base image
+- Dropped `voyageai` SDK dependency — SDK capped at Python <3.14 as of 2026-04.
+  Replaced with direct httpx calls to Voyage's `/v1/embeddings` endpoint.
+  Fewer deps, fewer version locks, same functionality.
+
+**Pattern A Hermes steals (v1.1)**
+- `model_runtimes` registry table + `memory/runtimes.py` — vendor abstraction
+  as DATA. Adding OpenAI is `INSERT INTO model_runtimes ...` + new adapter
+  class, not a rewrite. Seeded with three Anthropic tiers (haiku/sonnet/opus).
+- `memory/cost.py::_pricing_for()` reads prices from registry — no more
+  hardcoded pricing constants.
+- `agent/model_adapter.py::resolve_model()` routes tier → model_id via
+  registry with env-var fallback if table empty.
+- `/model` Discord slash command + `threads.model_tier_override` column.
+  Per-thread tier switch (fast/strong/heavy/clear). `_pick_tier()` priority:
+  job-override → thread-override → default strong.
+- `/models` slash command lists registered runtimes with pricing.
+- Compaction audit trail: raw pre-compaction message tail saved as
+  sha256-addressed artifact before summarization. `jobs.compaction_log` JSON
+  column records every compaction event. Recoverable via `read_artifact`.
+
+**Codex Pass-2 adversarial review fixes**
+- **Unified execution** — new `src/donna/agent/context.py` with `JobContext`.
+  Every mode (chat, grounded, speculative, debate) shares primitives:
+  `model_step`, `tool_step`, `consent_wait`, `maybe_compact`, `checkpoint`,
+  `finalize`. Prior two-headed split (generic loop + mode dispatch) replaced
+  with single entrypoint that dispatches by `JobMode`.
+- **Native sqlite-vec retrieval** — `memory/knowledge.py::semantic_search()`
+  uses `vec_distance_cosine` scalar function in SQL. Python numpy fallback
+  preserved if sqlite-vec fails to load.
+- **Search snippet sanitization** — `tools/web.py::_sanitize_hits()` runs
+  every search_web / search_news snippet through dual-call Haiku
+  sanitization. Previously only fetch_url was sanitized.
+- **Persistent consent** — migration 0003 adds `pending_consents` table.
+  `security/consent.py` writes pending rows + transitions job to
+  `paused_awaiting_consent`. Restarts can now resume, re-prompt, and never
+  silently drop a consent request.
+- **Quoted-span grounded validator** — `security/validator.py` now requires
+  a verbatim `quoted_span` (≥20 chars, case/whitespace-insensitive) from a
+  cited chunk per claim. Replaces the 2-word lexical overlap heuristic.
+- **Attachment ingestion tool** — new `src/donna/tools/attachments.py` with
+  `ingest_discord_attachment` — agent can consume Discord-attached
+  PDFs/txt/md and route through ingestion pipeline. Tainted by default.
+- **`propose_heuristic.reasoning` persisted** into
+  `agent_heuristics.provenance`. Was silently dropped before.
+- **Async facts.last_used_at** — `memory/facts.py` now fires the
+  last_used_at update via `asyncio.create_task` on a fresh connection.
+  Eliminates synchronous-write contention on the read path.
+- **OTel + SQLite traces** — `observability/trace_store.py` adds a
+  `SqliteSpanProcessor` that persists finished spans to the `traces` table.
+  Previously the table had schema but no writer.
+- **Stuck-job watchdog** — `observability/watchdog.py` DMs on:
+  stuck-consent (>1h), stuck-running (>30m), failure-rate spikes (3+/hr).
+  Wired into main.py alongside the budget watcher.
+- **`botctl cache-hit-rate`** — reads cost_ledger, reports actual % of
+  input tokens served from cache by tier over a window. Closes the
+  measurement loop on prompt composition ordering.
+
+**Codex Pass-1 defect fixes (earlier)**
+- C1 · Taint bypass via read_artifact — fixed via tool-result taint propagation
+- C2 · Lease expiry reclaim during long awaits — continuous 30s heartbeat
+  task + owner-guarded writes + LeaseLost exception
+- C3 · Parallel tool batch taint race — pre-scan + pessimistic pre-taint
+- H1 · Grounded/speculative/debate were dead code — wired through JobContext
+  dispatch
+- H2 · Non-idempotent tool replay on resume — tool_use_id dedup from prior
+  message history
+- H3 · Discord ask-reply thread misrouting — `posted_channel_id` on asks
+- Cost ledger clobber on checkpoint — `save_checkpoint` no longer writes cost
+- Rate limiter infinite wait on oversized request — `OversizedRequestError`
+- Retrieval temporal boost skew — boost now scaled to pool's max RRF score
+- Debate validator false positives — normalize punctuation, allow quoted
+  spans ≥5 chars OR fuzzy 10-char normalized overlap
+- chunks_fts UPDATE trigger (migration 0002)
+- sops entrypoint YAML parsing (shipped deploy was a no-op grep for KEY=VALUE)
+- Ingestion within-batch duplicate embedding
+
+**Documentation & planning**
+- `docs/review.html` — interactive Codex adversarial review viewer
+  (filterable, color-coded by my take on each finding)
+- `docs/morning.html` — interactive 12-step bring-up walkthrough
+- `docs/KNOWN_ISSUES.md` — full fix/defer status for all three Codex passes
+- `docs/CORPUS_BRIEF.md` — comprehensive bootstrap brief for a new session
+  to build "corpus" — the corpus interpretation engine. Monorepo addition
+  (`src/corpus/` alongside `src/donna/`), separate schema namespace, hard
+  internal boundary. Based on the Hermes comparison + Codex's "this is a
+  corpus interpretation engine, not memory" reframe. 19 sections, ~13k
+  words, includes verbatim Codex insights from session 019db08b.
+
+### Changed
+
+- `requires-python` bumped language (still `>=3.12`, but 3.14 is now the
+  production runtime)
+- Docker base image `python:3.12-slim` → `python:3.14-slim`
+- All four migrations (0001 → 0004) apply cleanly on a fresh database
+- Every existing file + new file AST-clean, 60/60 tests green on Python 3.14
+
+### Fixed (test-side)
+
+- `tests/conftest.py::fresh_db` invokes alembic via `sys.executable -m alembic`
+  so subprocess finds it without venv activation on Windows.
+- `tests/test_adversarial_fixes`: import path for
+  `_already_executed_tool_use_ids` updated after it moved to `context.py`.
+- `tests/test_validator.test_valid_citation_passes`: updated to include
+  `quoted_span` (new schema requirement).
+- `tests/test_validator.test_debate_attack_without_quote_is_flagged`:
+  updated to use vocabulary with no substantive overlap (validator
+  correctly accepts paraphrases with shared 10-char substrings).
+- `tests/test_challenge_fixes.test_botctl_has_cache_hit_rate`: inspect
+  `callback.__name__` instead of `cmd.name` (Typer sets `.name=None` when
+  the decorator uses function-name-derived CLI names).
+
+### Deferred / open
+
+- Live-API integration test (waiting on bot-ops accounts)
+- Litestream backup setup (documented in OPERATIONS.md)
+- Graph-RAG retrieval + oracle mode (becoming the "corpus" project, see
+  `docs/CORPUS_BRIEF.md`)
+- Stronger grounded validator than quoted_span (NLI sidecar / verifier-LLM
+  call) — wait for real traces to show if hallucinations slip through
+- L2 domain packs, L3 power tools, L4 autonomous meta-tools
+- Multi-agent specialists, delegation
+- Watchers, post-job reflections, self-scheduled triggers
+- Second LLM vendor (registry ready; implementation is INSERT + adapter)
+- Slack adapter
+
+---
+
 ## [0.1.0] — 2026-04-17 — foundation build
 
 Initial overnight build. Matches `docs/PLAN.md`. Not yet live-tested against
-real Anthropic / Discord / Tavily / Voyage APIs — tomorrow's work.
+real Anthropic / Discord / Tavily / Voyage APIs.
 
 ### Added
 
@@ -100,14 +238,3 @@ real Anthropic / Discord / Tavily / Voyage APIs — tomorrow's work.
 - Grounded refusal on empty retrieval
 - Speculation policy enforcement
 - Debate quote-to-attack requirement
-
-### Deferred (see docs/PLAN.md)
-
-- Live-API integration test (needs real keys)
-- L2 domain packs (YouTube, finance, research, scraping)
-- L3 power tools (bash, SQL, email, GitHub)
-- L4 autonomous meta tools beyond `propose_heuristic`
-- True multi-agent specialists + `delegate_to`
-- Watchers, post-job reflections, self-scheduled follow-ups
-- Full CaMeL architecture
-- Slack adapter
