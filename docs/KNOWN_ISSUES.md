@@ -33,6 +33,31 @@ whole architecture, not defect-focused.
 - **Cache-hit-rate target.** Metric is exposed; we need real usage to know what's achievable.
 - **Litestream setup.** Documented in OPERATIONS.md but not yet provisioned. Week-2 task.
 
+## v1.1 — Hermes Agent adversarial comparison (2026-04-20)
+
+Compared Donna against Nous Research's Hermes Agent (107k stars). Real Codex (GPT-5.4, session `019db01c-a788-7902-b9f3-8ee6aee32b59`) gave a comparative challenge review. Three specific mechanisms stolen into v1.1 — all additive, no refactor:
+
+| # | Hermes steal | Status | Implementation |
+|---|---|---|---|
+| H-1 | **`ModelRuntime` registry** — provider/model/pricing as DATA, not slogan | **FIXED** | migration `0004`; `memory/runtimes.py`; `agent/model_adapter.py::resolve_model()`; `memory/cost.py::_pricing_for()` |
+| H-2 | **Session lineage for compaction** — raw pre-compaction history preserved as artifact; job.compaction_log column | **FIXED** | `agent/compaction.py` saves JSON tail → artifact before summarizing; updates `jobs.compaction_log` JSON |
+| H-3 | **`/model` operational command** — per-thread tier switch | **FIXED** | `threads.model_tier_override`; `discord_ux.py::/model` + `/models`; `loop.py::_pick_tier()` consults override |
+
+Adding OpenAI later is now `INSERT INTO model_runtimes ... ; class OpenAIAdapter(Model): ...` — no change to the loop, no change to cost tracking.
+
+### Hermes ideas explicitly NOT adopted (wrong for Donna's threat model)
+
+- **Autonomous skill creation** — security theater for a single-operator bot; contradicts structural taint
+- **18-platform messaging gateway** — Discord-only is the feature, not the limitation (fewer ingress paths = fewer attack surfaces)
+- **agentskills.io hub consumption** — supply chain = OpenClaw's 300-malicious-skills redux
+- **Modal/Daytona serverless backends** — the $6 droplet works; add complexity only when forced
+- **Atropos RL trajectory training** — Hermes is research-angled; Donna is personal
+- **Open plugin system** — Donna's trust boundary depends on every tool being code-reviewed
+
+### Pattern B (MCP server exposure) — evaluated, deferred
+
+Would expose Donna's primitives (`ask_scope`, `teach`, `recall_knowledge`, `debate`) as MCP tools so any agent (Hermes, Claude Desktop, other MCP clients) could consume them. Current code already supports this path cleanly (mode direct-call APIs preserved, tools standalone-callable). Required ~2 additional weeks (side-channel consent, per-client auth, taint propagation protocol, audit lineage) to match current end-to-end trust model. Addable later when a real second client exists — no door-closing decisions made now.
+
 ## Codex Pass 1 — Initial Defect Review (earlier 2026-04-17)
 
 All CRITICAL + HIGH + MEDIUM fixed in the first fix pass.

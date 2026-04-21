@@ -122,6 +122,7 @@ class Job:
     started_at: datetime | None
     finished_at: datetime | None
     error: str | None
+    model_tier_override: str | None = None   # v1.1 /model command support
 
 
 @dataclass

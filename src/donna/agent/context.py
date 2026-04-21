@@ -241,7 +241,9 @@ class JobContext:
         if self.state.tool_calls_count > 0 and self.state.tool_calls_count % n == 0:
             from .compaction import compact_messages
             self.state.messages = await compact_messages(
-                self.state.messages, self.state.artifact_refs,
+                self.state.messages,
+                self.state.artifact_refs,
+                job_id=self.state.job_id,
             )
 
     # -- checkpoint / finalize -----------------------------------------------

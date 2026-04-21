@@ -161,6 +161,82 @@ def register_commands(bot: "DonnaBot") -> None:
             conn.close()
         await interaction.response.send_message(f"✅ approved {heuristic_id}")
 
+    @tree.command(name="model", description="Set the model tier for this conversation")
+    @app_commands.choices(tier=[
+        app_commands.Choice(name="fast (Haiku)",   value="fast"),
+        app_commands.Choice(name="strong (Sonnet — default)", value="strong"),
+        app_commands.Choice(name="heavy (Opus)",   value="heavy"),
+        app_commands.Choice(name="clear override (use default)", value="clear"),
+    ])
+    async def model_cmd(
+        interaction: discord.Interaction,
+        tier: app_commands.Choice[str],
+    ) -> None:
+        """Pattern A Hermes steal #3: /model <tier> lets the user switch
+        tier for this thread without touching env config. Override persists
+        until explicitly cleared."""
+        if not _allowed(interaction):
+            await interaction.response.send_message("not authorized", ephemeral=True)
+            return
+
+        from ..memory import threads as threads_mod
+
+        channel_id = str(interaction.channel_id)
+        conn = connect()
+        try:
+            with transaction(conn):
+                thread_id = threads_mod.find_by_discord_channel(
+                    conn, channel_id=channel_id,
+                )
+                if thread_id is None:
+                    thread_id = threads_mod.get_or_create_thread(
+                        conn,
+                        discord_channel=channel_id,
+                        discord_thread=(
+                            channel_id
+                            if isinstance(interaction.channel, discord.Thread)
+                            else None
+                        ),
+                    )
+                new_tier = None if tier.value == "clear" else tier.value
+                threads_mod.set_model_tier_override(
+                    conn, thread_id=thread_id, tier=new_tier,
+                )
+        finally:
+            conn.close()
+
+        if tier.value == "clear":
+            msg = "🔄 Model override cleared — using default (strong/Sonnet)."
+        else:
+            msg = f"🎚 Model tier for this thread → **{tier.name}**. Jobs queued after this will use it."
+        await interaction.response.send_message(msg)
+
+    @tree.command(name="models", description="List available model runtimes")
+    async def models_cmd(interaction: discord.Interaction) -> None:
+        if not _allowed(interaction):
+            await interaction.response.send_message("not authorized", ephemeral=True)
+            return
+        from ..memory import runtimes as rt_mod
+        try:
+            runtimes = rt_mod.list_runtimes()
+        except Exception as e:
+            await interaction.response.send_message(f"⚠ runtimes query failed: {e}", ephemeral=True)
+            return
+        if not runtimes:
+            await interaction.response.send_message(
+                "No runtimes registered. Run `alembic upgrade head`.",
+                ephemeral=True,
+            )
+            return
+        lines = ["**Registered model runtimes:**"]
+        for r in runtimes:
+            mark = "✓" if r.active else "×"
+            lines.append(
+                f"{mark} `{r.provider}:{r.tier}` → `{r.model_id}` "
+                f"(in ${r.price_input}/Mtok, out ${r.price_output}/Mtok)"
+            )
+        await interaction.response.send_message("\n".join(lines))
+
 
 async def _enqueue_scoped(
     interaction: discord.Interaction, *, scope: str, task: str, mode: JobMode,

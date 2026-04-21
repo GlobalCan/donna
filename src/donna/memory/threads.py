@@ -57,3 +57,40 @@ def recent_messages(conn: sqlite3.Connection, thread_id: str, limit: int = 20) -
         (thread_id, limit),
     ).fetchall()
     return list(reversed([dict(r) for r in rows]))
+
+
+# ---------- Tier override (powers /model command) ------------------------
+
+
+def set_model_tier_override(
+    conn: sqlite3.Connection, *, thread_id: str, tier: str | None,
+) -> None:
+    """Set (or clear with tier=None) the model tier override for a thread."""
+    conn.execute(
+        "UPDATE threads SET model_tier_override = ? WHERE id = ?",
+        (tier, thread_id),
+    )
+
+
+def get_model_tier_override(
+    conn: sqlite3.Connection, *, thread_id: str,
+) -> str | None:
+    row = conn.execute(
+        "SELECT model_tier_override FROM threads WHERE id = ?", (thread_id,),
+    ).fetchone()
+    return row["model_tier_override"] if row else None
+
+
+def find_by_discord_channel(
+    conn: sqlite3.Connection, *, channel_id: str,
+) -> str | None:
+    """Return the thread_id whose discord_channel (or discord_thread) matches."""
+    row = conn.execute(
+        """
+        SELECT id FROM threads
+        WHERE discord_channel = ? OR discord_thread = ?
+        ORDER BY last_active_at DESC LIMIT 1
+        """,
+        (channel_id, channel_id),
+    ).fetchone()
+    return row["id"] if row else None

@@ -38,14 +38,36 @@ class GenerateResult:
 
 
 class AnthropicAdapter:
+    """Anthropic client wrapper. Reads model_id + pricing from the
+    `model_runtimes` table (Pattern A Hermes steal #1) so adding OpenAI
+    later is a data change, not a code change.
+
+    Env-var fallback preserved for local dev / initial deploy if the table
+    hasn't been seeded yet.
+    """
+
     def __init__(self) -> None:
         s = settings()
         self.client = anthropic.AsyncAnthropic(api_key=s.anthropic_api_key)
-        self.model_for: dict[ModelTier, str] = {
+        # Env-var fallback: used only if the runtimes table is empty (e.g., on
+        # the very first boot before migrations have been applied).
+        self._fallback_model_for: dict[ModelTier, str] = {
             ModelTier.FAST: s.anthropic_model_fast,
             ModelTier.STRONG: s.anthropic_model_strong,
             ModelTier.HEAVY: s.anthropic_model_heavy,
         }
+
+    def resolve_model(self, tier: ModelTier) -> str:
+        """Resolve a tier to a concrete model_id via the runtimes registry."""
+        from ..memory import runtimes as rt_mod
+        try:
+            rt = rt_mod.get_by_tier(tier.value, provider="anthropic")
+            if rt is not None:
+                return rt.model_id
+        except Exception:
+            # DB not ready (migrations not yet run, etc.)
+            pass
+        return self._fallback_model_for[tier]
 
     async def generate(
         self,
@@ -58,7 +80,7 @@ class AnthropicAdapter:
         job_id: str | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> GenerateResult:
-        model = self.model_for[tier]
+        model = self.resolve_model(tier)
 
         # Estimate tokens conservatively for the ledger
         est_input = _estimate_tokens(system) + sum(_estimate_tokens(m) for m in messages)

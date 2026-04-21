@@ -1,4 +1,9 @@
-"""Cost ledger primitives."""
+"""Cost ledger primitives.
+
+Pricing no longer lives in this file. The ModelRuntime registry
+(see memory/runtimes.py) is the source of truth. Hardcoded fallback kept
+only for the case where the runtimes table hasn't been populated yet.
+"""
 from __future__ import annotations
 
 import sqlite3
@@ -6,12 +11,29 @@ from datetime import datetime, timezone
 
 from . import ids
 
-# Price per million tokens (as of 2026-04; update when it changes)
-PRICING = {
-    "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00, "cache_read": 0.10, "cache_write": 1.25},
-    "claude-sonnet-4-6":         {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
-    "claude-opus-4-6":           {"input": 15.00, "output": 75.00, "cache_read": 1.50, "cache_write": 18.75},
+# Fallback only — used if `model_runtimes` has no row for the model.
+# Kept minimal; real pricing is in the table.
+_FALLBACK_PRICING = {
+    "input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75,
 }
+
+
+def _pricing_for(model: str) -> dict[str, float]:
+    """Look up per-million-token pricing for a given model_id via the runtimes
+    table. Falls back to a generic sonnet-like shape if not found."""
+    try:
+        from . import runtimes as rt_mod
+        rt = rt_mod.get_by_model_id(model)
+        if rt is not None:
+            return {
+                "input": rt.price_input,
+                "output": rt.price_output,
+                "cache_read": rt.price_cache_read,
+                "cache_write": rt.price_cache_write,
+            }
+    except Exception:
+        pass
+    return _FALLBACK_PRICING
 
 
 def record_llm_usage(
@@ -25,7 +47,7 @@ def record_llm_usage(
     cache_write_tokens: int = 0,
 ) -> float:
     """Returns cost_usd."""
-    p = PRICING.get(model, {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75})
+    p = _pricing_for(model)
     cost = (
         input_tokens * p["input"]
         + output_tokens * p["output"]

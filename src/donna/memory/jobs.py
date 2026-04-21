@@ -191,6 +191,11 @@ def recent_jobs(conn: sqlite3.Connection, limit: int = 25) -> list[Job]:
 
 
 def _row_to_job(row: sqlite3.Row) -> Job:
+    # model_tier_override is optional — only present after migration 0004
+    try:
+        tier_override = row["model_tier_override"]
+    except (KeyError, IndexError):
+        tier_override = None
     return Job(
         id=row["id"],
         agent_scope=row["agent_scope"],
@@ -209,6 +214,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         started_at=_dt(row["started_at"]),
         finished_at=_dt(row["finished_at"]),
         error=row["error"],
+        model_tier_override=tier_override,
     )
 
 

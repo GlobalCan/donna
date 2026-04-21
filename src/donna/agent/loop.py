@@ -97,6 +97,41 @@ async def _load_scoped_context(scope: str, task: str):
 
 
 def _pick_tier(ctx: JobContext) -> ModelTier:
+    """Pick the model tier for this turn.
+
+    Priority (Hermes-inspired /model command — Pattern A steal #3):
+      1. Job-level override (set by automation, one-off escalations)
+      2. Thread-level override (set by /model <tier> in Discord)
+      3. Default STRONG (Sonnet)
+    """
+    from ..memory import threads as threads_mod
+    from ..memory.db import connect
+
+    # 1. Job-level
+    if ctx.job.mode and hasattr(ctx.job, "model_tier_override"):
+        override = getattr(ctx.job, "model_tier_override", None)
+        if override:
+            try:
+                return ModelTier(override)
+            except ValueError:
+                pass
+
+    # 2. Thread-level
+    if ctx.job.thread_id:
+        conn = connect()
+        try:
+            t_override = threads_mod.get_model_tier_override(
+                conn, thread_id=ctx.job.thread_id,
+            )
+        finally:
+            conn.close()
+        if t_override:
+            try:
+                return ModelTier(t_override)
+            except ValueError:
+                pass
+
+    # 3. Default
     return ModelTier.STRONG
 
 
