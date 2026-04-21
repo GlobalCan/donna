@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -30,6 +31,30 @@ _PRAGMAS = [
     "PRAGMA foreign_keys = ON",
     "PRAGMA temp_store = MEMORY",
 ]
+
+
+# --- datetime adapter registration (Python 3.12+ compat) -------------------
+# Python 3.12 deprecated the default datetime adapter. Register explicit
+# ISO-8601 adapters so every Connection serializes consistently. Naive
+# datetimes are assumed UTC (we use `datetime.now(timezone.utc)` everywhere).
+# Readers parse back via `datetime.fromisoformat` (see memory.jobs._dt and
+# peer modules).
+
+
+def _adapt_datetime_iso(val: datetime) -> str:
+    if val.tzinfo is None:
+        val = val.replace(tzinfo=timezone.utc)
+    # Space separator keeps SQLite's built-in date()/datetime() happy while
+    # `datetime.fromisoformat` still parses it on read.
+    return val.isoformat(sep=" ")
+
+
+def _adapt_date_iso(val: date) -> str:
+    return val.isoformat()
+
+
+sqlite3.register_adapter(datetime, _adapt_datetime_iso)
+sqlite3.register_adapter(date, _adapt_date_iso)
 
 
 def _prepare_connection(conn: sqlite3.Connection) -> None:
