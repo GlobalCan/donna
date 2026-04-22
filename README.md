@@ -8,7 +8,9 @@ See [`docs/PLAN.md`](docs/PLAN.md) for the full architectural plan.
 
 ## Quick start (local dev)
 
-**New machine? Follow [`docs/LIVE_RUN_SETUP.md`](docs/LIVE_RUN_SETUP.md)** — full walkthrough including account provisioning and smoke tests. The short version:
+**Fresh laptop, continuing prior work?** Open [`docs/CONTINUE_HERE.md`](docs/CONTINUE_HERE.md) and paste its bootstrap prompt into Claude Code.
+
+**Just setting up?** Follow [`docs/LIVE_RUN_SETUP.md`](docs/LIVE_RUN_SETUP.md) for the full walkthrough including account provisioning and smoke tests. The short version:
 
 ```powershell
 # Windows (PowerShell)
