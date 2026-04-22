@@ -74,7 +74,7 @@ src/donna/
 
 ## Status
 
-**v1.1** · Python 3.14 · 60/60 tests green · ready for local live run.
+**v0.2.1** · Python 3.14 · 70/70 tests green · **Phase 1 live-verified**.
 
 - Foundation built and survived three Codex review passes (defect, adversarial
   challenge, Hermes comparison)
@@ -83,8 +83,11 @@ src/donna/
 - ModelRuntime registry (vendor abstraction as data, not slogan)
 - Compaction audit trail preserves pre-compaction history as artifact
 - Stuck-job watchdog + cache-hit rate telemetry
-- Not yet live-tested against real Anthropic / Discord / Tavily / Voyage keys —
-  that's Phase 1 (see `docs/morning.html` for the step-by-step)
+- **Phase 1 end-to-end pass against real Anthropic / Discord / Tavily / Voyage
+  APIs** (2026-04-22) — four smoke tests green: happy-path summarize, ops CLI,
+  taint propagation (model articulated the "web content is data, not
+  instructions" boundary unprompted), consent ✅/❌ reaction flow.
+- Phase 2 is droplet deploy — same processes inside Docker.
 
 **Next planned addition:** extract the knowledge / retrieval / graph-RAG layer
 into a sibling `src/corpus/` package inside this monorepo. The oracle mode

@@ -1,5 +1,64 @@
 # Changelog
 
+## [0.2.1] — 2026-04-22 — Phase 1 live-run fixes
+
+First end-to-end live run surfaced three real bugs the in-process test suite
+couldn't catch. All four smoke tests in `docs/LIVE_RUN_SETUP.md` now pass
+against real Anthropic / Discord / Tavily / Voyage APIs.
+
+### Fixed
+
+- **`main.py` discord.py 2.x compat** — `bot.loop.create_task(...)` was
+  called before `await bot.start(...)`; discord.py 2.x won't bind `.loop`
+  until start. Swapped to `asyncio.create_task` inside the already-async
+  `_run()` frame. Both scheduled coros already `await bot.wait_until_ready()`
+  so no ordering change.
+- **Cross-process outbox** — `send_update`, `ask_user`, and consent all
+  used in-memory `asyncio.Queue`, invisible across the `donna.main` /
+  `donna.worker` process boundary. Jobs completed successfully but nothing
+  reached Discord. Consent was half-fixed in 0003 (pending_consents table)
+  but the decision itself still flowed through an in-memory `Future`.
+  SQLite is now the single source of truth:
+  - migration `0005_outbox_tables` adds `outbox_updates`, `outbox_asks`,
+    and extends `pending_consents` with `approved` / `decided_at` /
+    `posted_channel_id` / `posted_message_id`.
+  - `tools/communicate.py` — `send_update` INSERTs a row; `ask_user`
+    INSERTs then polls the reply column.
+  - `security/consent.py::check()` — polls `pending_consents.approved`
+    instead of awaiting a Future.
+  - `adapter/discord_adapter.py` — three drain tasks poll DB, post to
+    Discord, UPDATE/DELETE rows. In-memory `_consent_msgs` / `_ask_msgs`
+    dicts removed; reactions match by `posted_message_id`, replies by
+    `posted_channel_id`.
+- **Chat mode's final answer delivered** — `_run_chat` captured the LLM's
+  `end_turn` text as `ctx.state.final_text` and called `finalize()`, but
+  nothing ever pushed that text to Discord. The orchestrator prompt
+  describes `send_update` as progress-pings, not as the terminal-answer
+  mechanism. Added `_enqueue_final_text(ctx)` at the end of `_run_chat`
+  to insert the answer into `outbox_updates` for the bot to drain.
+  Grounded/speculative/debate modes likely have the same hole; deferred
+  until their smoke tests surface it.
+
+### Tests
+
+- `tests/test_outbox.py` — 8 new tests covering DB-backed send_update,
+  ask_user reply-polling, ask_user timeout cleanup, consent approval
+  polling, migration 0005 schema shape, and `_enqueue_final_text`
+  happy-path + empty-text skip.
+- Total: **70 passed**.
+
+### Known limitations (not blocking)
+
+- `fetch_url` gets 403 from Wikipedia — our `DonnaBot/0.1 (+personal)` UA
+  is policy-compliant but Wikipedia's bot-blocker has gotten stricter.
+  Agent falls back to Tavily search + a non-Wikipedia fetch; answer
+  quality is fine but a better UA would restore direct Wikipedia access.
+- `send_update` caps text at 1500 chars; long-form answers get truncated.
+  Long outputs should be saved as an artifact with a pointer sent in the
+  update. Follow-up.
+
+---
+
 ## [0.2.0] — 2026-04-20 — v1.1 hardening + Python 3.14 + Corpus brief
 
 Three Codex review passes absorbed (defect, adversarial-challenge, Hermes

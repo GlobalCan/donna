@@ -91,3 +91,20 @@ All CRITICAL + HIGH + MEDIUM fixed in the first fix pass.
 
 - `facts.last_used_at` was mutated synchronously on the read path. Moved to a fire-and-forget asyncio task on a separate connection so `recall()` doesn't block on a write (`memory/facts.py`).
 - `traces` table had schema but no writer. Added `SqliteSpanProcessor` (`observability/trace_store.py`).
+
+## Phase 1 live-run pass (2026-04-22)
+
+First end-to-end run against real APIs surfaced three real bugs the in-process
+test suite couldn't catch. All fixed in v0.2.1 (see CHANGELOG).
+
+| # | Bug | Status | Where |
+|---|---|---|---|
+| P1-1 | `bot.loop.create_task` pre-start fails on discord.py 2.x | **FIXED** | `main.py` — `asyncio.create_task` inside async `_run()` |
+| P1-2 | Cross-process outbox (in-memory asyncio.Queue) — updates/asks/consent lost between bot + worker processes | **FIXED** | migration `0005`, `tools/communicate.py`, `security/consent.py`, `adapter/discord_adapter.py` — SQLite is now the outbox |
+| P1-3 | Chat mode's `final_text` orphaned — agent's answer never delivered to Discord | **FIXED** | `agent/loop.py::_enqueue_final_text` writes to `outbox_updates` on mode exit |
+
+### Open follow-ups from Phase 1 (not blocking)
+
+- **Wikipedia 403 on fetch_url** — `DonnaBot/0.1 (+personal)` UA is policy-compliant but Wikipedia has gotten stricter. Agent falls back to Tavily + non-Wikipedia source, so not blocking. Fix: beef up UA string with contact URL.
+- **1500-char truncation on send_update** — long-form summaries get cut mid-sentence. Real fix: save long outputs as artifact, update the agent prompt to send a pointer + short excerpt rather than full text.
+- **Other modes likely have the same orphaned-final-text hole.** Chat mode was fixed in `_run_chat`; grounded/speculative/debate each have their own exit path. Will surface when those modes' smoke tests run.
