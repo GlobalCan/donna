@@ -1,13 +1,19 @@
 """Discord adapter — message intake, outbox drain, reaction approvals, slash commands.
 
 - Intake: DMs + replies from the allowed user → insert a Job, reply with the job id
-- Outbox: drain ask_queue + update_queue + consent_queue; post into Discord
-- Reactions: watch for ✅ / ❌ on consent/ask messages
+- Outbox: poll outbox_updates / outbox_asks / pending_consents tables; post into Discord
+- Reactions: watch for ✅ / ❌ on consent messages; update pending_consents.approved
 - Slash commands: /status /cancel /history /budget /teach /ask /speculate /debate /trace etc.
+
+The outbox is DB-backed because donna.main and donna.worker are separate
+processes; asyncio.Queue cannot cross that boundary (v0.2.0 bug surfaced in
+Phase 1 live run, fixed by migration 0005 + this module).
 """
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from typing import Any
 
 import discord
@@ -20,11 +26,17 @@ from ..memory import threads as threads_mod
 from ..memory import cost as cost_mod
 from ..memory.db import connect, transaction
 from ..security import consent as consent_mod
-from ..tools import communicate as comm
+from ..tools import registry as tool_registry
 from ..types import JobMode, JobStatus
 from . import discord_ux
 
 log = get_logger(__name__)
+
+
+# DB poll cadence for outbox drains. 1s feels instant in Discord.
+_DRAIN_POLL_S = 1.0
+# Per-job rate limit for progress updates. Matches prior behavior.
+_UPDATE_RATE_LIMIT_S = 5.0
 
 
 class DonnaBot(discord.Client):
@@ -34,9 +46,6 @@ class DonnaBot(discord.Client):
         intents.dm_messages = True
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
-        self._pending_asks: dict[str, asyncio.Future[str]] = {}   # job_id -> reply future
-        self._consent_msgs: dict[int, consent_mod.ConsentRequest] = {}  # message_id -> request
-        self._ask_msgs: dict[int, comm.OutgoingAsk] = {}         # message_id -> ask
 
     # -- lifecycle --
     async def setup_hook(self) -> None:
@@ -49,13 +58,17 @@ class DonnaBot(discord.Client):
             await self.tree.sync()
         log.info("discord.setup_done")
 
-        # Start outbox drainers
-        self.loop.create_task(self._drain_updates())
-        self.loop.create_task(self._drain_consent())
-        self.loop.create_task(self._drain_asks())
+        # Start outbox drainers — all three poll SQLite tables
+        asyncio.create_task(self._drain_updates())
+        asyncio.create_task(self._drain_consent())
+        asyncio.create_task(self._drain_asks())
 
     async def on_ready(self) -> None:
-        log.info("discord.ready", user=str(self.user), user_id=self.user.id if self.user else None)
+        log.info(
+            "discord.ready",
+            user=str(self.user),
+            user_id=self.user.id if self.user else None,
+        )
 
     # -- message intake --
     async def on_message(self, message: discord.Message) -> None:
@@ -67,17 +80,33 @@ class DonnaBot(discord.Client):
         if message.guild is not None and not isinstance(message.channel, discord.Thread):
             return
 
-        # H3: If this message is a reply to a pending ask, resolve it —
-        # BUT only match asks that were posted in THIS channel/thread.
+        # H3: If this message is a reply to a pending ask in this channel,
+        # bind it to that ask via DB update. Matches by channel (same as the
+        # prior in-memory behavior) so any message in the channel where the
+        # ask was posted is treated as the answer.
         incoming_channel_id = message.channel.id
-        for mid, ask in list(self._ask_msgs.items()):
-            if ask.future.done():
-                self._ask_msgs.pop(mid, None)
-                continue
-            if ask.posted_channel_id == incoming_channel_id:
-                ask.future.set_result(message.content)
-                self._ask_msgs.pop(mid, None)
-                return
+        conn = connect()
+        try:
+            row = conn.execute(
+                "SELECT id FROM outbox_asks "
+                "WHERE posted_channel_id = ? AND reply IS NULL "
+                "ORDER BY created_at LIMIT 1",
+                (incoming_channel_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is not None:
+            conn = connect()
+            try:
+                with transaction(conn):
+                    conn.execute(
+                        "UPDATE outbox_asks SET reply = ?, replied_at = CURRENT_TIMESTAMP "
+                        "WHERE id = ? AND reply IS NULL",
+                        (message.content, row["id"]),
+                    )
+            finally:
+                conn.close()
+            return
 
         # Otherwise, treat as a new task
         content = (message.content or "").strip()
@@ -119,78 +148,228 @@ class DonnaBot(discord.Client):
 
         mid = payload.message_id
         emoji = str(payload.emoji)
+        if emoji not in ("✅", "❌"):
+            return
 
-        if mid in self._consent_msgs:
-            req = self._consent_msgs.pop(mid)
-            if not req.future.done():
-                req.future.set_result(emoji == "✅")
+        approved = 1 if emoji == "✅" else 0
+        conn = connect()
+        try:
+            with transaction(conn):
+                # Only set approval if not already decided, and only for a row
+                # whose Discord message matches. Prevents re-decision races.
+                conn.execute(
+                    "UPDATE pending_consents "
+                    "SET approved = ?, decided_at = CURRENT_TIMESTAMP "
+                    "WHERE posted_message_id = ? AND approved IS NULL",
+                    (approved, mid),
+                )
+        finally:
+            conn.close()
 
-    # -- outbox drainers --
+    # -- outbox drainers --------------------------------------------------
     async def _drain_updates(self) -> None:
-        q = comm.update_queue()
+        """Poll outbox_updates, post oldest first per job, DELETE after post."""
         last_sent: dict[str, float] = {}
         while True:
-            item = await q.get()
-            # rate-limit 1/5s per job
-            import time
-            now = time.time()
-            if now - last_sent.get(item.job_id, 0.0) < 5.0:
-                await asyncio.sleep(5.0 - (now - last_sent.get(item.job_id, 0.0)))
-            last_sent[item.job_id] = time.time()
-            await self._post_update(item)
+            await asyncio.sleep(_DRAIN_POLL_S)
+            conn = connect()
+            try:
+                rows = conn.execute(
+                    "SELECT id, job_id, text, tainted FROM outbox_updates "
+                    "ORDER BY created_at LIMIT 50"
+                ).fetchall()
+            finally:
+                conn.close()
 
-    async def _drain_consent(self) -> None:
-        q = consent_mod.consent_queue()
-        while True:
-            req = await q.get()
-            await self._post_consent_prompt(req)
+            for row in rows:
+                job_id = row["job_id"]
+                now = time.time()
+                wait = _UPDATE_RATE_LIMIT_S - (now - last_sent.get(job_id, 0.0))
+                if wait > 0:
+                    # Don't block the drainer on a single slow job — let other
+                    # jobs' updates go through; we'll come back next poll.
+                    continue
+                posted = await self._post_update(
+                    job_id=job_id, text=row["text"], tainted=bool(row["tainted"]),
+                )
+                if posted:
+                    last_sent[job_id] = time.time()
+                    conn = connect()
+                    try:
+                        with transaction(conn):
+                            conn.execute(
+                                "DELETE FROM outbox_updates WHERE id = ?",
+                                (row["id"],),
+                            )
+                    finally:
+                        conn.close()
 
     async def _drain_asks(self) -> None:
-        q = comm.ask_queue()
+        """Poll outbox_asks for unposted rows, post, record posted_* ids.
+
+        Replies are written by on_message; the worker polls for them.
+        We do NOT delete rows here — the worker deletes after reading.
+        """
         while True:
-            req = await q.get()
-            await self._post_ask(req)
+            await asyncio.sleep(_DRAIN_POLL_S)
+            conn = connect()
+            try:
+                rows = conn.execute(
+                    "SELECT id, job_id, question FROM outbox_asks "
+                    "WHERE posted_message_id IS NULL "
+                    "ORDER BY created_at LIMIT 10"
+                ).fetchall()
+            finally:
+                conn.close()
+            for row in rows:
+                await self._post_ask(
+                    ask_id=row["id"], job_id=row["job_id"], question=row["question"],
+                )
 
-    async def _post_update(self, item: comm.OutgoingUpdate) -> None:
-        ch = await self._resolve_channel_for_job(item.job_id)
+    async def _drain_consent(self) -> None:
+        """Poll pending_consents for undecided+unposted rows, post prompt."""
+        while True:
+            await asyncio.sleep(_DRAIN_POLL_S)
+            conn = connect()
+            try:
+                rows = conn.execute(
+                    "SELECT id, job_id, tool_name, arguments, tainted "
+                    "FROM pending_consents "
+                    "WHERE posted_message_id IS NULL AND approved IS NULL "
+                    "ORDER BY created_at LIMIT 10"
+                ).fetchall()
+            finally:
+                conn.close()
+            for row in rows:
+                entry = tool_registry.get(row["tool_name"])
+                if entry is None:
+                    log.warning(
+                        "consent.unknown_tool", tool_name=row["tool_name"],
+                        pending_id=row["id"],
+                    )
+                    # Auto-decline: the tool vanished between queue and drain.
+                    conn = connect()
+                    try:
+                        with transaction(conn):
+                            conn.execute(
+                                "UPDATE pending_consents SET approved = 0, "
+                                "decided_at = CURRENT_TIMESTAMP WHERE id = ?",
+                                (row["id"],),
+                            )
+                    finally:
+                        conn.close()
+                    continue
+                try:
+                    args = json.loads(row["arguments"])
+                except json.JSONDecodeError:
+                    args = {}
+                req = consent_mod.ConsentRequest(
+                    job_id=row["job_id"],
+                    tool_entry=entry,
+                    arguments=args,
+                    tainted=bool(row["tainted"]),
+                    pending_id=row["id"],
+                )
+                await self._post_consent_prompt(req)
+
+    async def _post_update(self, *, job_id: str, text: str, tainted: bool) -> bool:
+        ch = await self._resolve_channel_for_job(job_id)
         if ch is None:
-            return
-        prefix = "🔮 " if item.tainted else "• "
+            return False
+        prefix = "🔮 " if tainted else "• "
         try:
-            await ch.send(f"{prefix}{item.text[:1500]}")
+            await ch.send(f"{prefix}{text[:1500]}")
+            return True
         except Exception as e:  # noqa: BLE001
-            log.warning("discord.update_failed", error=str(e))
+            log.warning("discord.update_failed", error=str(e), job_id=job_id)
+            return False
 
-    async def _post_ask(self, req: comm.OutgoingAsk) -> None:
-        ch = await self._resolve_channel_for_job(req.job_id)
+    async def _post_ask(self, *, ask_id: str, job_id: str, question: str) -> None:
+        ch = await self._resolve_channel_for_job(job_id)
         if ch is None:
-            req.future.set_result("")
+            # Cannot resolve channel — abandon this ask.
+            conn = connect()
+            try:
+                with transaction(conn):
+                    conn.execute(
+                        "UPDATE outbox_asks SET reply = '', replied_at = CURRENT_TIMESTAMP "
+                        "WHERE id = ? AND reply IS NULL",
+                        (ask_id,),
+                    )
+            finally:
+                conn.close()
             return
         try:
             m = await ch.send(
-                f"❓ **Donna asks:**\n> {req.question}\n\n_Reply in this channel to answer._"
+                f"❓ **Donna asks:**\n> {question}\n\n_Reply in this channel to answer._"
             )
-            # H3: record where the ask was posted so reply matching is accurate
-            req.posted_channel_id = ch.id
-            self._ask_msgs[m.id] = req
+            conn = connect()
+            try:
+                with transaction(conn):
+                    conn.execute(
+                        "UPDATE outbox_asks SET posted_channel_id = ?, posted_message_id = ? "
+                        "WHERE id = ?",
+                        (ch.id, m.id, ask_id),
+                    )
+            finally:
+                conn.close()
         except Exception as e:  # noqa: BLE001
-            log.warning("discord.ask_failed", error=str(e))
-            req.future.set_result("")
+            log.warning("discord.ask_failed", error=str(e), ask_id=ask_id)
+            # Can't display — abandon.
+            conn = connect()
+            try:
+                with transaction(conn):
+                    conn.execute(
+                        "UPDATE outbox_asks SET reply = '', replied_at = CURRENT_TIMESTAMP "
+                        "WHERE id = ? AND reply IS NULL",
+                        (ask_id,),
+                    )
+            finally:
+                conn.close()
 
     async def _post_consent_prompt(self, req: consent_mod.ConsentRequest) -> None:
         ch = await self._resolve_channel_for_job(req.job_id)
         if ch is None:
-            req.future.set_result(False)
+            # Cannot display — auto-decline to unblock the worker.
+            conn = connect()
+            try:
+                with transaction(conn):
+                    conn.execute(
+                        "UPDATE pending_consents SET approved = 0, "
+                        "decided_at = CURRENT_TIMESTAMP WHERE id = ? AND approved IS NULL",
+                        (req.pending_id,),
+                    )
+            finally:
+                conn.close()
             return
         embed = discord_ux.consent_embed(req)
         try:
             msg = await ch.send(embed=embed)
             await msg.add_reaction("✅")
             await msg.add_reaction("❌")
-            self._consent_msgs[msg.id] = req
+            conn = connect()
+            try:
+                with transaction(conn):
+                    conn.execute(
+                        "UPDATE pending_consents "
+                        "SET posted_channel_id = ?, posted_message_id = ? "
+                        "WHERE id = ?",
+                        (ch.id, msg.id, req.pending_id),
+                    )
+            finally:
+                conn.close()
         except Exception as e:  # noqa: BLE001
-            log.warning("discord.consent_failed", error=str(e))
-            req.future.set_result(False)
+            log.warning("discord.consent_failed", error=str(e), pending_id=req.pending_id)
+            conn = connect()
+            try:
+                with transaction(conn):
+                    conn.execute(
+                        "UPDATE pending_consents SET approved = 0, "
+                        "decided_at = CURRENT_TIMESTAMP WHERE id = ? AND approved IS NULL",
+                        (req.pending_id,),
+                    )
+            finally:
+                conn.close()
 
     async def _resolve_channel_for_job(self, job_id: str) -> discord.abc.Messageable | None:
         conn = connect()

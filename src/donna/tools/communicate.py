@@ -1,75 +1,27 @@
-"""Communicate tools — ask_user, send_update. Plumbed through an outbox queue
-that the Discord adapter drains."""
+"""Communicate tools — ask_user, send_update.
+
+Outbox is persisted via SQLite (tables `outbox_updates`, `outbox_asks`)
+so the bot process can drain what the worker process wrote. In-memory
+asyncio.Queue objects cannot cross process boundaries; Donna runs bot
+and worker as separate processes in both local-dev and docker-compose.
+"""
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from typing import Any
 
+from ..logging import get_logger
+from ..memory import ids as ids_mod
+from ..memory.db import connect, transaction
 from .registry import tool
 
-
-@dataclass
-class OutgoingAsk:
-    job_id: str
-    question: str
-    future: asyncio.Future[str]
-    # Populated by the Discord adapter after posting: the channel/thread id
-    # where the question was actually shown. Used to match the user's reply
-    # back to the right pending ask (H3 fix).
-    posted_channel_id: int | None = None
+log = get_logger(__name__)
 
 
-@dataclass
-class OutgoingUpdate:
-    job_id: str
-    text: str
-    tainted: bool
-
-
-# Outbox queues filled by tools, drained by Discord adapter.
-_ask_queue: asyncio.Queue[OutgoingAsk] | None = None
-_update_queue: asyncio.Queue[OutgoingUpdate] | None = None
-
-
-def init_queues() -> None:
-    global _ask_queue, _update_queue
-    if _ask_queue is None:
-        _ask_queue = asyncio.Queue()
-    if _update_queue is None:
-        _update_queue = asyncio.Queue()
-
-
-def ask_queue() -> asyncio.Queue[OutgoingAsk]:
-    init_queues()
-    assert _ask_queue is not None
-    return _ask_queue
-
-
-def update_queue() -> asyncio.Queue[OutgoingUpdate]:
-    init_queues()
-    assert _update_queue is not None
-    return _update_queue
-
-
-@tool(
-    scope="communicate", cost="low",
-    description=(
-        "Pause and ask the user a clarifying question in Discord. Blocks the "
-        "job until they reply. Use when genuinely ambiguous — do NOT use to "
-        "rubber-stamp trivial assumptions."
-    ),
-)
-async def ask_user(question: str, job_id: str | None = None) -> dict[str, Any]:
-    if job_id is None:
-        return {"error": "ask_user requires job_id context"}
-    fut: asyncio.Future[str] = asyncio.get_event_loop().create_future()
-    await ask_queue().put(OutgoingAsk(job_id=job_id, question=question, future=fut))
-    try:
-        reply = await asyncio.wait_for(fut, timeout=1800)  # 30 min
-    except asyncio.TimeoutError:
-        return {"timeout": True, "reply": None}
-    return {"reply": reply, "timeout": False}
+# Polling interval when waiting for a user reply to ask_user.
+_ASK_POLL_INTERVAL_S = 2.0
+# Upper bound for ask_user (matches prior behavior).
+_ASK_TIMEOUT_S = 1800.0
 
 
 @tool(
@@ -87,5 +39,63 @@ async def send_update(
 ) -> dict[str, Any]:
     if job_id is None:
         return {"error": "send_update requires job_id context"}
-    await update_queue().put(OutgoingUpdate(job_id=job_id, text=text[:1500], tainted=tainted))
-    return {"queued": True}
+    uid = ids_mod.new_id("upd")
+    conn = connect()
+    try:
+        with transaction(conn):
+            conn.execute(
+                "INSERT INTO outbox_updates (id, job_id, text, tainted) VALUES (?, ?, ?, ?)",
+                (uid, job_id, text[:1500], 1 if tainted else 0),
+            )
+    finally:
+        conn.close()
+    return {"queued": True, "id": uid}
+
+
+@tool(
+    scope="communicate", cost="low",
+    description=(
+        "Pause and ask the user a clarifying question in Discord. Blocks the "
+        "job until they reply. Use when genuinely ambiguous — do NOT use to "
+        "rubber-stamp trivial assumptions."
+    ),
+)
+async def ask_user(question: str, job_id: str | None = None) -> dict[str, Any]:
+    if job_id is None:
+        return {"error": "ask_user requires job_id context"}
+    aid = ids_mod.new_id("ask")
+    conn = connect()
+    try:
+        with transaction(conn):
+            conn.execute(
+                "INSERT INTO outbox_asks (id, job_id, question) VALUES (?, ?, ?)",
+                (aid, job_id, question),
+            )
+    finally:
+        conn.close()
+
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + _ASK_TIMEOUT_S
+    try:
+        while loop.time() < deadline:
+            await asyncio.sleep(_ASK_POLL_INTERVAL_S)
+            conn = connect()
+            try:
+                row = conn.execute(
+                    "SELECT reply FROM outbox_asks WHERE id = ?", (aid,),
+                ).fetchone()
+            finally:
+                conn.close()
+            if row is None:
+                # Row was deleted externally — treat as abandon
+                return {"reply": None, "timeout": True}
+            if row["reply"] is not None:
+                return {"reply": row["reply"], "timeout": False}
+        return {"reply": None, "timeout": True}
+    finally:
+        conn = connect()
+        try:
+            with transaction(conn):
+                conn.execute("DELETE FROM outbox_asks WHERE id = ?", (aid,))
+        finally:
+            conn.close()

@@ -1,20 +1,19 @@
-"""Consent system — 4 modes (never / once_per_job / always / high_impact_always),
-Discord reaction approval flow with DB-persistent pending state (Codex #5 fix).
+"""Consent system — 4 modes (never / once_per_job / always / high_impact_always).
 
-Pending approvals are persisted to `pending_consents` + job.status is set
-to 'paused_awaiting_consent' so restarts can resume, re-prompt, and not
-silently drop the request."""
+All state lives in `pending_consents`. The worker INSERTs a row, then polls
+the `approved` column; the bot posts the prompt in Discord, records the
+message id on the row, and on reaction UPDATEs `approved`. This works
+across the bot/worker process boundary.
+"""
 from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
 from typing import Any
 
 from ..logging import get_logger
 from ..memory import ids as ids_mod
-from ..memory import jobs as jobs_mod
 from ..memory import permissions as perm_mod
 from ..memory.db import connect, transaction
 from ..types import ConfirmationMode, JobStatus, ToolEntry
@@ -25,12 +24,18 @@ log = get_logger(__name__)
 
 @dataclass
 class ConsentRequest:
+    """Transfer object for the Discord adapter's post method.
+
+    Kept as a dataclass (not a dict) so type-hints and `consent_embed()`
+    access the same shape whether built from a DB row or constructed in-test.
+    `pending_id` is the `pending_consents.id` — the primary key the
+    reaction handler uses to record the decision.
+    """
     job_id: str
     tool_entry: ToolEntry
     arguments: dict[str, Any]
     tainted: bool
-    future: asyncio.Future[bool]
-    pending_id: str | None = None   # row id in pending_consents, for cleanup
+    pending_id: str
 
 
 @dataclass
@@ -39,20 +44,10 @@ class ConsentResult:
     reason: str = ""
 
 
-# Outbox queue drained by Discord adapter
-_consent_queue: asyncio.Queue[ConsentRequest] | None = None
-
-
-def init_queue() -> None:
-    global _consent_queue
-    if _consent_queue is None:
-        _consent_queue = asyncio.Queue()
-
-
-def consent_queue() -> asyncio.Queue[ConsentRequest]:
-    init_queue()
-    assert _consent_queue is not None
-    return _consent_queue
+# Polling interval the worker uses while waiting for the user's reaction.
+_POLL_INTERVAL_S = 2.0
+# Matches prior behavior.
+_CONSENT_TIMEOUT_S = 1800.0
 
 
 async def check(
@@ -76,41 +71,45 @@ async def check(
         finally:
             conn.close()
         # Fall through to prompt
-    # ALWAYS or HIGH_IMPACT_ALWAYS: always prompt; don't honor existing grants for HIGH_IMPACT
 
-    # Persist pending state BEFORE enqueuing so restarts can recover
+    # Persist pending state. The bot's drain task will pick this up and post.
     pending_id = _persist_pending(
         job_id=job_id, tool_name=entry.name, arguments=arguments, tainted=tainted,
     )
 
-    fut: asyncio.Future[bool] = asyncio.get_event_loop().create_future()
-    await consent_queue().put(
-        ConsentRequest(
-            job_id=job_id, tool_entry=entry, arguments=arguments,
-            tainted=tainted, future=fut, pending_id=pending_id,
-        )
-    )
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + _CONSENT_TIMEOUT_S
     try:
-        approved = await asyncio.wait_for(fut, timeout=1800)  # 30 min
-    except asyncio.TimeoutError:
+        while loop.time() < deadline:
+            await asyncio.sleep(_POLL_INTERVAL_S)
+            conn = connect()
+            try:
+                row = conn.execute(
+                    "SELECT approved FROM pending_consents WHERE id = ?",
+                    (pending_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+            if row is None:
+                return ConsentResult(approved=False, reason="cleared")
+            if row["approved"] is not None:
+                approved = bool(row["approved"])
+                if approved and mode == ConfirmationMode.ONCE_PER_JOB:
+                    conn = connect()
+                    try:
+                        perm_mod.insert_grant(
+                            conn, job_id=job_id, tool_name=entry.name, scope="job",
+                        )
+                    finally:
+                        conn.close()
+                return ConsentResult(
+                    approved=approved,
+                    reason="user approved" if approved else "user declined",
+                )
+        return ConsentResult(approved=False, reason="timeout")
+    finally:
         _clear_pending(pending_id)
         _resume_job_status(job_id)
-        return ConsentResult(approved=False, reason="timeout")
-
-    _clear_pending(pending_id)
-    _resume_job_status(job_id)
-
-    if approved and mode == ConfirmationMode.ONCE_PER_JOB:
-        conn = connect()
-        try:
-            perm_mod.insert_grant(conn, job_id=job_id, tool_name=entry.name, scope="job")
-        finally:
-            conn.close()
-
-    return ConsentResult(
-        approved=approved,
-        reason="user approved" if approved else "user declined",
-    )
 
 
 # ---------- persistence helpers --------------------------------------------
@@ -175,7 +174,8 @@ def list_unresolved_pendings() -> list[dict]:
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT id, job_id, tool_name, arguments, tainted, created_at "
+            "SELECT id, job_id, tool_name, arguments, tainted, created_at, "
+            "posted_channel_id, posted_message_id "
             "FROM pending_consents ORDER BY created_at"
         ).fetchall()
     finally:
