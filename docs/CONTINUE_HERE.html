@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Donna — Continue on New Laptop</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #121519;
+    --panel-2: #161a20;
+    --border: #252a31;
+    --text: #e6e8eb;
+    --muted: #8a93a0;
+    --accent: #7cc4ff;
+    --accent-hot: #a6e1ff;
+    --ok: #6ee7b7;
+    --warn: #fbbf24;
+    --danger: #f87171;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #fbfbfd;
+      --panel: #ffffff;
+      --panel-2: #f4f6f9;
+      --border: #dfe3e8;
+      --text: #1a1d21;
+      --muted: #5a6270;
+      --accent: #0b6fcc;
+      --accent-hot: #084a90;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: var(--sans); line-height: 1.55; -webkit-font-smoothing: antialiased; }
+  main { max-width: 820px; margin: 0 auto; padding: 48px 24px 96px; }
+  header h1 { font-size: 32px; margin: 0 0 8px; letter-spacing: -0.02em; }
+  header p.lede { color: var(--muted); margin: 0 0 32px; font-size: 17px; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 24px 28px; margin: 20px 0; }
+  section h2 { margin: 0 0 16px; font-size: 20px; letter-spacing: -0.01em; }
+  section p { margin: 8px 0; }
+  ul, ol { padding-left: 22px; margin: 8px 0; }
+  li { margin: 6px 0; }
+  code, pre { font-family: var(--mono); }
+  code { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; font-size: 0.92em; }
+  pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-x: auto; margin: 12px 0; font-size: 13.5px; line-height: 1.5; }
+  .step-num { display: inline-block; min-width: 28px; height: 28px; line-height: 28px; text-align: center; background: var(--accent); color: var(--bg); border-radius: 50%; font-weight: 600; font-size: 14px; margin-right: 10px; }
+  .prompt-wrapper { position: relative; }
+  .copy-btn { position: absolute; top: 12px; right: 12px; background: var(--accent); color: var(--bg); border: none; border-radius: 6px; padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s ease; font-family: var(--sans); }
+  .copy-btn:hover { background: var(--accent-hot); }
+  .copy-btn.copied { background: var(--ok); }
+  .big-copy { display: block; width: 100%; padding: 16px; font-size: 16px; font-weight: 600; background: var(--accent); color: var(--bg); border: none; border-radius: 8px; cursor: pointer; margin-bottom: 16px; font-family: var(--sans); transition: all 0.15s ease; }
+  .big-copy:hover { background: var(--accent-hot); }
+  .big-copy.copied { background: var(--ok); }
+  .hint { color: var(--muted); font-size: 13px; font-style: italic; }
+  .warn-box { background: rgba(251, 191, 36, 0.08); border: 1px solid var(--warn); border-radius: 8px; padding: 12px 16px; margin: 12px 0; color: var(--text); }
+  .warn-box strong { color: var(--warn); }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; transition: border 0.15s; }
+  a:hover { border-bottom-color: var(--accent); }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; margin: 12px 0; font-size: 14px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+  .footer { margin-top: 48px; text-align: center; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>Donna — Continue on New Laptop</h1>
+  <p class="lede">Paste the prompt below into Claude Code on your other laptop. The new session will clone the repo, orient itself, and walk you through Phase 1 (first live run).</p>
+</header>
+
+<section>
+  <h2><span class="step-num">1</span>Install prerequisites on the new laptop</h2>
+  <p>In PowerShell, check what you already have:</p>
+  <pre>py -3.14 --version
+git --version</pre>
+  <p>If either fails, install:</p>
+  <ul>
+    <li><strong>Python 3.14</strong> from <a href="https://www.python.org/downloads/">python.org/downloads</a> &mdash; during install, check "Add python.exe to PATH" and "Install launcher for all users". <strong>Not</strong> the Microsoft Store version (it sandboxes site-packages).</li>
+    <li><strong>Git</strong> from <a href="https://git-scm.com/download/win">git-scm.com/download/win</a> &mdash; defaults are fine.</li>
+    <li><strong>Claude Code</strong> (if not installed): <code>npm install -g @anthropic-ai/claude-code</code>, then run <code>claude</code> and log in.</li>
+  </ul>
+</section>
+
+<section>
+  <h2><span class="step-num">2</span>Copy this prompt &rarr; paste into Claude Code</h2>
+  <p>Click the button, then paste as your first message in a new Claude Code session on the new laptop:</p>
+  <button class="big-copy" id="bigCopy">Copy prompt to clipboard</button>
+  <div class="prompt-wrapper">
+    <button class="copy-btn" id="smallCopy">Copy</button>
+    <pre id="promptBlock">Hi Claude. I'm continuing work on a project called Donna that I've been building with another Claude Code session on a different laptop. I'm switching to this laptop for a live test. You're starting fresh &mdash; no conversation history &mdash; but every decision and every line of code is in a GitHub repo I'm about to have you clone. Your job is to walk me through Phase 1 (the first live run) without re-designing anything.
+
+Step 1 &mdash; Orient yourself (mandatory, do this before anything else):
+1. In PowerShell: py -3.14 --version &rarr; must print Python 3.14.x
+2. git --version &rarr; must succeed
+3. If both pass:
+   mkdir C:\dev -Force
+   cd C:\dev
+   git clone https://github.com/GlobalCan/donna.git
+   cd donna
+4. Read these files in this exact order:
+   - docs/LIVE_RUN_SETUP.md (primary walkthrough)
+   - docs/SESSION_RESUME.md (state snapshot)
+   - CHANGELOG.md (build history)
+   - README.md (project overview)
+5. Confirm orientation: one paragraph covering what Donna is, what's built, what Phase 1 is, and what's out of scope.
+
+Step 2 &mdash; Mission: walk me through Phase 1 per docs/LIVE_RUN_SETUP.md. Don't deviate, don't redesign.
+  - Run .\scripts\setup_local.ps1 (expect 60 passed)
+  - Walk me through account signups: Anthropic, Discord (MESSAGE CONTENT intent ON), Tavily, Voyage
+  - Help me fill .env, verify with: python -c "from donna.config import settings; settings()"
+  - Terminal 1: python -m donna.main;  Terminal 2: python -m donna.worker
+  - Four smoke tests: happy path, ops CLI, taint propagation, consent. One at a time.
+
+Pause after each checkpoint. Don't batch.
+
+Out of scope for you:
+- Corpus work (that's a separate session &mdash; if I mention it, point me at docs/CORPUS_BRIEF.md but don't start it)
+- Droplet deploy (Phase 2)
+- Architecture redesign &mdash; the code survived three Codex adversarial passes; if something feels off, ask before "improving"
+- New features &mdash; Phase 1 is proving what exists works
+
+User preferences (just follow them, don't mention them):
+- Completeness standard: do the whole thing right, no workarounds
+- Confidence-first: if below 0.7 confident, ask before guessing
+- Evidence-based: show output, not "should work"
+- Never claim done without proof (tests run, output shown, state verified)
+
+Brain context auto-loads from OneDrive via the SessionStart hook if OneDrive is synced. If that context didn't appear at session start, tell me.
+
+Start Step 1 now.</pre>
+  </div>
+  <p class="hint">If the copy button doesn't work (some email clients strip JavaScript): triple-click the text above to select it all, then <code>Ctrl+C</code>.</p>
+</section>
+
+<section>
+  <h2><span class="step-num">3</span>Key links if something goes wrong</h2>
+  <dl class="kv">
+    <dt>GitHub repo</dt><dd><a href="https://github.com/GlobalCan/donna">github.com/GlobalCan/donna</a></dd>
+    <dt>Full setup guide</dt><dd><a href="https://github.com/GlobalCan/donna/blob/main/docs/LIVE_RUN_SETUP.md">docs/LIVE_RUN_SETUP.md</a></dd>
+    <dt>Bootstrap doc (this page as markdown)</dt><dd><a href="https://github.com/GlobalCan/donna/blob/main/docs/CONTINUE_HERE.md">docs/CONTINUE_HERE.md</a></dd>
+    <dt>State snapshot</dt><dd><a href="https://github.com/GlobalCan/donna/blob/main/docs/SESSION_RESUME.md">docs/SESSION_RESUME.md</a></dd>
+    <dt>Build history</dt><dd><a href="https://github.com/GlobalCan/donna/blob/main/CHANGELOG.md">CHANGELOG.md</a></dd>
+  </dl>
+</section>
+
+<section>
+  <h2><span class="step-num">4</span>Troubleshooting quick-reference</h2>
+  <div class="warn-box">
+    <strong>PowerShell won't run the script:</strong><br>
+    <code>Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned</code>
+  </div>
+  <div class="warn-box">
+    <strong>Bot connects but DMs do nothing:</strong><br>
+    MESSAGE CONTENT intent not enabled in Discord Developer Portal. Go to your bot's page &rarr; Bot &rarr; Privileged Gateway Intents &rarr; enable it &rarr; Save Changes &rarr; restart <code>donna.main</code>.
+  </div>
+  <div class="warn-box">
+    <strong>401 Unauthorized from Anthropic:</strong><br>
+    Billing not enabled on the Anthropic account. Add a card at <a href="https://console.anthropic.com/settings/billing">console.anthropic.com/settings/billing</a>.
+  </div>
+  <div class="warn-box">
+    <strong>The docs the new session needs aren't there:</strong><br>
+    Run <code>git pull</code> inside the repo &mdash; commits may have landed since cloning.
+  </div>
+  <div class="warn-box">
+    <strong>Totally stuck:</strong><br>
+    Paste the error into the old Claude Code session on the first laptop. It has the full context.
+  </div>
+</section>
+
+<div class="footer">
+  Donna &middot; v1.1 &middot; Python 3.14 &middot; 60/60 tests green &middot; ready for Phase 1 live run<br>
+  Last updated: 2026-04-22
+</div>
+
+</main>
+
+<script>
+  function copyPrompt(btn) {
+    const text = document.getElementById('promptBlock').textContent;
+    const orig = btn.textContent;
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = '\u2713 Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 2500);
+      }).catch(() => fallbackCopy(text, btn, orig));
+    } else {
+      fallbackCopy(text, btn, orig);
+    }
+  }
+  function fallbackCopy(text, btn, orig) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy');
+      btn.textContent = '\u2713 Copied!';
+      btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 2500);
+    } catch (e) {
+      btn.textContent = 'Copy failed &mdash; triple-click the text';
+    }
+    document.body.removeChild(ta);
+  }
+  document.getElementById('bigCopy').addEventListener('click', function() { copyPrompt(this); });
+  document.getElementById('smallCopy').addEventListener('click', function() { copyPrompt(this); });
+</script>
+
+</body>
+</html>
