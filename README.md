@@ -8,28 +8,35 @@ See [`docs/PLAN.md`](docs/PLAN.md) for the full architectural plan.
 
 ## Quick start (local dev)
 
+**New machine? Follow [`docs/LIVE_RUN_SETUP.md`](docs/LIVE_RUN_SETUP.md)** — full walkthrough including account provisioning and smoke tests. The short version:
+
+```powershell
+# Windows (PowerShell)
+git clone https://github.com/GlobalCan/donna.git C:\dev\donna
+cd C:\dev\donna
+.\scripts\setup_local.ps1     # idempotent: venv + deps + migrations + tests
+notepad .env                   # fill in 6 required keys (see LIVE_RUN_SETUP.md §2)
+
+# Terminal 1
+.\.venv\Scripts\Activate.ps1
+python -m donna.main
+
+# Terminal 2
+.\.venv\Scripts\Activate.ps1
+python -m donna.worker
+```
+
 ```bash
-# 1. Clone + install
-git clone git@github.com:GlobalCan/donna.git
+# Linux/macOS (no bootstrap script yet; follow LIVE_RUN_SETUP.md manually)
+git clone https://github.com/GlobalCan/donna.git
 cd donna
-python3.12 -m venv .venv && . .venv/Scripts/activate  # Windows
-# or:  source .venv/bin/activate                      # Linux/macOS
+python3.14 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-
-# 2. Copy env template, fill in keys
-cp .env.example .env
-# edit .env with your Anthropic / Discord / Tavily / Voyage keys
-
-# 3. Run migrations
+cp .env.example .env && $EDITOR .env
 alembic upgrade head
-
-# 4. Smoke test (no live APIs)
-pytest tests/
-
-# 5. Run the bot (requires real keys)
-python -m donna.main          # Discord adapter + orchestrator
-# in another terminal:
-python -m donna.worker        # job worker
+pytest                         # expect 60 passed
+python -m donna.main           # Terminal 1
+python -m donna.worker         # Terminal 2
 ```
 
 ## Production (droplet)
