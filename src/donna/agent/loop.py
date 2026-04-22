@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from ..config import settings
 from ..logging import get_logger
+from ..memory import ids as ids_mod
+from ..memory.db import connect, transaction
 from ..tools.registry import anthropic_tool_defs
 from ..types import JobMode, ModelTier
 from .compose import compose_system
@@ -85,6 +87,33 @@ async def _run_chat(ctx: JobContext) -> None:
             f"answer. Partial progress saved. Tool calls used: {ctx.state.tool_calls_count}."
         )
         ctx.state.done = True
+
+    # Deliver the final answer to Discord. The agent's `end_turn` text would
+    # otherwise sit in job state forever; the bot only drains outbox_updates.
+    _enqueue_final_text(ctx)
+
+
+def _enqueue_final_text(ctx: JobContext) -> None:
+    """Persist the chat-mode final answer as an outbox_updates row so the
+    bot drains it to Discord. No-op on empty text."""
+    text = (ctx.state.final_text or "").strip()
+    if not text:
+        return
+    conn = connect()
+    try:
+        with transaction(conn):
+            conn.execute(
+                "INSERT INTO outbox_updates (id, job_id, text, tainted) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    ids_mod.new_id("upd"),
+                    ctx.state.job_id,
+                    text[:1500],
+                    1 if ctx.state.tainted else 0,
+                ),
+            )
+    finally:
+        conn.close()
 
 
 async def _load_scoped_context(scope: str, task: str):

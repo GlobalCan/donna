@@ -246,6 +246,67 @@ def test_consent_check_returns_on_approval(monkeypatch: pytest.MonkeyPatch) -> N
     assert job_row["status"] == "running"
 
 
+# ---------- chat mode posts final_text to outbox ---------------------------
+
+
+@pytest.mark.usefixtures("fresh_db")
+def test_enqueue_final_text_writes_outbox_row() -> None:
+    """_run_chat must push its final_text into outbox_updates so the bot
+    drains it. Without this, the LLM's end_turn answer is never delivered."""
+    from donna.agent import loop as loop_mod
+
+    class _FakeState:
+        def __init__(self, jid: str) -> None:
+            self.job_id = jid
+            self.final_text = "Mark Twain summary here."
+            self.tainted = True
+
+    class _FakeCtx:
+        def __init__(self, jid: str) -> None:
+            self.state = _FakeState(jid)
+
+    jid = _make_job()
+    loop_mod._enqueue_final_text(_FakeCtx(jid))
+
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT text, tainted FROM outbox_updates WHERE job_id = ?", (jid,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["text"] == "Mark Twain summary here."
+    assert row["tainted"] == 1
+
+
+@pytest.mark.usefixtures("fresh_db")
+def test_enqueue_final_text_skips_empty() -> None:
+    from donna.agent import loop as loop_mod
+
+    class _FakeState:
+        def __init__(self, jid: str) -> None:
+            self.job_id = jid
+            self.final_text = "   "  # whitespace only
+            self.tainted = False
+
+    class _FakeCtx:
+        def __init__(self, jid: str) -> None:
+            self.state = _FakeState(jid)
+
+    jid = _make_job()
+    loop_mod._enqueue_final_text(_FakeCtx(jid))
+
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM outbox_updates WHERE job_id = ?", (jid,),
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 0
+
+
 # ---------- migration 0005 schema shape ------------------------------------
 
 
