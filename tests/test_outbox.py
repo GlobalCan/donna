@@ -11,8 +11,20 @@ import json
 
 import pytest
 
+from donna.memory import jobs as jobs_mod
 from donna.memory.db import connect, transaction
 from donna.types import ConfirmationMode, ToolEntry
+
+
+def _make_job(task: str = "t") -> str:
+    """Insert a minimal job row; outbox tables FK to jobs(id)."""
+    conn = connect()
+    try:
+        with transaction(conn):
+            jid = jobs_mod.insert_job(conn, task=task)
+    finally:
+        conn.close()
+    return jid
 
 
 # ---------- send_update: INSERTs into outbox_updates -----------------------
@@ -23,8 +35,9 @@ def test_send_update_persists_row() -> None:
     """send_update writes to DB, not an in-memory queue."""
     from donna.tools import communicate as comm
 
+    jid = _make_job()
     result = asyncio.run(
-        comm.send_update(text="hello", job_id="job_test_abc", tainted=False)
+        comm.send_update(text="hello", job_id=jid, tainted=False)
     )
     assert result["queued"] is True
 
@@ -36,7 +49,7 @@ def test_send_update_persists_row() -> None:
     finally:
         conn.close()
     assert len(rows) == 1
-    assert rows[0]["job_id"] == "job_test_abc"
+    assert rows[0]["job_id"] == jid
     assert rows[0]["text"] == "hello"
     assert rows[0]["tainted"] == 0
 
@@ -45,8 +58,9 @@ def test_send_update_persists_row() -> None:
 def test_send_update_truncates_long_text() -> None:
     from donna.tools import communicate as comm
 
+    jid = _make_job()
     long_text = "x" * 5000
-    asyncio.run(comm.send_update(text=long_text, job_id="job_trim"))
+    asyncio.run(comm.send_update(text=long_text, job_id=jid))
     conn = connect()
     try:
         row = conn.execute("SELECT text FROM outbox_updates").fetchone()
@@ -75,9 +89,11 @@ def test_ask_user_returns_reply_from_db(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(comm, "_ASK_POLL_INTERVAL_S", 0.05)
     monkeypatch.setattr(comm, "_ASK_TIMEOUT_S", 5.0)
 
+    jid = _make_job()
+
     async def scenario() -> dict:
         ask_task = asyncio.create_task(
-            comm.ask_user(question="what's your name?", job_id="job_ask_1")
+            comm.ask_user(question="what's your name?", job_id=jid)
         )
 
         # Wait for the row to appear, then simulate the bot writing a reply.
@@ -86,7 +102,7 @@ def test_ask_user_returns_reply_from_db(monkeypatch: pytest.MonkeyPatch) -> None
             conn = connect()
             try:
                 row = conn.execute(
-                    "SELECT id FROM outbox_asks WHERE job_id = ?", ("job_ask_1",),
+                    "SELECT id FROM outbox_asks WHERE job_id = ?", (jid,),
                 ).fetchone()
             finally:
                 conn.close()
@@ -113,7 +129,7 @@ def test_ask_user_returns_reply_from_db(monkeypatch: pytest.MonkeyPatch) -> None
     conn = connect()
     try:
         row = conn.execute("SELECT id FROM outbox_asks WHERE job_id = ?",
-                            ("job_ask_1",)).fetchone()
+                            (jid,)).fetchone()
     finally:
         conn.close()
     assert row is None
@@ -126,14 +142,15 @@ def test_ask_user_timeout_cleans_up_row(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(comm, "_ASK_POLL_INTERVAL_S", 0.05)
     monkeypatch.setattr(comm, "_ASK_TIMEOUT_S", 0.3)
 
-    result = asyncio.run(comm.ask_user(question="?", job_id="job_ask_timeout"))
+    jid = _make_job()
+    result = asyncio.run(comm.ask_user(question="?", job_id=jid))
     assert result["timeout"] is True
     assert result["reply"] is None
 
     conn = connect()
     try:
         row = conn.execute(
-            "SELECT id FROM outbox_asks WHERE job_id = ?", ("job_ask_timeout",),
+            "SELECT id FROM outbox_asks WHERE job_id = ?", (jid,),
         ).fetchone()
     finally:
         conn.close()
