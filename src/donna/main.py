@@ -54,8 +54,8 @@ async def _run() -> None:
         await bot.wait_until_ready()
         await ops_watchdog.loop(interval_seconds=300)
 
-    bot.loop.create_task(_budget_loop())
-    bot.loop.create_task(_watchdog_loop())
+    asyncio.create_task(_budget_loop())
+    asyncio.create_task(_watchdog_loop())
 
     await bot.start(s.discord_bot_token)
 
