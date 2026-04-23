@@ -4,4 +4,4 @@ creation_rules:
     # Losing either leaves the other able to decrypt. Losing both makes
     # every committed encrypted secret unreadable — rotate providers.
     age: >-
-      age1txwts2pk99ywrkhhj4clm2xgx74vm9nr3427j09txcnsxvn584zsgjy2ar,age10crnx6pxt4fqrxryx2r7rqjthjx4uj08mxwc3t6cevw7sps2u9jsaaurdz
+      age1txwts2pk99ywrkhhj4clm2xgx74vm9nr3427j09txcnsxvn584zsgjy2ar,age155ljcfqv67mm9ras7j2pmgc03dffq3d4kt9r3j7qcfktm0uaefvqma5pmt
