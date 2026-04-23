@@ -131,9 +131,20 @@ async def fetch_url(
     format: Literal["text", "markdown"] = "markdown",
     job_id: str | None = None,
 ) -> dict[str, Any]:
+    # Wikipedia's user-agent policy requires name/version with a real URL
+    # contact marker in parens (not a free-text tag like "+personal"), and
+    # browser-typical Accept headers. The prior UA `DonnaBot/0.1 (+personal)`
+    # got 403s on en.wikipedia.org.
     async with httpx.AsyncClient(
         timeout=30.0, follow_redirects=True,
-        headers={"User-Agent": "DonnaBot/0.1 (+personal)"},
+        headers={
+            "User-Agent": (
+                "Donna/0.2 (+https://github.com/GlobalCan/donna; "
+                "solo-operator personal AI assistant) httpx"
+            ),
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
     ) as client:
         resp = await client.get(url)
         resp.raise_for_status()
