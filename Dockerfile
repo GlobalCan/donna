@@ -31,6 +31,11 @@ COPY pyproject.toml README.md ./
 COPY src/ ./src/
 RUN pip install --no-cache-dir -e .
 
+# Alembic config + migration scripts — needed so `alembic upgrade head`
+# works inside the container at first deploy and after schema changes.
+COPY alembic.ini ./
+COPY migrations/ ./migrations/
+
 # Entrypoint decrypts sops secrets if present, then exec's the command
 COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
