@@ -27,7 +27,7 @@ if (-not (Test-Path $KeyPath)) {
 
 New-Item -ItemType Directory -Force -Path $LocalDir | Out-Null
 
-$stamp = Get-Date -Format 'yyyyMMdd-HHmmss' -AsUTC
+$stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
 $localFile = Join-Path $LocalDir "donna-$stamp.tar.gz"
 
 Write-Host "[$(Get-Date -Format o)] pulling $Remote -> $localFile"
