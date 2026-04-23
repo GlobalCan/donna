@@ -47,6 +47,10 @@ async def _run_chat(ctx: JobContext) -> None:
     task = ctx.job.task
 
     while not ctx.state.done and ctx.state.tool_calls_count < max_tool_calls:
+        # Check user-initiated cancellation between iterations. Raises
+        # JobCancelled which the context manager catches + checkpoints.
+        ctx.check_cancelled()
+
         # Shared primitive: compaction
         await ctx.maybe_compact()
 

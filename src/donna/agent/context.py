@@ -40,6 +40,12 @@ class LeaseLost(Exception):
     """Worker attempted a guarded write and found it has lost ownership."""
 
 
+class JobCancelled(Exception):
+    """User flipped the job to CANCELLED via /cancel or botctl.
+    Mode handlers catch this between steps to tear down cleanly without
+    finalizing to DONE."""
+
+
 class JobContext:
     """Shared primitives for a single job's execution.
 
@@ -87,6 +93,16 @@ class JobContext:
                     raise LeaseLost(job_id)
         except LeaseLost:
             log.error("agent.job.lease_lost_aborted", job_id=job_id, worker_id=worker_id)
+        except JobCancelled:
+            # User flipped status to CANCELLED via /cancel. Don't try to
+            # finalize to DONE — the cancel path already set the terminal
+            # state. Just checkpoint the partial state and exit cleanly.
+            log.info("agent.job.cancelled", job_id=job_id, worker_id=worker_id)
+            try:
+                ctx.checkpoint()
+            except Exception as e:  # noqa: BLE001
+                log.warning("agent.job.cancelled_checkpoint_failed",
+                            job_id=job_id, error=str(e))
         finally:
             ctx.stop_hb.set()
             if ctx.hb_task:
@@ -94,6 +110,21 @@ class JobContext:
                     await asyncio.wait_for(ctx.hb_task, timeout=2.0)
                 except TimeoutError:
                     ctx.hb_task.cancel()
+
+    # -- cancellation check ---------------------------------------------------
+    def check_cancelled(self) -> None:
+        """Raise JobCancelled if the user flipped this job to CANCELLED.
+        Modes should call this between model_step / tool_step iterations so
+        /cancel is effective mid-run, not just between end_turns."""
+        conn = connect()
+        try:
+            row = conn.execute(
+                "SELECT status FROM jobs WHERE id = ?", (self.job.id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row and row["status"] == JobStatus.CANCELLED.value:
+            raise JobCancelled(self.job.id)
 
     # -- model step -----------------------------------------------------------
     async def model_step(

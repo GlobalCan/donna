@@ -183,10 +183,24 @@ def get_job(conn: sqlite3.Connection, job_id: str) -> Job | None:
     return _row_to_job(row)
 
 
-def recent_jobs(conn: sqlite3.Connection, limit: int = 25) -> list[Job]:
-    rows = conn.execute(
-        "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
-    ).fetchall()
+def recent_jobs(
+    conn: sqlite3.Connection,
+    limit: int = 25,
+    since: timedelta | None = None,
+) -> list[Job]:
+    """Return recent jobs, optionally filtered to those created within the
+    last `since` window. Ordering is newest-first."""
+    if since is None:
+        rows = conn.execute(
+            "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+    else:
+        cutoff = datetime.now(UTC) - since
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE created_at >= ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (cutoff, limit),
+        ).fetchall()
     return [_row_to_job(r) for r in rows]
 
 

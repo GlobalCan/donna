@@ -96,6 +96,8 @@ async def _debate_core(
                 "claim, quote their exact prior text."
             )
 
+            if ctx is not None:
+                ctx.check_cancelled()
             with otel.span("debate.turn", **{
                 "debate.scope": scope, "debate.round": r + 1,
                 "agent.job.id": ctx.job.id if ctx else None,

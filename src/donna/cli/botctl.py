@@ -38,12 +38,31 @@ app.add_typer(traces_app, name="traces")
 console = Console()
 
 
+def _parse_since(s: str) -> timedelta | None:
+    """Parse '1d' / '3h' / '30m' / '1w' into a timedelta. Returns None on 'all'."""
+    if not s or s == "all":
+        return None
+    unit = s[-1].lower()
+    try:
+        qty = int(s[:-1] or "1")
+    except ValueError:
+        return None
+    factor = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}.get(unit)
+    if factor is None:
+        return None
+    return timedelta(**{factor: qty})
+
+
 @app.command()
-def jobs(since: str = typer.Option("1d", help="'1d', '1h', or '30m'"), limit: int = 25) -> None:
-    """Recent jobs."""
+def jobs(
+    since: str = typer.Option("1d", help="'30m' | '3h' | '1d' | '1w' | 'all'"),
+    limit: int = 25,
+) -> None:
+    """Recent jobs (newest first), optionally filtered by `--since`."""
+    window = _parse_since(since)
     conn = connect()
     try:
-        rows = jobs_mod.recent_jobs(conn, limit=limit)
+        rows = jobs_mod.recent_jobs(conn, limit=limit, since=window)
     finally:
         conn.close()
     t = Table("id", "status", "mode", "scope", "tools", "$", "tainted", "task")
