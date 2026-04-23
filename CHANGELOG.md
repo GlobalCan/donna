@@ -1,5 +1,129 @@
 # Changelog
 
+## [0.3.0] — 2026-04-23 — Phase 2 production deploy
+
+First real deployment to the DigitalOcean droplet. `ghcr.io/globalcan/donna:latest` is live; bot answering DMs at
+`Donna#3183` with sops-encrypted secrets, SQLite at `/data/donna/donna.db`, and
+the four `docs/LIVE_RUN_SETUP.md` smoke tests green end-to-end. Phase 2 surfaced
+a batch of production-only bugs that the offline suite + Phase 1 localhost run
+couldn't catch.
+
+### Fixed — deploy pipeline
+
+- **`scripts/harden-droplet.sh` dpkg-lock race** — `dpkg-reconfigure
+  --priority=low unattended-upgrades` in step [4/9] kicked off an immediate
+  upgrade run that held `/var/lib/dpkg/lock-frontend` for ~2 min, which then
+  blocked step [5/9]'s docker installer. With `set -eo pipefail` the whole
+  script aborted, leaving sshd already hardened to `AllowUsers bot` but `bot`
+  with no password → catch-22 until droplet rebuild. Fix: replace the
+  `dpkg-reconfigure` with a direct write of `/etc/apt/apt.conf.d/20auto-upgrades`
+  (same end state, no upgrade-run side effect), plus a defensive
+  `wait_for_apt_lock` helper before each apt/dpkg call.
+- **`.sops.yaml` creation rule on Windows sops 3.12** — sops 3.12 under Windows
+  fails to match the `secrets/.*\.enc\.yaml$` path_regex against the
+  `--filename-override secrets/prod.enc.yaml` argument even though 3.9.1 on
+  Linux matches it fine. Documented a `rename .sops.yaml .sops.yaml.bak`
+  bypass using explicit `--age` recipients for encryption. Follow-up: make the
+  path_regex slash-separator agnostic.
+- **Docs: `sops -e file > out` command was wrong** — sops matches the
+  path_regex against the INPUT filename, not the shell-redirected output.
+  `sops -e /tmp/plain.yaml > secrets/prod.enc.yaml` will always miss the rule.
+  Correct form uses `--filename-override secrets/prod.enc.yaml`. Fixed in
+  `docs/MORNING_START.md` and `secrets/README.md`.
+- **Docs: plaintext secrets example used dotenv syntax** — `MORNING_START.md`
+  and `secrets/README.md` showed `KEY=VALUE`, but `scripts/entrypoint.sh`
+  parses the decrypted content with `yaml.safe_load` (KEY: VALUE). Encrypting
+  dotenv → decrypted silently → no env vars exported → bot crashed with
+  confusing missing-config errors.
+- **`scripts/entrypoint.sh` silent-on-failure** — on sops decrypt error,
+  non-mapping YAML input, or zero parsed keys, the old version printed
+  "secrets decrypted" anyway and `exec`'d the command with an empty env.
+  Hardened: captures exports, validates non-empty mapping with ≥1 `[A-Z_]+`
+  key, exits 1 with a clear message on any failure before `eval`.
+
+### Fixed — image / Dockerfile
+
+- **PyYAML not in pyproject.toml** — `entrypoint.sh`'s inline python parser
+  imports `yaml`, but PyYAML isn't a direct or transitive dep. Container
+  crashed with `ModuleNotFoundError: No module named 'yaml'`. Added
+  `pyyaml>=6.0`.
+- **`alembic.ini` + `migrations/` missing from image** — Dockerfile only
+  copied `src/` + `pyproject.toml`, so first `docker compose exec bot alembic
+  upgrade head` on droplet died with `No 'script_location' key found in
+  configuration`. Added two `COPY` directives.
+- **Container `bot` UID (10001) vs host `bot` UID (1001) mismatch** — the
+  0600 `/etc/bot/age.key` file and `/data/donna` directory (both on host,
+  owned by host bot) were unreadable/unwritable from the container. Temporary
+  host-side fixes: `chmod 644 /etc/bot/age.key`, `chmod 777 /data/donna`.
+  Proper fix pending in a follow-up: add `user: "1001:1001"` to
+  `docker-compose.yml`.
+
+### Fixed — `.env` / secrets
+
+- **`DONNA_DATA_DIR` default was `./data`** — `.env.example` ships with
+  `DONNA_DATA_DIR=./data` (correct for local dev). On the droplet without a
+  prod override, alembic inside the container resolved to `/app/data` —
+  which is on the read-only rootfs. Must set `DONNA_DATA_DIR=/data` in the
+  prod `.env`. Follow-up: flip the default to `/data` and have dev mode
+  override instead.
+- **Inline comments in `.env` broke `docker compose exec` env** — the main
+  container process reads secrets via entrypoint's `export`, so it's fine.
+  But `docker compose exec bot botctl` bypasses the entrypoint, falling back
+  to compose's `env_file: .env` parse, which captures the inline comment
+  (`DISCORD_ALLOWED_USER_ID=   # your own...`) as the string value and
+  pydantic rejects it. Workaround: `docker compose exec bot /entrypoint.sh
+  botctl …`. Follow-up: either strip comments on `.env` creation or ship a
+  `botctl` wrapper that calls entrypoint.
+
+### Fixed — upstream
+
+- **`arizephoenix/phoenix:latest` was broken upstream** (2026-04-23) — started
+  with `ModuleNotFoundError: No module named 'phoenix'` from their own
+  python3.13. Temporarily commented out the phoenix service in
+  `docker-compose.yml`; bot/worker log OTLP-exporter warnings but continue to
+  function. Re-enable with a pinned working tag in a follow-up.
+
+### Security / ops
+
+- **Rotated one age recipient** — while walking through the offline-backup
+  workflow, the original backup key's private half ended up in a chat
+  transcript. No longer "offline" under sole control, so we generated a new
+  recipient and swapped it in `.sops.yaml`. No encrypted artifacts existed
+  yet, so it was a clean cut-over.
+- **CI un-bricked** — 133 ruff errors accumulated over v0.2.x were preventing
+  `build-and-push` from firing on any main push (image had never been
+  published). Cleaned in one pass (114 auto-fix + 19 manual), 70 tests still
+  green, image now publishing on merge.
+
+### Added — new follow-up backlog
+
+Tracked in `docs/KNOWN_ISSUES.md`:
+
+- `user: "1001:1001"` in `docker-compose.yml` (remove chmod hacks)
+- `botctl jobs` shows truncated IDs incompatible with `botctl job <id>`
+- `botctl` needs to work via `docker compose exec bot` without the
+  `/entrypoint.sh` prefix
+- Pin phoenix to a known-working tag and re-enable
+- Enable `donna-update.timer` so `git push` to main auto-deploys within 5 min
+- Backups: not yet configured. Current state is "one SQLite file on one
+  droplet"; single-point-of-failure until litestream or snapshot cron lands.
+
+### Smoke tests (all green, 2026-04-23)
+
+Per `docs/LIVE_RUN_SETUP.md`:
+
+- **Basic DM** — bot responds
+- **Web-tool summarize** — "summarize this: en.wikipedia.org/wiki/Mark_Twain"
+  → fetch + sanitize + summarize via Anthropic, reply delivered
+- **Taint / prompt injection** — injection attempt in the prompt → bot
+  summarizes cleanly, does NOT leak "PWNED", `botctl jobs` shows `tainted ⚠️`
+  on the job
+- **Consent + recall** — "remember that my favorite color is blue" → ✅
+  reaction approval → DB-persisted → subsequent "what's my favorite color?"
+  recalls "blue" via the `recall` tool
+
+---
+
 ## [0.2.1] — 2026-04-22 — Phase 1 live-run fixes
 
 First end-to-end live run surfaced three real bugs the in-process test suite

@@ -25,14 +25,27 @@ Before anything else, read these files. Everything below assumes you have.
 
 ## 1 · Where we are
 
-**Donna v0.2.0 is code-complete, locally tested, Python 3.14, pushed to
-`GlobalCan/donna`. Not yet live-deployed.**
+**Donna v0.3.0 is live in production on DigitalOcean.** Four smoke tests green
+end-to-end against real APIs. Bot answering DMs as `Donna#3183`.
 
 - **Branch:** `main`, clean working tree
-- **Latest tag:** `v0.2.0` (see `git tag -l`)
-- **Tests:** 60/60 green on Python 3.14.3
-- **Migrations:** 0001 → 0002 → 0003 → 0004, all applied, db at `data/donna.db`
-- **Remote HEAD = local HEAD** (verified before the last session ended)
+- **Droplet:** `159.203.34.165` (Ubuntu 24.04 LTS), hardened (bot user, sshd
+  key-only, ufw, fail2ban, unattended-upgrades, docker, sops, age)
+- **Image:** `ghcr.io/globalcan/donna:latest` — published by GHA `build-and-push`
+- **Secrets:** sops-encrypted `secrets/prod.enc.yaml` in repo, 2 age recipients
+  (primary on laptop+droplet, backup offline); age private key at
+  `/etc/bot/age.key` on droplet
+- **DB:** `/data/donna/donna.db` on droplet (bind-mounted into containers),
+  migrations 0001 → 0005 all applied
+- **Tests:** 70/70 green on Python 3.14.3
+- **Remote HEAD = local HEAD**
+
+**Still open after Phase 2** (see `docs/KNOWN_ISSUES.md` §Phase 2):
+- No off-droplet backups yet
+- Auto-update timer not enabled (manual `docker compose pull && up -d`)
+- Container UID 10001 vs host UID 1001 mismatch — worked around with chmod
+- Phoenix observability disabled (upstream image broken 2026-04-23)
+- `botctl` ergonomics: needs `/entrypoint.sh` prefix + full job IDs
 
 Three Codex review passes absorbed:
 - Pass-1 defect review (session `019d9bbf-a2e3-7a40-8bde-9ac5f5fe163e`) — all CRITICAL + HIGH + most MEDIUM fixed
@@ -57,30 +70,36 @@ Three Codex review passes absorbed:
 
 Three tracks, pick what the user asks for:
 
-### Track A — Phase 1 local live run (recommended first)
+### Track A — Stabilize the deploy (highest-leverage cleanup)
 
-Expected ~30 min of user-side account provisioning + ~30 min of debugging.
+Small PRs that remove the hacks and improve ops ergonomics. Each is self-contained.
 
-1. User creates fresh bot-ops accounts: Anthropic, Discord, Tavily, Voyage, DigitalOcean (DO can wait until Phase 2)
-2. User toggles Discord `MESSAGE_CONTENT` privileged intent (critical — see docs/morning.html)
-3. User fills `.env` from `.env.example` with real keys
-4. User runs `python -m donna.main` (adapter) + `python -m donna.worker` in two PowerShell terminals
-5. User DMs the bot in their private Discord server
-6. Verify: `/status`, `/budget`, `/history`, reactive chat, `/ask`, `/schedule`
+1. **`user: "1001:1001"` in `docker-compose.yml`** — makes container bot run as host's UID so the `chmod 644 /etc/bot/age.key` + `chmod 777 /data/donna` workarounds go away.
+2. **`botctl` ergonomics** — show full job IDs (not `[:18]` truncation), accept prefix-match on `botctl job <id>`, ship a wrapper so `docker compose exec bot botctl` works without the `/entrypoint.sh` prefix.
+3. **Phoenix re-enable** — pin to a known-working `arizephoenix/phoenix:version-X.Y.Z` tag and uncomment the service.
+4. **Enable `donna-update.timer`** — one-shot sudo on the droplet (via DO console since `bot` has no sudo password). After this, `git push` → ~5 min → running.
+5. **Backups** — at minimum DO snapshots (nightly, free-ish). Ideally litestream to DO Spaces (~$5/mo).
 
-If/when this works end-to-end, we move to Phase 2 (droplet deploy). Full walkthrough lives at `docs/morning.html`.
+### Track B — Exercise more of the stack
 
-### Track B — Corpus scaffolding (starts the corpus project)
+Tests beyond the four smoke tests:
 
-If the user wants to start Corpus before Phase 1 completes (or in parallel in a new session), follow `docs/CORPUS_BRIEF.md` exactly. Target: add `src/corpus/` package with the Phase-0 research doc and skeleton, all inside this monorepo.
+1. **Teach a real corpus** — `botctl teach author_twain huck.txt` against a Project Gutenberg public-domain book. Validates ingest → chunk → embed → knowledge_chunks pipeline end-to-end, which the smoke tests didn't hit.
+2. **Grounded / speculative / debate modes** — smoke-test them. Chat mode's `_enqueue_final_text` fix likely needs to be replicated for the other three modes (flagged in Phase 1 CHANGELOG).
+3. **`/schedule`** — set a daily morning brief via `/schedule`, confirm the scheduler + cron tick fires it overnight.
 
-### Track C — Repo hygiene / polish
+### Track C — Corpus package scaffolding
 
-Small items backlog:
-- Move repo out of OneDrive sync path (venv-delete dialog is a sign of friction). Options: add `.venv/` and `data/` to OneDrive ignore, or move repo to `C:\Users\rchan\dev\donna`.
-- Tag more versions as work progresses (`v0.2.0` exists; future `v0.3.0` for Corpus extraction, etc.)
-- GitHub repo Transfer from `GlobalCan` → `bot-ops` account (user decided to do this tomorrow during Phase 1 morning setup)
-- Optional `/compress` Discord command (user-invoked compaction mid-conversation, suggested by Hermes comparison)
+If/when the user wants to start the sibling corpus project, follow `docs/CORPUS_BRIEF.md` exactly. Intended to be a separate Claude session on the other laptop, not this session. Target: add `src/corpus/` with the Phase-0 research doc and skeleton.
+
+### Track D — Personal-infra add-ons (nice-to-have)
+
+On the droplet:
+- **Tailscale** — exit node + subnet router, replaces public-port-22 exposure for SSH
+- **ntfy.sh self-hosted** — push notifications to phone from any script
+- **Uptime Kuma** — monitor external services + the bot itself
+- **Gitea / Forgejo** — private git host
+- **Caddy + static site** — personal blog/wiki with auto-TLS
 
 ---
 
