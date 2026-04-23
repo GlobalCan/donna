@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Awaitable, Callable
 from functools import wraps
-from typing import Any, Awaitable, Callable, get_args, get_origin, get_type_hints
+from typing import Any, get_args, get_origin, get_type_hints
 
 from ..types import ConfirmationMode, ToolEntry
 

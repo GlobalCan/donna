@@ -15,7 +15,7 @@ from ..memory.db import connect, transaction
 from ..tools.registry import anthropic_tool_defs
 from ..types import JobMode, ModelTier
 from .compose import compose_system
-from .context import JobContext, LeaseLost
+from .context import JobContext
 
 log = get_logger(__name__)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..types import Job, JobMode, JobStatus
@@ -35,7 +35,7 @@ def claim_next_queued(conn: sqlite3.Connection, worker_id: str, ttl_seconds: int
 
     Returns the Job, or None if nothing available.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     lease_until = now + timedelta(seconds=ttl_seconds)
 
     # Atomic UPDATE...RETURNING — pick a job that is either queued-unowned
@@ -69,7 +69,7 @@ def claim_next_queued(conn: sqlite3.Connection, worker_id: str, ttl_seconds: int
 
 
 def renew_lease(conn: sqlite3.Connection, job_id: str, worker_id: str, ttl_seconds: int = 300) -> bool:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cur = conn.execute(
         """
         UPDATE jobs
@@ -157,7 +157,7 @@ def set_status(
                 SET status = ?, finished_at = ?, error = ?, owner = NULL, lease_until = NULL
                 WHERE id = ? AND owner = ?
                 """,
-                (status.value, datetime.now(timezone.utc), error, job_id, worker_id),
+                (status.value, datetime.now(UTC), error, job_id, worker_id),
             )
             return cur.rowcount > 0
         conn.execute(
@@ -166,7 +166,7 @@ def set_status(
             SET status = ?, finished_at = ?, error = ?, owner = NULL, lease_until = NULL
             WHERE id = ?
             """,
-            (status.value, datetime.now(timezone.utc), error, job_id),
+            (status.value, datetime.now(UTC), error, job_id),
         )
         return True
     conn.execute(
@@ -210,7 +210,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         tainted=bool(row["tainted"]),
         cost_usd=float(row["cost_usd"] or 0.0),
         tool_call_count=int(row["tool_call_count"] or 0),
-        created_at=_dt(row["created_at"]) or datetime.now(timezone.utc),
+        created_at=_dt(row["created_at"]) or datetime.now(UTC),
         started_at=_dt(row["started_at"]),
         finished_at=_dt(row["finished_at"]),
         error=row["error"],

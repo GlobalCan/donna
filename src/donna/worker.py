@@ -7,6 +7,7 @@ DB ownership responsibilities (see memory/db.py docs).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import signal
 import sys
 
@@ -38,20 +39,16 @@ async def _run() -> None:
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        # Windows: signal handlers via add_signal_handler aren't supported
+        with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, lambda: asyncio.create_task(_graceful_shutdown()))
-        except NotImplementedError:
-            # Windows: signal handlers via add_signal_handler aren't supported
-            pass
 
     await asyncio.gather(worker.run(), scheduler.run())
 
 
 def main() -> None:
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(_run())
-    except KeyboardInterrupt:
-        pass
 
 
 if __name__ == "__main__":

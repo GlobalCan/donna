@@ -6,7 +6,7 @@ the jobs table. The separate `worker` process actually runs the agent loops.
 from __future__ import annotations
 
 import asyncio
-import signal
+import contextlib
 import sys
 
 from .adapter.discord_adapter import build_bot
@@ -61,10 +61,8 @@ async def _run() -> None:
 
 
 def main() -> None:
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(_run())
-    except KeyboardInterrupt:
-        pass
 
 
 if __name__ == "__main__":

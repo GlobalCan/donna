@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from . import ids
 
@@ -36,7 +36,7 @@ def get_or_create_thread(
 def _touch(conn: sqlite3.Connection, thread_id: str) -> None:
     conn.execute(
         "UPDATE threads SET last_active_at = ? WHERE id = ?",
-        (datetime.now(timezone.utc), thread_id),
+        (datetime.now(UTC), thread_id),
     )
 
 

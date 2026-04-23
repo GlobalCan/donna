@@ -15,13 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import os
-import signal
 import sys
 import tempfile
+from contextlib import suppress
 from typing import Any
 
 from .registry import tool
-
 
 SANDBOX_TIMEOUT_S = 30
 SANDBOX_MAX_OUTPUT = 64_000
@@ -56,11 +55,9 @@ async def run_python(code: str, timeout_s: int = SANDBOX_TIMEOUT_S) -> dict[str,
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-        except asyncio.TimeoutError:
-            try:
+        except TimeoutError:
+            with suppress(ProcessLookupError):
                 proc.kill()
-            except ProcessLookupError:
-                pass
             return {"error": "timeout", "timeout_s": timeout_s}
 
         stdout = stdout_b.decode("utf-8", errors="replace")[:SANDBOX_MAX_OUTPUT]
@@ -72,7 +69,5 @@ async def run_python(code: str, timeout_s: int = SANDBOX_TIMEOUT_S) -> dict[str,
             "truncated": len(stdout_b) > SANDBOX_MAX_OUTPUT or len(stderr_b) > SANDBOX_MAX_OUTPUT,
         }
     finally:
-        try:
+        with suppress(OSError):
             os.unlink(script_path)
-        except OSError:
-            pass

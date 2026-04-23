@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any
 
 import discord
 from discord import app_commands
@@ -23,11 +22,9 @@ from ..config import settings
 from ..logging import get_logger
 from ..memory import jobs as jobs_mod
 from ..memory import threads as threads_mod
-from ..memory import cost as cost_mod
 from ..memory.db import connect, transaction
 from ..security import consent as consent_mod
 from ..tools import registry as tool_registry
-from ..types import JobMode, JobStatus
 from . import discord_ux
 
 log = get_logger(__name__)

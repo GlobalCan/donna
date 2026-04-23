@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import typer
@@ -22,8 +22,8 @@ from rich.console import Console
 from rich.table import Table
 
 from ..config import settings
-from ..memory import jobs as jobs_mod
 from ..memory import cost as cost_mod
+from ..memory import jobs as jobs_mod
 from ..memory import prompts as prompts_mod
 from ..memory import schedules as sched_mod
 from ..memory import tool_calls as tool_calls_mod
@@ -109,7 +109,7 @@ def cache_hit_rate(since: str = typer.Option("1d", "--since", help="1h, 1d, 7d")
     conn = connect()
     try:
         row = conn.execute(
-            f"""
+            """
             SELECT
               SUM(input_tokens) AS input_sum,
               SUM(cache_read_tokens) AS cache_read_sum,
@@ -172,7 +172,7 @@ def teach(
             text = "\n\n".join((page.extract_text() or "") for page in PdfReader(str(p)).pages)
         except Exception as e:  # noqa: BLE001
             console.print(f"[red]pdf extraction failed: {e}[/red]")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from e
     else:
         text = p.read_text(encoding="utf-8", errors="replace")
 
@@ -258,7 +258,7 @@ def schedule_disable(sid: str) -> None:
 
 @traces_app.command("prune")
 def traces_prune(older_than_days: int = typer.Option(30, "--older-than-days")) -> None:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    cutoff = datetime.now(UTC) - timedelta(days=older_than_days)
     conn = connect()
     try:
         with transaction(conn):

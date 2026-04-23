@@ -19,10 +19,7 @@ def save_artifact(
     tainted: bool = False,
     created_by_job: str | None = None,
 ) -> dict[str, str | int]:
-    if isinstance(content, str):
-        data = content.encode("utf-8")
-    else:
-        data = content
+    data = content.encode("utf-8") if isinstance(content, str) else content
     sha = hashlib.sha256(data).hexdigest()
     blob_path = settings().artifacts_dir / f"{sha}.blob"
     if not blob_path.exists():

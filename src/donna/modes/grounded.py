@@ -9,8 +9,6 @@ this is constrained transparency.
 """
 from __future__ import annotations
 
-from typing import Any
-
 from ..agent.compose import compose_system
 from ..agent.context import JobContext
 from ..agent.model_adapter import model

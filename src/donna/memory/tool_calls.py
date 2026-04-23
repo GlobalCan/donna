@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from . import ids
 
@@ -24,7 +24,7 @@ def insert_tool_call(
     result_artifact_id: str | None = None,
 ) -> str:
     tcid = ids.tool_call_id()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     conn.execute(
         """
         INSERT INTO tool_calls

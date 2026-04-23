@@ -8,10 +8,10 @@ import discord
 from discord import app_commands
 
 from ..config import settings
-from ..memory import jobs as jobs_mod
-from ..memory import schedules as sched_mod
 from ..memory import cost as cost_mod
+from ..memory import jobs as jobs_mod
 from ..memory import prompts as prompts_mod
+from ..memory import schedules as sched_mod
 from ..memory.db import connect, transaction
 from ..security import consent as consent_mod
 from ..types import JobMode, JobStatus
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from .discord_adapter import DonnaBot
 
 
-def register_commands(bot: "DonnaBot") -> None:
+def register_commands(bot: DonnaBot) -> None:
     tree = bot.tree
 
     @tree.command(name="status", description="Check a job's status")

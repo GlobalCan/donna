@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any, Literal
 
 import httpx
@@ -94,7 +93,6 @@ async def _sanitize_hits(hits: list, source_tool: str) -> list[dict[str, Any]]:
                     source_url=h.get("url"),
                 )
             )
-    import asyncio
     results = await asyncio.gather(
         *[t for t in tasks if t is not None],
         return_exceptions=True,
@@ -112,7 +110,7 @@ async def _sanitize_hits(hits: list, source_tool: str) -> list[dict[str, Any]]:
             "title": h.get("title"),
             "url": h.get("url"),
             "snippet": sanitized,
-            "raw_snippet_length": len((h.get("content", "") or "")),
+            "raw_snippet_length": len(h.get("content", "") or ""),
         })
     return out
 
@@ -150,10 +148,7 @@ async def fetch_url(
         resp.raise_for_status()
         raw = resp.text
 
-    if format == "markdown":
-        rendered = markdownify(raw, heading_style="ATX")
-    else:
-        rendered = raw
+    rendered = markdownify(raw, heading_style="ATX") if format == "markdown" else raw
 
     # Save raw as tainted artifact
     conn = connect()

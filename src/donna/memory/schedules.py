@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from croniter import croniter
 
@@ -19,7 +19,7 @@ def insert_schedule(
 ) -> str:
     _validate_cron(cron_expr)
     sid = ids.schedule_id()
-    next_run = croniter(cron_expr, datetime.now(timezone.utc)).get_next(datetime)
+    next_run = croniter(cron_expr, datetime.now(UTC)).get_next(datetime)
     conn.execute(
         """
         INSERT INTO schedules (id, agent_scope, cron_expr, task, mode, next_run_at)
@@ -38,7 +38,7 @@ def list_schedules(conn: sqlite3.Connection) -> list[dict]:
 
 
 def due_schedules(conn: sqlite3.Connection) -> list[dict]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     rows = conn.execute(
         "SELECT * FROM schedules WHERE enabled = 1 AND next_run_at <= ?",
         (now,),
@@ -47,7 +47,7 @@ def due_schedules(conn: sqlite3.Connection) -> list[dict]:
 
 
 def mark_ran(conn: sqlite3.Connection, *, schedule_id: str, cron_expr: str) -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     next_run = croniter(cron_expr, now).get_next(datetime)
     conn.execute(
         "UPDATE schedules SET last_run_at = ?, next_run_at = ? WHERE id = ?",
