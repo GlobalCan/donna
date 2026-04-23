@@ -61,15 +61,27 @@ the running droplet.
 - Cost ledger ($0.26 for the orca job, queryable via `botctl cost`)
 - Outbox→Discord delivery, reaction handling, drainer supervision
 
+**Backups — three layers live (2026-04-23, PRs #12/#13):**
+
+- **DO snapshots** (web-console-configured) — daily, 4-week retention,
+  $0.30/mo
+- **Droplet cron** — `scripts/donna-backup.sh` @ 03:00 UTC. Uses
+  `python3 -c 'sqlite3.Connection.backup()'` so bot user needs no sudo.
+  Tarballs snapshot + artifacts; 7-day local retention
+- **Laptop scp → OneDrive** — `scripts/donna-fetch-backup.ps1` via Task
+  Scheduler @ 06:00 local. 30-day retention. 4th copy in OneDrive cloud
+  via auto-sync
+
+Restore recipe: `docs/OPERATIONS.md` §Restore from a tarball.
+
 **Still open** (see `docs/KNOWN_ISSUES.md` §v0.3.1):
 
-- **Off-droplet backups** — not configured. Single-disk failure = total loss.
-  Codex's #1 priority. User has explicitly deferred but should revisit.
 - **Phoenix re-enable** — needs a confirmed-working older tag or swap to
   Tempo/Jaeger
 - **Auto-update timer** (`donna-update.timer`) — installed but never
-  enabled; deploys are manual git pull + compose pull + up
-- **Tailscale** for narrowing public port 22 — defer until backups land
+  enabled; deploys are manual git pull + compose pull + up. Now unblocked
+  (backups live + supervision done), but do a quarterly restore drill first
+- **Tailscale** for narrowing public port 22
 - **`botctl teach`** ingest pipeline never exercised in prod
 - **Grounded / speculative / debate modes** never smoke-tested in prod
   (chat mode validated extensively; the others have their own exit paths
@@ -78,6 +90,7 @@ the running droplet.
   may take ~1h post-deploy to show commands in DM autocomplete first time
 - **`botctl forget-artifact`** subcommand doesn't exist; manual SQL +
   `rm` until then
+- **Quarterly restore drill** — not yet done
 
 Three Codex review passes absorbed:
 - Pass-1 defect review (session `019d9bbf-a2e3-7a40-8bde-9ac5f5fe163e`) — all CRITICAL + HIGH + most MEDIUM fixed
