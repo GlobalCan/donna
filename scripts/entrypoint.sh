@@ -20,31 +20,41 @@ AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-/run/secrets/age.key}"
 
 if [[ -f "$SECRETS_FILE" && -f "$AGE_KEY_FILE" ]]; then
     export SOPS_AGE_KEY_FILE="$AGE_KEY_FILE"
-    # Decrypt → parse YAML → emit export statements → source them.
-    # Keep plaintext entirely in a here-doc pipeline, never on disk.
-    eval "$(
-        sops -d "$SECRETS_FILE" 2>/dev/null | python -c '
-import sys, yaml, shlex
+    # Decrypt → parse YAML → emit export statements → eval them.
+    # Plaintext is captured into a shell variable (not disk) and eval'd.
+    # Any failure in the pipeline (sops decrypt, YAML parse, zero keys)
+    # aborts the container — better than silently starting with no secrets.
+    if ! EXPORTS=$(sops -d "$SECRETS_FILE" | python -c '
+import sys, yaml, shlex, re
 try:
-    data = yaml.safe_load(sys.stdin) or {}
+    data = yaml.safe_load(sys.stdin)
 except yaml.YAMLError as e:
     sys.stderr.write(f"[entrypoint] YAML parse error: {e}\n")
-    sys.exit(0)
+    sys.exit(1)
 if not isinstance(data, dict):
-    sys.stderr.write("[entrypoint] secrets YAML must be a top-level mapping\n")
-    sys.exit(0)
+    sys.stderr.write(
+        "[entrypoint] secrets must be a top-level YAML mapping (KEY: value), "
+        "not dotenv (KEY=value)\n"
+    )
+    sys.exit(1)
+count = 0
 for k, v in data.items():
-    if not isinstance(k, str) or not k:
-        continue
-    # env names must be [A-Z_][A-Z0-9_]*
-    import re
-    if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", k):
-        sys.stderr.write(f"[entrypoint] skipping non-env-var key: {k}\n")
+    if not isinstance(k, str) or not re.fullmatch(r"[A-Z_][A-Z0-9_]*", k):
+        sys.stderr.write(f"[entrypoint] skipping non-env-var key: {k!r}\n")
         continue
     print(f"export {k}={shlex.quote(str(v))}")
-'
-    )"
-    echo "[entrypoint] secrets decrypted from $SECRETS_FILE"
+    count += 1
+if count == 0:
+    sys.stderr.write("[entrypoint] no env-var keys found in decrypted secrets\n")
+    sys.exit(1)
+sys.stderr.write(f"[entrypoint] parsed {count} secret(s)\n")
+'); then
+        echo "[entrypoint] FATAL: secret decryption/parse failed — aborting" >&2
+        exit 1
+    fi
+    eval "$EXPORTS"
+    unset EXPORTS
+    echo "[entrypoint] secrets loaded from $SECRETS_FILE"
 else
     echo "[entrypoint] no sops secrets at $SECRETS_FILE (or age key missing) — using env_file only"
 fi
