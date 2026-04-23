@@ -8,13 +8,14 @@ Extended with Donna-specific attributes:
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
-from typing import Any, Iterator
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
+from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from ..config import settings
@@ -43,10 +44,8 @@ def initialize_tracing() -> None:
         pass
     # Codex review fix: wire the `traces` table that previously had no writer.
     # This keeps a queryable-from-SQL audit trail independent of Phoenix.
-    try:
+    with suppress(Exception):
         provider.add_span_processor(SqliteSpanProcessor())
-    except Exception:
-        pass
     trace.set_tracer_provider(provider)
     _tracer = trace.get_tracer("donna")
     _initialized = True

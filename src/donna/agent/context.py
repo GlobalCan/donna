@@ -29,9 +29,8 @@ from ..memory import tool_calls as tool_calls_mod
 from ..memory.db import connect, transaction
 from ..observability import otel
 from ..security import consent as consent_mod
-from ..tools.registry import REGISTRY, anthropic_tool_defs
-from ..types import JobMode, JobState, JobStatus, ModelTier
-from .compose import compose_system
+from ..tools.registry import REGISTRY
+from ..types import JobState, JobStatus, ModelTier
 from .model_adapter import GenerateResult, model
 
 log = get_logger(__name__)
@@ -84,9 +83,8 @@ class JobContext:
             ):
                 yield ctx
                 # Auto-finalize if the mode set done=True
-                if ctx.state.done:
-                    if not ctx.finalize():
-                        raise LeaseLost(job_id)
+                if ctx.state.done and not ctx.finalize():
+                    raise LeaseLost(job_id)
         except LeaseLost:
             log.error("agent.job.lease_lost_aborted", job_id=job_id, worker_id=worker_id)
         finally:
@@ -94,7 +92,7 @@ class JobContext:
             if ctx.hb_task:
                 try:
                     await asyncio.wait_for(ctx.hb_task, timeout=2.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     ctx.hb_task.cancel()
 
     # -- model step -----------------------------------------------------------
@@ -319,7 +317,7 @@ async def _heartbeat_loop(job_id: str, worker_id: str, stop: asyncio.Event) -> N
         try:
             await asyncio.wait_for(stop.wait(), timeout=30.0)
             return
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         conn = connect()
         try:

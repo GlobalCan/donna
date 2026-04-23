@@ -5,13 +5,10 @@ See docs/KNOWN_ISSUES.md for context.
 """
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from donna.agent.rate_limiter import OversizedRequestError, RateLimitLedger
 from donna.security.validator import validate_debate_turn
-
 
 # --- Rate limiter ----------------------------------------------------------
 
@@ -113,6 +110,7 @@ def test_resume_dedup_finds_completed_tool_uses() -> None:
 def test_save_checkpoint_signature_supports_worker_id() -> None:
     """C2 fix: save_checkpoint now accepts worker_id for owner-guarded writes."""
     import inspect
+
     from donna.memory import jobs as jobs_mod
     sig = inspect.signature(jobs_mod.save_checkpoint)
     assert "worker_id" in sig.parameters
@@ -121,6 +119,7 @@ def test_save_checkpoint_signature_supports_worker_id() -> None:
 def test_set_status_signature_supports_worker_id() -> None:
     """C2 fix: set_status also owner-guarded."""
     import inspect
+
     from donna.memory import jobs as jobs_mod
     sig = inspect.signature(jobs_mod.set_status)
     assert "worker_id" in sig.parameters
@@ -129,6 +128,7 @@ def test_set_status_signature_supports_worker_id() -> None:
 def test_save_checkpoint_no_longer_writes_cost() -> None:
     """MEDIUM fix: cost is authoritative via ledger, not clobbered by checkpoint."""
     import inspect
+
     from donna.memory import jobs as jobs_mod
     sig = inspect.signature(jobs_mod.save_checkpoint)
     assert "cost_usd" not in sig.parameters, "checkpoint should not write cost_usd"

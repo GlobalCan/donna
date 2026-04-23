@@ -7,8 +7,6 @@ dep, the Python-version lock, and a layer of opaque retry logic.
 """
 from __future__ import annotations
 
-from typing import Any
-
 import httpx
 
 from ..config import settings

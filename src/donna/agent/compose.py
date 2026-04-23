@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..memory.db import connect
 from ..memory import prompts as prompts_mod
+from ..memory.db import connect
 from ..types import Chunk, JobMode
 
 

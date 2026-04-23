@@ -7,8 +7,8 @@ has been silently stuck for hours.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 
 from ..logging import get_logger
 from ..memory.db import connect
@@ -40,7 +40,7 @@ class Watchdog:
 
     async def _check_stuck_consent(self) -> None:
         """A job in PAUSED_AWAITING_CONSENT for > 1 hour likely needs a nudge."""
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+        cutoff = datetime.now(UTC) - timedelta(hours=1)
         conn = connect()
         try:
             rows = conn.execute(
@@ -61,7 +61,7 @@ class Watchdog:
 
     async def _check_stuck_running(self) -> None:
         """A job in RUNNING for > 30 min may be wedged."""
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+        cutoff = datetime.now(UTC) - timedelta(minutes=30)
         conn = connect()
         try:
             rows = conn.execute(
@@ -82,7 +82,7 @@ class Watchdog:
 
     async def _check_recent_failures(self) -> None:
         """3+ failures in the last hour → alert."""
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+        cutoff = datetime.now(UTC) - timedelta(hours=1)
         conn = connect()
         try:
             row = conn.execute(
@@ -94,7 +94,7 @@ class Watchdog:
         n = row["n"]
         if n >= 3:
             await self._alert_once(
-                "recent_failures", f"hour_{datetime.now(timezone.utc).hour}",
+                "recent_failures", f"hour_{datetime.now(UTC).hour}",
                 f"❗ {n} jobs have failed in the last hour. "
                 "Run `botctl jobs --since 1h` to investigate.",
             )
@@ -104,7 +104,7 @@ class Watchdog:
     async def _alert_once(self, kind: str, id_: str, message: str) -> None:
         key = (kind, id_)
         last = self._already_alerted.get(key)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if last and now - last < timedelta(hours=12):
             return
         self._already_alerted[key] = now

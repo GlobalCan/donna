@@ -12,7 +12,7 @@ what was replaced.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ..logging import get_logger
@@ -89,7 +89,7 @@ async def compact_messages(
                     existing.append({
                         "artifact_id": saved_artifact_id,
                         "replaced_count": len(to_compact),
-                        "at": datetime.now(timezone.utc).isoformat(),
+                        "at": datetime.now(UTC).isoformat(),
                     })
                     conn.execute(
                         "UPDATE jobs SET compaction_log = ? WHERE id = ?",

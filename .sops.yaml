@@ -1,4 +1,7 @@
 creation_rules:
   - path_regex: secrets/.*\.enc\.yaml$
-    # Replace with your age public key after running `age-keygen`
-    age: age1REPLACE_WITH_YOUR_PUBLIC_KEY_HERE
+    # Two recipients: primary (on laptop + droplet) + offline paper backup.
+    # Losing either leaves the other able to decrypt. Losing both makes
+    # every committed encrypted secret unreadable — rotate providers.
+    age: >-
+      age1txwts2pk99ywrkhhj4clm2xgx74vm9nr3427j09txcnsxvn584zsgjy2ar,age10crnx6pxt4fqrxryx2r7rqjthjx4uj08mxwc3t6cevw7sps2u9jsaaurdz

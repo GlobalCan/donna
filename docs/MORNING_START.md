@@ -73,7 +73,9 @@ ANTHROPIC_API_KEY: sk-ant-xxx
 TAVILY_API_KEY: tvly-xxx
 VOYAGE_API_KEY: pa-xxx
 EOF
-sops -e /tmp/plain.yaml > secrets/prod.enc.yaml
+# --filename-override tells sops which creation_rule in .sops.yaml applies,
+# since the rule's path_regex matches the OUTPUT path not the input.
+sops --filename-override secrets/prod.enc.yaml -e /tmp/plain.yaml > secrets/prod.enc.yaml
 rm /tmp/plain.yaml
 git add secrets/prod.enc.yaml
 git commit -m "Initial encrypted secrets"

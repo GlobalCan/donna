@@ -103,6 +103,7 @@ def test_quoted_span_case_and_whitespace_insensitive() -> None:
 def test_pending_consent_has_pending_id_field() -> None:
     """ConsentRequest now carries pending_id for cleanup after resolution."""
     import dataclasses as dc
+
     from donna.security.consent import ConsentRequest
     fields = {f.name for f in dc.fields(ConsentRequest)}
     assert "pending_id" in fields
@@ -130,6 +131,7 @@ def test_jobcontext_has_shared_primitives() -> None:
 def test_loop_dispatches_to_context_based_modes() -> None:
     """run_job uses JobContext.open and dispatches by mode."""
     import inspect
+
     from donna.agent import loop
     src = inspect.getsource(loop.run_job)
     assert "JobContext.open" in src
@@ -143,7 +145,6 @@ def test_loop_dispatches_to_context_based_modes() -> None:
 
 
 def test_attachment_tool_registered() -> None:
-    import donna.tools  # registers via side-effect
     from donna.tools.registry import REGISTRY
     assert "ingest_discord_attachment" in REGISTRY
     entry = REGISTRY["ingest_discord_attachment"]
@@ -153,6 +154,7 @@ def test_attachment_tool_registered() -> None:
 def test_heuristic_reasoning_persists_in_provenance() -> None:
     """propose_heuristic's `reasoning` field should make it to the DB."""
     import inspect
+
     from donna.memory import prompts as prompts_mod
     sig = inspect.signature(prompts_mod.insert_heuristic)
     assert "reasoning" in sig.parameters
@@ -171,6 +173,7 @@ def test_search_web_has_sanitize_helper() -> None:
 
 def test_knowledge_module_uses_vec_distance() -> None:
     import inspect
+
     from donna.memory import knowledge
     src = inspect.getsource(knowledge.semantic_search)
     assert "vec_distance_cosine" in src, "semantic_search should use sqlite-vec's native function"
@@ -212,6 +215,7 @@ def test_facts_last_used_is_async_fire_and_forget() -> None:
     """facts.search_facts_fts no longer mutates last_used_at synchronously
     on the same connection."""
     import inspect
+
     from donna.memory import facts
     src = inspect.getsource(facts.search_facts_fts)
     assert "_touch_last_used_async" in src

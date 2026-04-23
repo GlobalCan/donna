@@ -11,10 +11,10 @@ multi-reader case; our discipline avoids contention over the job table's hot pat
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Iterator
 
 import sqlite_vec
 
@@ -43,7 +43,7 @@ _PRAGMAS = [
 
 def _adapt_datetime_iso(val: datetime) -> str:
     if val.tzinfo is None:
-        val = val.replace(tzinfo=timezone.utc)
+        val = val.replace(tzinfo=UTC)
     # Space separator keeps SQLite's built-in date()/datetime() happy while
     # `datetime.fromisoformat` still parses it on read.
     return val.isoformat(sep=" ")

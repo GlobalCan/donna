@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from . import ids
 
 
 def has_grant(conn: sqlite3.Connection, *, job_id: str, tool_name: str) -> bool:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     row = conn.execute(
         """
         SELECT 1 FROM permission_grants

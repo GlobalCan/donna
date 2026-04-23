@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 import struct
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from . import ids
@@ -103,7 +103,7 @@ async def _do_touch_last_used(fact_ids: list[str]) -> None:
         conn = connect()
         try:
             with transaction(conn):
-                now = datetime.now(timezone.utc).isoformat()
+                now = datetime.now(UTC).isoformat()
                 placeholders = ",".join("?" * len(fact_ids))
                 conn.execute(
                     f"UPDATE facts SET last_used_at = ? WHERE id IN ({placeholders})",

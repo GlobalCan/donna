@@ -3,9 +3,6 @@ from __future__ import annotations
 
 import inspect
 
-import pytest
-
-
 # --- ModelRuntime registry module exists & has the expected shape ---------
 
 

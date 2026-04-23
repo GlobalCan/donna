@@ -1,26 +1,27 @@
 """Shared types — Job, JobState, ToolEntry, Message, etc."""
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
-from typing import Any, Awaitable, Callable
+from enum import StrEnum
+from typing import Any
 
 
-class ModelTier(str, Enum):
+class ModelTier(StrEnum):
     FAST = "fast"        # Haiku
     STRONG = "strong"    # Sonnet
     HEAVY = "heavy"      # Opus
 
 
-class ConfirmationMode(str, Enum):
+class ConfirmationMode(StrEnum):
     NEVER = "never"
     ONCE_PER_JOB = "once_per_job"
     ALWAYS = "always"
     HIGH_IMPACT_ALWAYS = "high_impact_always"
 
 
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     PAUSED_AWAITING_CONSENT = "paused_awaiting_consent"
@@ -29,7 +30,7 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-class JobMode(str, Enum):
+class JobMode(StrEnum):
     CHAT = "chat"
     GROUNDED = "grounded"
     SPECULATIVE = "speculative"

@@ -7,6 +7,7 @@ pipeline.
 """
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Literal
 
@@ -73,10 +74,8 @@ async def ingest_discord_attachment(
     except Exception as e:
         return {"error": f"extraction_failed: {e}", "url": attachment_url}
     finally:
-        try:
+        with suppress(OSError):
             dest.unlink()
-        except OSError:
-            pass
 
     if not text.strip():
         return {"error": "empty_extracted_text", "url": attachment_url}

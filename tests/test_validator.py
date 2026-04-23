@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from donna.security.validator import validate_grounded, validate_debate_turn
+from donna.security.validator import validate_debate_turn, validate_grounded
 from donna.types import Chunk
 
 

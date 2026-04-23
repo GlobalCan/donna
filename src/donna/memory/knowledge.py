@@ -11,7 +11,6 @@ import numpy as np
 from ..types import Chunk
 from . import ids
 
-
 # ---------- sources ---------------------------------------------------------
 
 
@@ -247,5 +246,6 @@ def _row_to_chunk(row: Any, score: float) -> Chunk:
         score=score,
         chunk_index=row["chunk_index"],
         is_style_anchor=bool(row["is_style_anchor"]),
-        source_title=row["source_title"] if "source_title" in row.keys() else None,
+        # row is sqlite3.Row — `in row` tests values, not column names, so we need .keys()
+        source_title=row["source_title"] if "source_title" in row.keys() else None,  # noqa: SIM118
     )

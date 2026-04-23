@@ -57,7 +57,6 @@ async def recall_knowledge(
     top_k: int = 8,
     style_anchors_only: bool = False,
 ) -> dict[str, Any]:
-    from ..ingest.embed import embed_text  # deferred import
     from ..modes.retrieval import retrieve_knowledge
 
     return await retrieve_knowledge(
