@@ -22,7 +22,7 @@ def _fts_sanitize(query: str) -> str:
     literally; the implicit conjunction across quoted terms preserves the
     previous AND semantics.
     """
-    tokens = re.findall(r"\w+", query, flags=re.UNICODE)
+    tokens = re.findall(r"\w+", query)
     return " ".join(f'"{t}"' for t in tokens)
 
 # ---------- sources ---------------------------------------------------------
