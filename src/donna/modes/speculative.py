@@ -36,6 +36,7 @@ async def run_speculative(ctx: JobContext) -> None:
         ctx.checkpoint_or_raise()
         return
 
+    ctx.check_cancelled()
     anchors_res = await retrieve_knowledge(
         scope=scope, query=question, top_k=5, style_anchors_only=True,
     )

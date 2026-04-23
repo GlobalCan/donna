@@ -49,6 +49,7 @@ async def run_grounded(ctx: JobContext) -> None:
     scope = ctx.job.agent_scope
     question = ctx.job.task
 
+    ctx.check_cancelled()
     retrieval = await retrieve_knowledge(scope=scope, query=question, top_k=8)
     chunks = retrieval.get("chunks", [])
 
@@ -75,6 +76,8 @@ async def run_grounded(ctx: JobContext) -> None:
         )
 
     validation = validate_grounded(result.text, chunks)
+
+    ctx.check_cancelled()
 
     # One retry with a tighter instruction if validation failed
     if not validation.ok:

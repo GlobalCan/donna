@@ -55,10 +55,38 @@ class DonnaBot(discord.Client):
             await self.tree.sync()
         log.info("discord.setup_done")
 
-        # Start outbox drainers — all three poll SQLite tables
-        asyncio.create_task(self._drain_updates())
-        asyncio.create_task(self._drain_consent())
-        asyncio.create_task(self._drain_asks())
+        # Start outbox drainers — all three poll SQLite tables.
+        # Wrap with _supervise so a transient exception (DB blip, Discord
+        # fetch failure) doesn't silently kill the task and leave the
+        # container "up" but deaf. Background loops restart with backoff.
+        self._drain_tasks: list[asyncio.Task] = [
+            asyncio.create_task(self._supervise("drain_updates", self._drain_updates)),
+            asyncio.create_task(self._supervise("drain_consent", self._drain_consent)),
+            asyncio.create_task(self._supervise("drain_asks", self._drain_asks)),
+        ]
+
+    async def _supervise(self, name: str, coro_factory) -> None:
+        """Run a drainer coroutine forever; on exception log + restart with
+        capped exponential backoff. Only exits cleanly on CancelledError."""
+        backoff = 1.0
+        while True:
+            try:
+                await coro_factory()
+                # Drainer returned normally — shouldn't happen; restart immediately.
+                log.warning("adapter.drainer.exited_normally", name=name)
+                backoff = 1.0
+            except asyncio.CancelledError:
+                log.info("adapter.drainer.cancelled", name=name)
+                raise
+            except Exception as e:  # noqa: BLE001
+                log.error(
+                    "adapter.drainer.crashed",
+                    name=name,
+                    error=str(e),
+                    backoff_s=backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
 
     async def on_ready(self) -> None:
         log.info(
