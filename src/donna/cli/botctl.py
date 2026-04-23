@@ -49,7 +49,7 @@ def jobs(since: str = typer.Option("1d", help="'1d', '1h', or '30m'"), limit: in
     t = Table("id", "status", "mode", "scope", "tools", "$", "tainted", "task")
     for j in rows:
         t.add_row(
-            j.id[:18], j.status.value, j.mode.value, j.agent_scope,
+            j.id, j.status.value, j.mode.value, j.agent_scope,
             str(j.tool_call_count), f"${j.cost_usd:.2f}",
             "⚠️ " if j.tainted else "",
             j.task[:60],
@@ -57,13 +57,30 @@ def jobs(since: str = typer.Option("1d", help="'1d', '1h', or '30m'"), limit: in
     console.print(t)
 
 
+def _resolve_job(conn, id_or_prefix: str):
+    """Look up a job by full id, else by unique prefix. Returns (job, actual_id)."""
+    j = jobs_mod.get_job(conn, id_or_prefix)
+    if j:
+        return j, id_or_prefix
+    # fallback: prefix match — unambiguous only
+    rows = conn.execute(
+        "SELECT id FROM jobs WHERE id LIKE ? LIMIT 2", (f"{id_or_prefix}%",)
+    ).fetchall()
+    if len(rows) == 1:
+        full = rows[0]["id"]
+        return jobs_mod.get_job(conn, full), full
+    if len(rows) > 1:
+        console.print(f"[yellow]prefix '{id_or_prefix}' is ambiguous — matches multiple jobs[/yellow]")
+    return None, id_or_prefix
+
+
 @app.command()
 def job(job_id: str) -> None:
-    """Inspect one job: metadata + its tool calls."""
+    """Inspect one job: metadata + its tool calls. Accepts a unique id prefix."""
     conn = connect()
     try:
-        j = jobs_mod.get_job(conn, job_id)
-        calls = tool_calls_mod.tool_calls_for(conn, job_id)
+        j, resolved = _resolve_job(conn, job_id)
+        calls = tool_calls_mod.tool_calls_for(conn, resolved) if j else []
     finally:
         conn.close()
     if not j:
