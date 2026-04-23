@@ -22,8 +22,6 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    depends_on:
-      - phoenix
 
   worker:
     image: ${DONNA_IMAGE:-ghcr.io/globalcan/donna:latest}
@@ -46,22 +44,25 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    depends_on:
-      - phoenix
 
-  phoenix:
-    image: arizephoenix/phoenix:latest
-    container_name: donna-phoenix
-    restart: unless-stopped
-    environment:
-      PHOENIX_WORKING_DIR: /phoenix
-      PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "30"
-      PHOENIX_GRPC_PORT: "4317"
-      PHOENIX_PORT: "6006"
-    volumes:
-      - /data/phoenix:/phoenix
-    ports:
-      # Bind to localhost only — reachable via SSH tunnel
-      - "127.0.0.1:6006:6006"
-      - "127.0.0.1:4317:4317"
-    mem_limit: 768m
+  # Phoenix observability — temporarily disabled. `arizephoenix/phoenix:latest`
+  # currently ships broken (ModuleNotFoundError: No module named 'phoenix' at
+  # startup, 2026-04-23). Re-enable with a pinned working tag once upstream is
+  # fixed. OTEL exporter in donna will log warnings about unreachable endpoint
+  # but the bot/worker continue to function.
+  # phoenix:
+  #   image: arizephoenix/phoenix:latest
+  #   container_name: donna-phoenix
+  #   restart: unless-stopped
+  #   environment:
+  #     PHOENIX_WORKING_DIR: /phoenix
+  #     PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "30"
+  #     PHOENIX_GRPC_PORT: "4317"
+  #     PHOENIX_PORT: "6006"
+  #   volumes:
+  #     - /data/phoenix:/phoenix
+  #   ports:
+  #     # Bind to localhost only — reachable via SSH tunnel
+  #     - "127.0.0.1:6006:6006"
+  #     - "127.0.0.1:4317:4317"
+  #   mem_limit: 768m
