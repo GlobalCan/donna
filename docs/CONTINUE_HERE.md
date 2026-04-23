@@ -7,8 +7,8 @@
 >
 > **Who this is for:** You, on a second laptop, continuing work on Donna.
 >
-> **Who you're NOT bootstrapping:** A Corpus session. That's a separate
-> sub-project (`docs/CORPUS_BRIEF.md`) and has its own bootstrap brief.
+> **Who you're NOT bootstrapping:** A Think session. That's a separate
+> sub-project (`docs/THINK_BRIEF.md`) and has its own bootstrap brief.
 
 ---
 
@@ -109,10 +109,10 @@ errors. Do NOT batch steps.
 
 ## Step 4 — What is OUT OF SCOPE for you
 
-- **Do NOT start "Corpus" work.** That's a parallel sub-project running in
-  a separate Claude Code session. If I bring up Corpus topics (oracle mode,
+- **Do NOT start "Think" work.** That's a parallel sub-project running in
+  a separate Claude Code session. If I bring up Think topics (oracle mode,
   cross-author synthesis, graph RAG, persona engine), say "that's the
-  other session; want me to check `docs/CORPUS_BRIEF.md` for context or
+  other session; want me to check `docs/THINK_BRIEF.md` for context or
   just keep moving on Phase 1?"
 - **Do NOT deploy to the droplet yet.** That's Phase 2. Phase 1 is
   localhost only, on this laptop.
@@ -161,7 +161,7 @@ Common recovery paths for you (the human) if the new session is confused:
   `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`
 - **"The docs it needs aren't there":** Run `git pull` inside the repo —
   there may have been commits since you cloned.
-- **"It's suggesting Corpus work":** Remind it: "Phase 1 only. Corpus is
+- **"It's suggesting Think work":** Remind it: "Phase 1 only. Think is
   the other session."
 - **"It's trying to redesign something":** Remind it: "Don't redesign.
   Phase 1 is proving the existing build works."

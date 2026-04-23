@@ -14,7 +14,7 @@ Before anything else, read these files. Everything below assumes you have.
 2. `CHANGELOG.md` — full version history, v0.1.0 → current
 3. `docs/PLAN.md` — the architectural plan
 4. `docs/KNOWN_ISSUES.md` — three Codex review passes, fix/defer status for every finding
-5. `docs/CORPUS_BRIEF.md` — the bootstrap brief for the sibling corpus interpretation engine (separate session, monorepo package)
+5. `docs/THINK_BRIEF.md` — the bootstrap brief for the sibling corpus interpretation engine (separate session, monorepo package)
 6. `docs/OPERATIONS.md` — production ops + DR
 7. `docs/MORNING_START.md` + `docs/morning.html` — 12-step live-deploy walkthrough
 8. `docs/review.html` — interactive Codex adversarial review viewer
@@ -107,7 +107,7 @@ Three Codex review passes absorbed:
 - Quoted-span grounded validator (verbatim ≥20 chars, case/whitespace insensitive)
 - DB-persistent consent that survives restart
 - Hermes Pattern A (cherry-pick mechanisms) over Pattern B (MCP server exposure); Pattern B deferred but codebase preserves the door
-- **Corpus as separate monorepo package** — `src/corpus/` alongside `src/donna/`, same repo, same db file, hard internal API boundary, separate schema namespace `corpus_*`, separate migrations prefix, separate test/eval suite. See `docs/CORPUS_BRIEF.md` for the full bootstrap.
+- **Think as separate monorepo package** — `src/think/` alongside `src/donna/`, same repo, same db file, hard internal API boundary, separate schema namespace `think_*`, separate migrations prefix, separate test/eval suite. See `docs/THINK_BRIEF.md` for the full bootstrap.
 
 ---
 
@@ -133,9 +133,9 @@ Tests beyond the four smoke tests:
 2. **Grounded / speculative / debate modes** — smoke-test them. Chat mode's `_enqueue_final_text` fix likely needs to be replicated for the other three modes (flagged in Phase 1 CHANGELOG).
 3. **`/schedule`** — set a daily morning brief via `/schedule`, confirm the scheduler + cron tick fires it overnight.
 
-### Track C — Corpus package scaffolding
+### Track C — Think package scaffolding
 
-If/when the user wants to start the sibling corpus project, follow `docs/CORPUS_BRIEF.md` exactly. Intended to be a separate Claude session on the other laptop, not this session. Target: add `src/corpus/` with the Phase-0 research doc and skeleton.
+If/when the user wants to start the sibling corpus project, follow `docs/THINK_BRIEF.md` exactly. Intended to be a separate Claude session on the other laptop, not this session. Target: add `src/think/` with the Phase-0 research doc and skeleton.
 
 ### Track D — Personal-infra add-ons (nice-to-have)
 
@@ -172,7 +172,7 @@ On the droplet:
   - `0002_chunks_fts_update_trigger` — chunks_fts UPDATE trigger Codex flagged missing
   - `0003_pending_consents` — persistent consent state
   - `0004_v1_1_hermes_inspired` — model_runtimes table + threads.model_tier_override + jobs.compaction_log
-- **7 docs files:** PLAN, KNOWN_ISSUES, OPERATIONS, MORNING_START (+ morning.html), review.html, CORPUS_BRIEF, and now SESSION_RESUME (this file)
+- **7 docs files:** PLAN, KNOWN_ISSUES, OPERATIONS, MORNING_START (+ morning.html), review.html, THINK_BRIEF, and now SESSION_RESUME (this file)
 
 **Venv:** `.venv` at repo root, Python 3.14.3, all deps installed.
 **DB:** `data/donna.db`, migrations at `0004 (head)`, `model_runtimes` seeded with Anthropic haiku/sonnet/opus.
@@ -280,25 +280,25 @@ From Hermes comparison (session `019db01c-a788-7902-b9f3-8ee6aee32b59`):
 
 Done in commit `8d98a5c` via `model_runtimes` table.
 
-From Corpus architectural consultation (session `019db08b-9636-7d83-90bd-7ef5e477770d`):
+From Think architectural consultation (session `019db08b-9636-7d83-90bd-7ef5e477770d`):
 
-> "Corpus is a corpus interpretation engine, not memory."
+> "Think is a corpus interpretation engine, not memory."
 
-This framing is the foundation of `docs/CORPUS_BRIEF.md` and the planned separation.
+This framing is the foundation of `docs/THINK_BRIEF.md` and the planned separation.
 
 > "The graph is not 'the retriever.' The graph is the planner and organizer. Chunks remain the evidence substrate."
 
-Documented in CORPUS_BRIEF §7 as Canon/Corpus's layered retrieval model.
+Documented in THINK_BRIEF §7 as Think's layered retrieval model.
 
 > "I would not model the primitive as scope = persona. I would model: corpus, source, author, work, chunk, claim, concept, pillar, alignment, interpretation profile. A persona is then a view over attributed knowledge, not the root object."
 
-This is the critical architectural reframe — Donna v1's `agent_scope` is flat; Corpus will have proper attribution.
+This is the critical architectural reframe — Donna v1's `agent_scope` is flat; Think will have proper attribution.
 
 ---
 
 ## 8 · Decisions made but not yet implemented
 
-- **Corpus extraction as monorepo package.** Structure fully spec'd in CORPUS_BRIEF.md. Not yet scaffolded. Separate Claude Code session will tackle it.
+- **Think extraction as monorepo package.** Structure fully spec'd in THINK_BRIEF.md. Not yet scaffolded. Separate Claude Code session will tackle it.
 - **GitHub repo transfer to bot-ops account.** User planned for Phase 1 morning. Repo is currently under `GlobalCan`.
 - **Litestream backup setup.** Documented in OPERATIONS.md, not yet provisioned on a real droplet.
 - **`/compress` Discord command.** Mentioned as optional Hermes-inspired polish; not yet built.

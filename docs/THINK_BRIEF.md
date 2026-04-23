@@ -1,8 +1,10 @@
-# Corpus — Session Bootstrap Brief
+# Think — Session Bootstrap Brief
 
-**This is the mission brief for a new Claude Code session tasked with building "Corpus" — a corpus interpretation engine. Paste this entire file as the opening context of that session, or reference it via its path.**
+**This is the mission brief for a new Claude Code session tasked with building "Think" — a corpus interpretation engine. Paste this entire file as the opening context of that session, or reference it via its path.**
 
-Corpus is an internal Python package that lives inside the existing `GlobalCan/donna` monorepo alongside the agent runtime. Same repo, same deployable process, same database file — but a hard internal boundary, separate schema namespace (`corpus_*` tables), separate migrations folder, separate public API, separate test suite, separate eval harness. Donna imports from Corpus; Corpus never imports from Donna.
+> **Rename note (2026-04-23):** the project was called "Corpus" in earlier design docs and Codex sessions. It has since been renamed to **Think** because "corpus" is still the most precise word for the root data concept ("an author's corpus of work"), and having the project name collide with it was a constant disambiguation tax. So: project/package/class = **Think**; data concept = **corpus**. If you see "Corpus" in any imported Codex quote or older artifact, read it as "Think." The architectural substance is unchanged.
+
+Think is an internal Python package that lives inside the existing `GlobalCan/donna` monorepo alongside the agent runtime. Same repo, same deployable process, same database file — but a hard internal boundary, separate schema namespace (`think_*` tables), separate migrations folder, separate public API, separate test suite, separate eval harness. Donna imports from Think; Think never imports from Donna.
 
 Why monorepo: single maintainer, single deployment target, one-process product. Multi-repo splits at this stage would be premature generalization. Codex explicitly recommended this structure.
 
@@ -11,7 +13,7 @@ Why monorepo: single maintainer, single deployment target, one-process product. 
 ## 0 · State-of-the-base update (2026-04-23) — READ THIS FIRST
 
 This brief was written before Donna went to production. As of 2026-04-23 the
-base Corpus depends on has materially matured. Many assumptions in this brief
+base Think depends on has materially matured. Many assumptions in this brief
 have now moved from "planned" to "validated live." A couple of defaults and
 path conventions have also changed. Everything below the horizontal rule in
 this section is still current — but read this section first or you will make
@@ -21,26 +23,26 @@ decisions based on stale assumptions.
 
 - **v0.3.2** · Python **3.14.3** (not 3.12 — 3.14 confirmed everywhere: pyproject, Dockerfile, droplet, CI) · **74 tests green** · **live in production** on a DigitalOcean droplet at `159.203.34.165`
 - **Containers:** `donna-bot` + `donna-worker`, `ghcr.io/globalcan/donna:latest`, built automatically by GHA on every `main` merge
-- **Three-layer backups live:** DO snapshots (daily, 4-week retention), droplet cron tarball (@ 03:00 UTC, 7-day), laptop scp → OneDrive (@ 06:00 local, 30-day). Corpus data in the same SQLite file inherits all three layers automatically — no new backup work needed. Scripts: `scripts/donna-backup.sh` and `scripts/donna-fetch-backup.ps1`.
+- **Three-layer backups live:** DO snapshots (daily, 4-week retention), droplet cron tarball (@ 03:00 UTC, 7-day), laptop scp → OneDrive (@ 06:00 local, 30-day). Think data in the same SQLite file inherits all three layers automatically — no new backup work needed. Scripts: `scripts/donna-backup.sh` and `scripts/donna-fetch-backup.ps1`.
 - **Codex reviews absorbed:** three passes (defect, adversarial challenge, Hermes comparison) plus a fourth latent-bug hunt post-deploy. All findings either fixed or explicitly deferred with mitigation. The FTS5 bug below was a fifth Codex-style finding we caught ourselves during the v0.3.2 Huck Finn smoke test.
 
-### Stack that Corpus will build on — validated live (2026-04-23)
+### Stack that Think will build on — validated live (2026-04-23)
 
 The knowledge layer assumptions in this brief (§7-8) are no longer aspirational. They ran end-to-end against the live droplet:
 
 - **Ingest pipeline:** 402-chunk Huck Finn novel ingested via `botctl teach`. Voyage-3 embeddings via direct HTTP (the `voyageai` SDK is still broken on Py 3.14 — Donna's HTTP pattern in `src/donna/ingest/embed.py` is the reference). `insert_source` + `insert_chunk` + `chunks_fts` INSERT/DELETE/UPDATE triggers all work. ~5 seconds for the whole pipeline on a $6 droplet.
 - **Hybrid retrieval:** `retrieve_knowledge()` in `src/donna/modes/retrieval.py` runs semantic (`vec_distance_cosine`) + FTS5 keyword + RRF merge + diversity cap. Returned top-3 chunks for "what does Huck say about civilization" with the chapter-1 table-of-contents chunk ranked first (score 0.588). The sqlite-vec native path, not the Python fallback.
-- **Grounded mode + `quoted_span` validator:** `answer_grounded()` called live against the 402-chunk scope. Model produced well-formed JSON with `claims[].citations[]` + `claims[].quoted_span` + `prose`. Validator (`src/donna/security/validator.py`) caught a real hallucination: model cited a Jim-dialogue chunk for an Aunt Sally quote from the book's ending. Validator rejected the claim because the span wasn't in the cited chunk. **The "constrained transparency" model Codex demanded is not theoretical — it works and it's strict.** This is directly what Corpus oracle mode will be.
+- **Grounded mode + `quoted_span` validator:** `answer_grounded()` called live against the 402-chunk scope. Model produced well-formed JSON with `claims[].citations[]` + `claims[].quoted_span` + `prose`. Validator (`src/donna/security/validator.py`) caught a real hallucination: model cited a Jim-dialogue chunk for an Aunt Sally quote from the book's ending. Validator rejected the claim because the span wasn't in the cited chunk. **The "constrained transparency" model Codex demanded is not theoretical — it works and it's strict.** This is directly what Think oracle mode will be.
 
-### Bugs found and fixed that Corpus would have inherited
+### Bugs found and fixed that Think would have inherited
 
-- **FTS5 syntax injection** (PR #15) — `knowledge.keyword_search()` passed raw user input into `chunks_fts MATCH ?`. Any natural-language query containing `"`, `(`, `)`, `*`, `?`, `:`, `+`, `^`, `~`, `-`, or bareword operators (`AND`, `OR`, `NOT`, `NEAR`) raised `sqlite3.OperationalError`. Fix: new `_fts_sanitize(query)` helper (`src/donna/memory/knowledge.py`) tokenizes via `re.findall(r"\w+", q)` and wraps each token in double quotes. Preserves FTS5's implicit-AND semantics; empty-token queries short-circuit to `[]`. **Corpus: when you port or mirror this FTS path, reuse or copy `_fts_sanitize` — do not send raw queries to MATCH.** Tests live in `tests/test_fts_sanitize.py`.
-- **`/cancel` didn't cancel** (PR #9) — jobs ignored the CANCELLED status flip. Fixed via `JobContext.check_cancelled()` raised in each mode's iteration loop. Not directly your concern but: **Corpus's long-running ingestion jobs will run through Donna's `JobContext`. Inherit the pattern — call `ctx.check_cancelled()` between expensive steps (entity extraction per chunk, pillar distillation per cluster, etc).**
-- **`docker compose exec bot python -c ...` bypasses sops-decrypted secrets** — Donna's entrypoint decrypts `secrets/prod.enc.yaml` on container start, but `docker exec` skips ENTRYPOINT so pydantic blows up on inline comments in `.env`. Workaround: `docker compose exec bot /entrypoint.sh python -c ...`. `botctl` already routes through a wrapper; `corpusctl` should do the same. See PR #7 for the Dockerfile shim pattern.
+- **FTS5 syntax injection** (PR #15) — `knowledge.keyword_search()` passed raw user input into `chunks_fts MATCH ?`. Any natural-language query containing `"`, `(`, `)`, `*`, `?`, `:`, `+`, `^`, `~`, `-`, or bareword operators (`AND`, `OR`, `NOT`, `NEAR`) raised `sqlite3.OperationalError`. Fix: new `_fts_sanitize(query)` helper (`src/donna/memory/knowledge.py`) tokenizes via `re.findall(r"\w+", q)` and wraps each token in double quotes. Preserves FTS5's implicit-AND semantics; empty-token queries short-circuit to `[]`. **Think: when you port or mirror this FTS path, reuse or copy `_fts_sanitize` — do not send raw queries to MATCH.** Tests live in `tests/test_fts_sanitize.py`.
+- **`/cancel` didn't cancel** (PR #9) — jobs ignored the CANCELLED status flip. Fixed via `JobContext.check_cancelled()` raised in each mode's iteration loop. Not directly your concern but: **Think's long-running ingestion jobs will run through Donna's `JobContext`. Inherit the pattern — call `ctx.check_cancelled()` between expensive steps (entity extraction per chunk, pillar distillation per cluster, etc).**
+- **`docker compose exec bot python -c ...` bypasses sops-decrypted secrets** — Donna's entrypoint decrypts `secrets/prod.enc.yaml` on container start, but `docker exec` skips ENTRYPOINT so pydantic blows up on inline comments in `.env`. Workaround: `docker compose exec bot /entrypoint.sh python -c ...`. `botctl` already routes through a wrapper; `thinkctl` should do the same. See PR #7 for the Dockerfile shim pattern.
 - **PowerShell 5.1 vs 7** (PR #13) — Windows ships PS 5.1 by default. `Get-Date -AsUTC` is PS 7+. Use `(Get-Date).ToUniversalTime().ToString('...')`. Relevant if you build laptop-side tooling for corpus ingestion or review.
 - **`flags=re.UNICODE`** — redundant on Py3 str patterns; ruff `UP` rules flag it. Trivial but catches regressions.
-- **Droplet `bot` user has NO sudo password** — `harden-droplet.sh` creates it with `--disabled-password` but adds it to the `sudo` group, so `sudo` prompts forever. Anything requiring root must go through DO web console or docker-group escape hatch (`docker run --rm -v /path:/path alpine ...`). Corpus tooling on the droplet must not assume `sudo`.
-- **Phoenix upstream broken (14.x line)** — disabled in `docker-compose.yml` with a big comment block. OpenTelemetry export still runs (it just logs "unreachable" warnings). **Corpus inherits the same OTEL exporter — your spans will go nowhere useful until we find a working tag or swap to Tempo/Jaeger. Plan accordingly for pillar-distillation eval debugging: pipe to structlog, not traces, for now.**
+- **Droplet `bot` user has NO sudo password** — `harden-droplet.sh` creates it with `--disabled-password` but adds it to the `sudo` group, so `sudo` prompts forever. Anything requiring root must go through DO web console or docker-group escape hatch (`docker run --rm -v /path:/path alpine ...`). Think tooling on the droplet must not assume `sudo`.
+- **Phoenix upstream broken (14.x line)** — disabled in `docker-compose.yml` with a big comment block. OpenTelemetry export still runs (it just logs "unreachable" warnings). **Think inherits the same OTEL exporter — your spans will go nowhere useful until we find a working tag or swap to Tempo/Jaeger. Plan accordingly for pillar-distillation eval debugging: pipe to structlog, not traces, for now.**
 
 ### Original assumptions in this brief that have moved to "validated"
 
@@ -51,11 +53,11 @@ The knowledge layer assumptions in this brief (§7-8) are no longer aspirational
 
 ### Original assumptions in this brief that have NOT changed
 
-- Monorepo with hard internal boundary. Confirmed with the deploy — Corpus riding Donna's SQLite file + Donna's deploy pipeline is cleaner now, not worse.
+- Monorepo with hard internal boundary. Confirmed with the deploy — Think riding Donna's SQLite file + Donna's deploy pipeline is cleaner now, not worse.
 - `agent_scope` is still Donna's primitive; it's still the wrong primitive for corpus interpretation. §4's attributed-knowledge-graph model is right.
 - No framework. No fine-tuning. No Neo4j day-one. All still right.
 - Phase 0 design doc first. User will push back if you skip to coding. They've been burned by agents jumping the gun before.
-- EvidencePack contract (Corpus returns structure; Donna composes prose) is the load-bearing decision. Holds.
+- EvidencePack contract (Think returns structure; Donna composes prose) is the load-bearing decision. Holds.
 
 ### Paths and environment
 
@@ -65,13 +67,13 @@ The knowledge layer assumptions in this brief (§7-8) are no longer aspirational
 
 ### Split of concerns for the multi-session workflow
 
-The user is continuing **Donna-side development on their primary laptop** (this session / successor sessions on the same machine). They're running **Corpus development on a second laptop** via a separate Claude Code session. That split is the workflow, not a temporary arrangement.
+The user is continuing **Donna-side development on their primary laptop** (this session / successor sessions on the same machine). They're running **Think development on a second laptop** via a separate Claude Code session. That split is the workflow, not a temporary arrangement.
 
-- **Corpus session owns:** `src/corpus/*`, `tests/corpus/*`, `evals/corpus/*`, `migrations/versions/corpus_*`, `docs/CORPUS_*`
+- **Think session owns:** `src/think/*`, `tests/think/*`, `evals/think/*`, `migrations/versions/think_*`, `docs/THINK_*`
 - **Donna session owns:** everything else
 - **Both sessions share:** `main` branch via GitHub. Coordinate via PR descriptions. Merges happen on whichever laptop is current.
-- **Conflict avoidance:** don't edit `src/donna/*` from the Corpus session unless the change is explicitly the "Donna wires corpus.Corpus into tools/knowledge.py" integration PR — and even then, open it as a separate small PR, don't bundle with Corpus phase work.
-- **When Corpus needs something from Donna** (pattern, helper, test fixture), copy first, unify later. Small duplication is cheaper than cross-session coupling.
+- **Conflict avoidance:** don't edit `src/donna/*` from the Think session unless the change is explicitly the "Donna wires think.Think into tools/knowledge.py" integration PR — and even then, open it as a separate small PR, don't bundle with Think phase work.
+- **When Think needs something from Donna** (pattern, helper, test fixture), copy first, unify later. Small duplication is cheaper than cross-session coupling.
 
 ### Pointers into the current code you'll want in your first hour
 
@@ -79,12 +81,12 @@ The user is continuing **Donna-side development on their primary laptop** (this 
 - `src/donna/ingest/chunk.py` + `src/donna/ingest/pipeline.py` — chunking + within-batch dedupe
 - `src/donna/memory/knowledge.py` — `insert_source`, `insert_chunk`, `semantic_search`, `keyword_search`, `_fts_sanitize`, `_row_to_chunk`
 - `src/donna/modes/retrieval.py` — `retrieve_knowledge`, `_rrf_merge`, `_apply_diversity`, `_apply_temporal_prior`
-- `src/donna/modes/grounded.py` — `answer_grounded` (legacy dict-returning shape you can mirror for `Corpus.answer()` before EvidencePack is fully defined)
+- `src/donna/modes/grounded.py` — `answer_grounded` (legacy dict-returning shape you can mirror for `Think.answer()` before EvidencePack is fully defined)
 - `src/donna/security/validator.py` — `validate_grounded`, `quoted_span` logic — port as-is
 - `src/donna/security/sanitize.py` — dual-call untrusted-content pattern — port as-is
-- `src/donna/agent/context.py` — `JobContext` primitives (`model_step`, `tool_step`, `check_cancelled`, `maybe_compact`, `checkpoint`, `finalize`) — Corpus's long-running jobs (extraction, distillation) should run inside this, not invent their own
+- `src/donna/agent/context.py` — `JobContext` primitives (`model_step`, `tool_step`, `check_cancelled`, `maybe_compact`, `checkpoint`, `finalize`) — Think's long-running jobs (extraction, distillation) should run inside this, not invent their own
 - `src/donna/memory/ids.py` — typed ID prefixes. Use `ids.chunk_id()` style for corpus IDs too; keep the convention.
-- `tests/conftest.py` — `fresh_db` fixture (alembic upgrade via subprocess). Corpus tests should reuse.
+- `tests/conftest.py` — `fresh_db` fixture (alembic upgrade via subprocess). Think tests should reuse.
 - `tests/test_fts_sanitize.py` — the pattern for testing a DB-touching primitive. Copy.
 
 ### The one hard-learned ops lesson
@@ -95,7 +97,7 @@ Don't run ad-hoc SQL or Python against the live DB without going through `docker
 
 ## 0.1 · How to use this brief
 
-You (the agent reading this) are a session operating inside the existing Donna repository at `C:\Users\rchan\OneDrive\Desktop\donna` (remote: `GlobalCan/donna`). Your job is to add a new `corpus/` package alongside `donna/`.
+You (the agent reading this) are a session operating inside the existing Donna repository at `C:\Users\rchan\OneDrive\Desktop\donna` (remote: `GlobalCan/donna`). Your job is to add a new `think/` package alongside `donna/`.
 
 Read in this order before writing any code:
 
@@ -106,9 +108,9 @@ Read in this order before writing any code:
 5. `docs/review.html` — interactive adversarial review of Donna.
 6. `src/donna/modes/retrieval.py` — current hybrid retrieval (you're porting this).
 7. `src/donna/memory/knowledge.py` — current knowledge/chunk primitives.
-8. `src/donna/security/validator.py` — grounded-mode citation validator (moves to Corpus).
-9. `src/donna/security/sanitize.py` — untrusted-content dual-call (moves to Corpus).
-10. `src/donna/ingest/{chunk.py,embed.py,pipeline.py}` — ingestion (moves to Corpus).
+8. `src/donna/security/validator.py` — grounded-mode citation validator (moves to Think).
+9. `src/donna/security/sanitize.py` — untrusted-content dual-call (moves to Think).
+10. `src/donna/ingest/{chunk.py,embed.py,pipeline.py}` — ingestion (moves to Think).
 11. `src/donna/modes/{grounded.py,speculative.py,debate.py}` — mode direct-call APIs (their retrieval primitives move; orchestration stays in Donna).
 
 Then come back here for the mission.
@@ -126,7 +128,7 @@ The user DOES want an oracle ("what would Michael Lewis say about X").
 
 They also want cross-author synthesis — "where do Lewis and Dalio overlap on X, and where do they use the same words to mean different things?"
 
-Both require structured interpretation artifacts — worldview pillars, recurring preoccupations, canonicalized concepts, argumentative moves — not just chunks of text retrieved by cosine similarity. **This is the hard, interesting, distinctive thing about the project.** Corpus is not a generic RAG system. If it ends up looking like a generic RAG system, you've failed.
+Both require structured interpretation artifacts — worldview pillars, recurring preoccupations, canonicalized concepts, argumentative moves — not just chunks of text retrieved by cosine similarity. **This is the hard, interesting, distinctive thing about the project.** Think is not a generic RAG system. If it ends up looking like a generic RAG system, you've failed.
 
 Real use cases (not hypotheticals):
 
@@ -139,15 +141,15 @@ Real use cases (not hypotheticals):
 
 ---
 
-## 2 · The critical reframe — Corpus is NOT a memory system
+## 2 · The critical reframe — Think is NOT a memory system
 
 From Codex (GPT-5.4) session `019db08b-9636-7d83-90bd-7ef5e477770d`:
 
-> **Corpus is a "corpus interpretation engine," not a memory system.** Memory is about facts the agent accumulates from use. Corpus interpretation is about extracting, canonicalizing, distilling, and synthesizing the structured content of a body of work. Same tool types (vector DBs, graph, LLM) but fundamentally different problem shape.
+> **Think is a "corpus interpretation engine," not a memory system.** Memory is about facts the agent accumulates from use. Think interpretation is about extracting, canonicalizing, distilling, and synthesizing the structured content of a body of work. Same tool types (vector DBs, graph, LLM) but fundamentally different problem shape.
 
-Memory systems (Mem0, Letta, Zep/Graphiti) store facts the agent learns during interaction. Corpus stores interpretations of external bodies of work the user curates. Don't conflate. Donna already has a `facts` table for memory; Corpus is something else entirely.
+Memory systems (Mem0, Letta, Zep/Graphiti) store facts the agent learns during interaction. Think stores interpretations of external bodies of work the user curates. Don't conflate. Donna already has a `facts` table for memory; Think is something else entirely.
 
-**Corpus answers:**
+**Think answers:**
 - What does this corpus contain?
 - What concepts recur?
 - What pillars of thought hold across works?
@@ -166,14 +168,19 @@ Two different problems. Two different lifecycles. Two different failure modes. O
 
 ---
 
-## 3 · Name-is-the-concept: a note
+## 3 · Names
 
-"corpus" is both the project name and the root data concept. Disambiguate by context:
-- **Project/package:** `corpus` (lowercase, e.g. `from corpus import Corpus`)
-- **Schema prefixes:** `corpus_chunks`, `corpus_pillars`, etc.
-- **Data model:** "this author's corpus of work" — the concept rooted at the `corpus` table.
+The rename (see preamble) cleanly separates the previously overloaded word:
 
-Project vs. concept never actually clashes in practice.
+- **Project / Python package:** `think` (lowercase module, e.g. `from think import Think`)
+- **Top-level class:** `Think` (e.g. `t = Think.open("./data/donna.db")`)
+- **CLI:** `thinkctl`
+- **Schema prefixes:** `think_*` — every table Think owns (`think_chunks`, `think_pillars`, `think_concepts`, `think_entities`, etc.)
+- **Migrations:** `migrations/versions/think_NNNN_*.py` (shared Alembic history with Donna, distinguished by filename prefix)
+- **Docs:** `docs/THINK_*.md` (this brief, plus `THINK_DESIGN.md`, `THINK_RESEARCH_NOTES.md` when you create them)
+- **Data concept "corpus":** an author's body of work. Stays lowercase, used in prose ("Lewis's corpus", "the Twain seed corpus") and as the root data abstraction in §4's schema.
+
+Project and data concept no longer collide.
 
 ---
 
@@ -216,22 +223,22 @@ A **persona is a view over attributed knowledge, not a root object.** This unloc
 - Multi-author composite personas ("investors who write about incentives")
 - Single-author filtered personas ("Lewis on Wall Street specifically")
 
-It's also the only schema that answers cross-author questions naturally. Donna v1 currently models `agent_scope` as the root — that's the wrong primitive. Corpus fixes it.
+It's also the only schema that answers cross-author questions naturally. Donna v1 currently models `agent_scope` as the root — that's the wrong primitive. Think fixes it.
 
 ---
 
-## 5 · The Corpus ↔ Donna integration contract
+## 5 · The Think ↔ Donna integration contract
 
-Corpus is an **internal Python package** that Donna imports directly. Same repo, same process, same SQLite file. No HTTP boundary, no separate deployment.
+Think is an **internal Python package** that Donna imports directly. Same repo, same process, same SQLite file. No HTTP boundary, no separate deployment.
 
 The contract — load-bearing:
 
-**Corpus returns structured `EvidencePack` objects, NOT final prose.**
+**Think returns structured `EvidencePack` objects, NOT final prose.**
 
 ```python
-from corpus import Corpus
+from think import Think
 
-c = Corpus.open("./data/donna.db")   # same db file, corpus_* tables
+c = Think.open("./data/donna.db")   # same db file, think_* tables
 
 pack = c.answer(
     profile="lewis",                  # interpretation profile id
@@ -253,18 +260,18 @@ pack = c.answer(
 ```
 
 **Donna composes the final response** using the pack. That means:
-- Corpus does NOT know about Discord or any chat surface
-- Corpus does NOT own the LLM call that produces user-facing prose
-- Corpus does NOT handle consent or taint propagation (Donna's concerns)
-- Corpus DOES everything up to "structured context ready for final composition"
+- Think does NOT know about Discord or any chat surface
+- Think does NOT own the LLM call that produces user-facing prose
+- Think does NOT handle consent or taint propagation (Donna's concerns)
+- Think DOES everything up to "structured context ready for final composition"
 
-This prevents Donna from becoming a thin shell over Corpus and keeps voice/consent/interaction responsibility with the agent runtime.
+This prevents Donna from becoming a thin shell over Think and keeps voice/consent/interaction responsibility with the agent runtime.
 
-Corpus DOES call LLMs internally — for entity extraction, canonicalization, pillar distillation, post-gen validation. Those are "curation-time" LLM calls, not "query-time response generation." Different concerns.
+Think DOES call LLMs internally — for entity extraction, canonicalization, pillar distillation, post-gen validation. Those are "curation-time" LLM calls, not "query-time response generation." Different concerns.
 
 ### Schema ownership rule
 
-Strict: **Corpus owns every `corpus_*` table. Donna owns everything else.** No cross-writing ever. Donna reads Corpus only via `from corpus import ...` — never via SQL.
+Strict: **Think owns every `think_*` table. Donna owns everything else.** No cross-writing ever. Donna reads Think only via `from think import ...` — never via SQL.
 
 ### Directory layout
 
@@ -272,9 +279,9 @@ Strict: **Corpus owns every `corpus_*` table. Donna owns everything else.** No c
 GlobalCan/donna/
 ├── src/
 │   ├── donna/                    (existing agent runtime — unchanged except imports)
-│   └── corpus/                   (NEW — corpus interpretation engine)
+│   └── think/                    (NEW — corpus interpretation engine)
 │       ├── __init__.py
-│       ├── api.py                (public Corpus class + EvidencePack)
+│       ├── api.py                (public Think class + EvidencePack)
 │       ├── types.py              (Chunk, Pillar, Concept, Alignment, Profile dataclasses)
 │       ├── db.py                 (connection, pragmas — shares SQLite file with Donna)
 │       ├── ingest/
@@ -296,20 +303,20 @@ GlobalCan/donna/
 │       ├── validator.py          (grounded quoted_span, ported)
 │       ├── sanitize.py           (dual-call untrusted content, ported)
 │       └── cli/
-│           └── corpusctl.py      (NEW — ingest, review queue, list profiles)
+│           └── thinkctl.py      (NEW — ingest, review queue, list profiles)
 ├── tests/
 │   ├── donna/                    (existing)
-│   └── corpus/                   (NEW)
+│   └── think/                    (NEW)
 ├── evals/
 │   ├── donna/                    (existing)
-│   └── corpus/                   (NEW — oracle, pillar-recovery, overlap, attribution)
+│   └── think/                    (NEW — oracle, pillar-recovery, overlap, attribution)
 ├── migrations/
-│   └── versions/                 (shared migration history; corpus files named corpus_NNNN_*)
+│   └── versions/                 (shared migration history; corpus files named think_NNNN_*)
 └── docs/
-    └── CORPUS_DESIGN.md          (your first real output — write before coding)
+    └── THINK_DESIGN.md          (your first real output — write before coding)
 ```
 
-Donna's `tools/knowledge.py` becomes a thin wrapper over `corpus.Corpus` — one Donna PR, separate from Corpus's development.
+Donna's `tools/knowledge.py` becomes a thin wrapper over `think.Think` — one Donna PR, separate from Think's development.
 
 ---
 
@@ -349,12 +356,12 @@ Do deep research on these. Read source code where possible, find post-mortems, d
 - No fine-tuning. User explicit. Oracle effect from retrieval + composition, not weights.
 - No Neo4j unless graph traversal is the *measured* bottleneck. Start SQLite + adjacency tables. Codex: *"Your hard problem is semantic quality, not graph query performance."*
 - No autonomous knowledge ingestion. User reviews everything.
-- No multi-platform adapter. Corpus has no Discord code.
+- No multi-platform adapter. Think has no Discord code.
 - No framework (LangChain, LlamaIndex). Hand-roll like Donna.
 
 ---
 
-## 7 · Corpus's layered retrieval model
+## 7 · Think's layered retrieval model
 
 From Codex, directly:
 
@@ -374,7 +381,7 @@ Output: `EvidencePack`.
 
 ## 8 · The ingestion pipeline
 
-Donna's current: fetch → chunk → dedupe → embed → store. Corpus extends significantly.
+Donna's current: fetch → chunk → dedupe → embed → store. Think extends significantly.
 
 ```
 ┌─────────┐
@@ -401,8 +408,8 @@ Donna's current: fetch → chunk → dedupe → embed → store. Corpus extends 
 │ ★ Entity + claim extraction (NEW)             │
 │   Haiku per chunk: entities (people, orgs,    │
 │   works, concepts) + claims                   │
-│   Store in corpus_entities, corpus_claims,    │
-│   corpus_chunk_entities                       │
+│   Store in think_entities, think_claims,    │
+│   think_chunk_entities                       │
 └────┬──────────────────────────────────────────┘
      ▼
 ┌───────────────────────────────────────────────┐
@@ -450,7 +457,7 @@ Codex was blunt:
 Build the eval harness BEFORE the graph layer. Minimum v0:
 
 ```yaml
-# evals/corpus/golden_oracle/lewis_ai_agents.yaml
+# evals/think/golden_oracle/lewis_ai_agents.yaml
 id: lewis_ai_agents
 profile: lewis
 mode: oracle
@@ -476,7 +483,7 @@ expect:
 
 ### Setup
 
-- Golden cases in `evals/corpus/` as YAML
+- Golden cases in `evals/think/` as YAML
 - Seed corpus: Project Gutenberg Mark Twain (~500 chunks, deterministic)
 - Pytest-integrated, CI-blocking
 - Baseline numbers before graph layer, so you have comparisons
@@ -486,42 +493,42 @@ expect:
 ## 10 · Quality bar — what "done" looks like per phase
 
 ### Phase 0 — Research + design doc (3-5 days)
-- [ ] Read papers + reference code from §6. Notes to `docs/CORPUS_RESEARCH_NOTES.md`.
-- [ ] Write `docs/CORPUS_DESIGN.md`: variant comparison, schema with worked examples (Lewis/Dalio/Twain), canonicalization decision tree, EvidencePack schema precisely, top 3 risks + mitigations.
+- [ ] Read papers + reference code from §6. Notes to `docs/THINK_RESEARCH_NOTES.md`.
+- [ ] Write `docs/THINK_DESIGN.md`: variant comparison, schema with worked examples (Lewis/Dalio/Twain), canonicalization decision tree, EvidencePack schema precisely, top 3 risks + mitigations.
 - [ ] Get user feedback BEFORE writing code.
 
 ### Phase 1 — Package scaffold + port Donna's knowledge layer (~1 week)
-- [ ] `src/corpus/` layout per §5
-- [ ] Migrations prefixed `corpus_NNNN_*`, all `corpus_*` tables
-- [ ] Port: `ingest/{chunk,embed,pipeline}`, `modes/retrieval`, `security/{validator,sanitize}` into Corpus
-- [ ] Public API: `Corpus.open()`, `.ingest()`, `.retrieve_chunks()`, `.answer(mode=...)` → EvidencePack
-- [ ] Donna PR: `tools/knowledge.py` as thin wrapper over Corpus
+- [ ] `src/think/` layout per §5
+- [ ] Migrations prefixed `think_NNNN_*`, all `think_*` tables
+- [ ] Port: `ingest/{chunk,embed,pipeline}`, `modes/retrieval`, `security/{validator,sanitize}` into Think
+- [ ] Public API: `Think.open()`, `.ingest()`, `.retrieve_chunks()`, `.answer(mode=...)` → EvidencePack
+- [ ] Donna PR: `tools/knowledge.py` as thin wrapper over Think
 - [ ] All existing Donna tests still pass
-- [ ] New Corpus tests covering ported primitives
+- [ ] New Think tests covering ported primitives
 
 ### Phase 2 — Entity + claim extraction (~1 week)
-- [ ] Schema: `corpus_entities`, `corpus_entity_aliases`, `corpus_entity_mentions`, `corpus_claims`, `corpus_chunk_entities`
+- [ ] Schema: `think_entities`, `think_entity_aliases`, `think_entity_mentions`, `think_claims`, `think_chunk_entities`
 - [ ] Ingestion adds Haiku extraction per chunk
 - [ ] Embeddings on entities + claims
 - [ ] API: `recall_entities(profile, query)`, `recall_claims(profile, query)`
 - [ ] Provenance on every entity: `chunk_ids`, `salience`, `extraction_prompt_version`
 
 ### Phase 3 — Canonicalization + concept graph (~1 week)
-- [ ] Schema: `corpus_concepts`, `corpus_concept_edges`, `corpus_canonicalization_proposals`
+- [ ] Schema: `think_concepts`, `think_concept_edges`, `think_canonicalization_proposals`
 - [ ] Three-stage canonicalization (embed → alias rules → LLM reconciliation)
-- [ ] Review queue via `corpusctl review`
+- [ ] Review queue via `thinkctl review`
 - [ ] Typed relationships: `same_as`, `close_to`, `broader_than`, `narrower_than`, `contrasts_with`, `uses_different_frame_for`
 - [ ] Never auto-apply `same_as`
 
 ### Phase 4 — Worldview pillars (~1-2 weeks, eval-heavy)
-- [ ] Schema: `corpus_worldview_pillars`, `corpus_pillar_evidence`, `corpus_pillar_versions`
+- [ ] Schema: `think_worldview_pillars`, `think_pillar_evidence`, `think_pillar_versions`
 - [ ] Distillation pipeline: cluster claims → score → name → evidence + counter
 - [ ] Regeneration + versioning on corpus change
 - [ ] Pillar-recovery evals on curated corpus
 - [ ] `recall_pillars(profile, query)` returns top-K by relevance
 
 ### Phase 5 — Cross-corpus alignments + overlap mode (~1 week)
-- [ ] Schema: `corpus_cross_corpus_alignments`
+- [ ] Schema: `think_cross_corpus_alignments`
 - [ ] Cross-profile canonicalization (typed relationships matter more here)
 - [ ] `answer(mode="overlap", profile_a, profile_b, topic)` → EvidencePack
 - [ ] `answer(mode="debate_prep", topic, profiles=[...])` for Donna's orchestrator
@@ -534,7 +541,7 @@ expect:
   - Argumentative move extraction
   - Explicit confidence + refusal
 - [ ] Oracle evals (labeling, pillar coverage, evidence grounding)
-- [ ] Donna's speculative mode rewired to call Corpus oracle
+- [ ] Donna's speculative mode rewired to call Think oracle
 
 ### Eval harness stays alive through every phase.
 
@@ -544,7 +551,7 @@ expect:
 
 From two Codex reviews + Hermes comparison:
 
-1. **Corpus never does final prose.** Returns EvidencePack. Donna composes.
+1. **Think never does final prose.** Returns EvidencePack. Donna composes.
 2. **Don't auto-merge concepts/entities without human review.** Automatic canonicalization destroys nuance.
 3. **Don't strip provenance.** Every pillar/claim/alignment → chunk evidence.
 4. **Don't build without evals.** Retrieval changes must move golden eval numbers.
@@ -552,7 +559,7 @@ From two Codex reviews + Hermes comparison:
 6. **Don't treat pillars as facts.** They are interpretations. Version them. Preserve counterexamples. No-counter-evidence pillars are suspicious.
 7. **Don't fine-tune.** Retrieval + composition + style anchors + pillars beats fine-tuning for voice and doesn't lock to a model.
 8. **Don't build a real-time ingestion pipeline.** Entity extraction + pillar distillation are batch. Background jobs.
-9. **Don't cross schema ownership.** Corpus owns `corpus_*`. Donna owns everything else. Cross-boundary only via Corpus public API.
+9. **Don't cross schema ownership.** Think owns `think_*`. Donna owns everything else. Cross-boundary only via Think public API.
 10. **Don't over-generalize.** Single-digit profiles, ~500k total chunks. Resist distributed-systems reach.
 
 ---
@@ -564,7 +571,7 @@ From two Codex reviews + Hermes comparison:
 - **Voyage-3 embeddings via direct HTTP** (voyageai SDK dropped on 3.14; Donna has the pattern in `src/donna/ingest/embed.py`)
 - **Anthropic for LLM calls** (Haiku for extraction/canonicalization, Sonnet for complex distillation, Opus only for user-visible generation in Donna)
 - **Ruff + pytest + pytest-asyncio + mypy**
-- **Alembic for migrations** (shared with Donna, `corpus_NNNN_*` filename prefix)
+- **Alembic for migrations** (shared with Donna, `think_NNNN_*` filename prefix)
 - **structlog** for logging
 - **OpenTelemetry** for tracing (same Phoenix instance Donna exports to)
 
@@ -587,13 +594,13 @@ From multiple days of design conversation:
 - **Enterprise is not a consideration.** Don't mention enterprise in code or docs.
 - **Oracle voice must be genuinely distinct per author.** If Lewis and Dalio "feel" the same, project failed.
 - **Seed corpus: Twain** (Gutenberg). Move to Lewis after pipeline proven.
-- **Review queue surface preferred: `corpusctl review` CLI** (Rich + Typer, like `botctl`).
+- **Review queue surface preferred: `thinkctl review` CLI** (Rich + Typer, like `botctl`).
 
 ---
 
 ## 14 · Verbatim Codex insights (GPT-5.4) — session `019db08b-9636-7d83-90bd-7ef5e477770d`
 
-> "Corpus is a corpus interpretation engine, not memory."
+> "Think is a corpus interpretation engine, not memory."
 
 > "The graph is not 'the retriever.' The graph is the planner and organizer. Chunks remain the evidence substrate."
 
@@ -616,7 +623,7 @@ From multiple days of design conversation:
 ## 15 · Known unknowns — ask these BEFORE committing code
 
 1. **First real corpus**: Twain as seed confirmed. Lewis is the first "real" target. User has Lewis's books on Kindle — confirm delivery format (Kindle export → txt, manual extract, etc.) before building a parser.
-2. **Review queue surface**: `corpusctl review` CLI is default. Confirm vs. Discord slash command.
+2. **Review queue surface**: `thinkctl review` CLI is default. Confirm vs. Discord slash command.
 3. **Pillar cardinality**: 7-12 per profile default, configurable. Confirm.
 4. **Alignment approval thresholds**: auto-apply `close_to` at confidence > 0.9? Never auto-apply `same_as`. Confirm defaults.
 5. **Oracle refusal strictness**: retrieval confidence threshold for refusal. Start at 0.3, calibrate on real use.
@@ -628,7 +635,7 @@ From multiple days of design conversation:
 
 Not "tests pass." Table stakes.
 
-**Real signal:** when you query `corpus.answer(profile="lewis", question="X", mode="oracle")` and Donna hands the composed reply back, the user reads it and says **"yes — that is a Lewis-shaped thought I have not had before, grounded in passages I recognize."**
+**Real signal:** when you query `think.answer(profile="lewis", question="X", mode="oracle")` and Donna hands the composed reply back, the user reads it and says **"yes — that is a Lewis-shaped thought I have not had before, grounded in passages I recognize."**
 
 Failure mode: "this sounds like Claude writing a book report about Lewis."
 
@@ -643,9 +650,9 @@ Between those extremes is where every prior attempt has lived. Your job: push to
 
 ## 17 · Bootstrap: first ~4 hours
 
-1. Read papers in §6 (~2 hours). Notes to `docs/CORPUS_RESEARCH_NOTES.md`.
-2. Write `docs/CORPUS_DESIGN.md` with variant comparison + schema + worked examples (~1-2 hours).
-3. Scaffold empty `src/corpus/` package: `__init__.py` with `__version__ = "0.0.1"`, `api.py` with method stubs + docstrings, `types.py` with dataclass skeletons.
+1. Read papers in §6 (~2 hours). Notes to `docs/THINK_RESEARCH_NOTES.md`.
+2. Write `docs/THINK_DESIGN.md` with variant comparison + schema + worked examples (~1-2 hours).
+3. Scaffold empty `src/think/` package: `__init__.py` with `__version__ = "0.0.1"`, `api.py` with method stubs + docstrings, `types.py` with dataclass skeletons.
 4. Stop. Ask user for feedback on design doc before writing real code.
 
 Then phases 1-6 in order, each gated by evals + user sign-off.
