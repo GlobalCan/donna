@@ -47,13 +47,23 @@ class DonnaBot(discord.Client):
     # -- lifecycle --
     async def setup_hook(self) -> None:
         discord_ux.register_commands(self)
-        # If a guild id is given, sync there for fast propagation; else global
+        # Command sync strategy:
+        #  - Global sync is always performed so DMs + any future guild get
+        #    the commands. Global commands can take up to 1h to propagate
+        #    the first time but subsequent deploys are faster.
+        #  - If DISCORD_GUILD_ID is set, we also copy the tree to that guild
+        #    and sync there for INSTANT availability in that guild (useful
+        #    for iterating on command shape without waiting on global cache).
+        #  - Previously we only synced to the guild when set, which meant
+        #    slash commands never appeared in DMs — the primary surface for
+        #    solo-user Donna. Fixed.
         gid = settings().discord_guild_id
+        await self.tree.sync()
         if gid:
-            await self.tree.sync(guild=discord.Object(id=gid))
-        else:
-            await self.tree.sync()
-        log.info("discord.setup_done")
+            guild_obj = discord.Object(id=gid)
+            self.tree.copy_global_to(guild=guild_obj)
+            await self.tree.sync(guild=guild_obj)
+        log.info("discord.setup_done", guild_id=gid)
 
         # Start outbox drainers — all three poll SQLite tables.
         # Wrap with _supervise so a transient exception (DB blip, Discord
