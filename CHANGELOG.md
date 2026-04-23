@@ -1,5 +1,123 @@
 # Changelog
 
+## [0.3.1] — 2026-04-23 — Post-deploy hardening + Codex adversarial fixes
+
+Same-day follow-up after v0.3.0 went live. Codex (GPT-5.4) adversarial review
+surfaced three latent bugs; all fixed and validated end-to-end against the
+running droplet. Five PRs merged.
+
+### Fixed — Codex adversarial findings
+
+- **Drainers no longer die silently** (PR #9 / Codex latent bug #1) — the
+  three Discord adapter drain tasks (`_drain_updates`, `_drain_consent`,
+  `_drain_asks`) used to be spawned with bare `asyncio.create_task(...)`
+  with the handles dropped. A single transient DB or `fetch_channel` error
+  killed the task while the container stayed "up." We hit this live during
+  the deploy when the DB was briefly unreachable; recovery required a
+  container restart. New `_supervise(name, factory)` wraps each drainer in
+  a restart loop with capped exponential backoff (1→30s); `CancelledError`
+  exits cleanly for graceful shutdown.
+
+- **`/cancel` actually cancels** (PR #9 / Codex latent bug #2) — `/cancel`
+  used to flip `jobs.status` to `CANCELLED` but no code path in the agent
+  loop or modes ever polled for it. Jobs kept executing through model and
+  tool steps until natural `end_turn`. New `JobCancelled` exception +
+  `JobContext.check_cancelled()` reads `jobs.status` and raises if
+  CANCELLED. `JobContext.open()` catches it, checkpoints partial state,
+  exits without finalizing to DONE. Modes call `check_cancelled()` at
+  natural step boundaries (chat: top of each iter; grounded: before
+  retrieval + regen; speculative: before retrieval; debate: before each
+  turn). Validated live: a research job at 18 tool calls + $0.20 spent
+  was halted within one iteration after a DB-flip cancel.
+
+- **`botctl jobs --since` actually filters** (PR #9 / Codex latent bug #3)
+  — `since: str = typer.Option("1d", ...)` was declared but never used;
+  `recent_jobs(conn, limit=limit)` ignored it. Watchdog DM tells users to
+  run `botctl jobs --since 1h` during incidents — our own incident
+  tooling was lying. `recent_jobs` now accepts `since: timedelta | None`;
+  `botctl jobs --since` parses `30m | 3h | 1d | 1w | all` via a new
+  `_parse_since` helper. Validated: `--since 1h` returns empty, `--since
+  24h` returns 18 rows, `--since all` returns full history.
+
+### Fixed — runtime hygiene
+
+- **Container UID matches host bot** (PR #7) — `user: "1001:1001"` in
+  `docker-compose.yml` (configurable via `DONNA_UID`/`DONNA_GID`) so
+  bind-mounted files (`/etc/bot/age.key`, `/data/donna/*`) are accessible
+  without host-side `chmod 644`/`chmod 777` workarounds. Migration cost on
+  the live droplet: one `docker run --rm -v /data/donna:/data alpine
+  chown -R 1001:1001 /data` to fix existing files written by the old uid
+  10001 container.
+
+- **`docker compose exec bot botctl` works without entrypoint prefix**
+  (PR #7) — Dockerfile shadows the pip-installed `/usr/local/bin/botctl`
+  with a tiny shell wrapper that forwards through `/entrypoint.sh`, so
+  exec'd commands always run sops-decrypt-and-export first. Plus
+  `.env.example` scrubbed of inline `# comments` so cp-then-edit yields
+  a clean dotenv that `pydantic_settings` can parse.
+
+- **`botctl jobs` shows full job IDs + `botctl job <prefix>` works** (PR
+  #7) — `j.id[:18]` truncation removed; `_resolve_job` does exact match
+  first then unambiguous prefix match (`WHERE id LIKE 'prefix%' LIMIT 2`).
+  Ambiguous prefix → warn + miss; one match → resolve; zero → not found.
+
+- **Slash commands now sync globally** (PR #10) — `setup_hook` only
+  sync'd to the configured guild. DMs aren't in any guild, so the entire
+  command tree was invisible in DMs — Donna's primary surface. Always do
+  a global sync now; if `DISCORD_GUILD_ID` is set, additionally
+  `copy_global_to(guild)` and sync there for instant dev-guild updates.
+  First post-deploy propagation can take ~1h on Discord's CDN.
+
+### Disabled — upstream
+
+- **Phoenix observability** (PR #9) — `arizephoenix/phoenix:14.9.0` ALSO
+  shipped broken (same `ModuleNotFoundError: No module named 'phoenix'`
+  as `:latest` from 2026-04-23). Whole 14.x manifest seems bad. Service
+  commented out in `docker-compose.yml`; bot/worker continue to function,
+  OTLP exporter just logs unreachable warnings. Re-enable in a follow-up
+  with a confirmed-working tag (try 13.x or older) or swap to Tempo /
+  Jaeger.
+
+### Image / Dockerfile (PR #5, #7)
+
+- `COPY alembic.ini` + `COPY migrations/` so `alembic upgrade head` works
+  in the container at first deploy
+- `pyyaml>=6.0` added to `pyproject.toml` (entrypoint's inline yaml
+  parser needs it; not a transitive dep on python:3.14-slim)
+- botctl wrapper as described above
+
+### Smoke tests passing live (2026-04-23)
+
+All against the production droplet, real Anthropic / Discord / Tavily APIs:
+
+- Basic DM round-trip
+- Web-tool summarize (Wikipedia → reply)
+- Prompt injection / taint propagation (`tainted=⚠️` flag set on web jobs)
+- Consent ✅/❌ flow (validated end-to-end: react ✅ → `save_artifact`
+  tool ran → markdown report persisted to `/data/donna/artifacts/` with
+  matching DB row; metadata sha256-addressed and intact)
+- `/cancel` agent-loop check (DB flip → halted within one iteration)
+- `botctl jobs --since` filter (1h/24h/all all return correct counts)
+- Multi-tool agent loop (19 tool calls in one job: 4 search_web + 7
+  fetch_url + 5 send_update + 1 save_artifact + 2 errored — all traced)
+
+### Open follow-ups
+
+- **Off-droplet backups** still not configured (Codex priority 1; user
+  explicitly deferred but should revisit before production usage scales)
+- **Phoenix re-enable** with a confirmed-working tag
+- **Auto-update timer** (`donna-update.timer`) not enabled — manual
+  `git pull && docker compose pull && up -d` for now
+- **Tailscale** for SSH narrowing (defer until backups + supervision land)
+- **`botctl forget-artifact <id>`** subcommand — currently manual SQL +
+  `rm` to delete an artifact (we cleaned up an orca research blob this
+  way during validation)
+- **Slash commands in DMs may take ~1h to appear** after first deploy of
+  PR #10 due to Discord's global-command CDN cache; subsequent deploys
+  faster
+
+---
+
 ## [0.3.0] — 2026-04-23 — Phase 2 production deploy
 
 First real deployment to the DigitalOcean droplet. `ghcr.io/globalcan/donna:latest` is live; bot answering DMs at

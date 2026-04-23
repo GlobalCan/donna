@@ -158,3 +158,57 @@ tracked as follow-ups; v0.3.0 shipped with the fixes.
 - **`botctl` ergonomics.** P2-12 + P2-14 both want resolving.
 - **Phoenix re-enable with pinned tag.** P2-10.
 - **`.sops.yaml` path_regex slash-agnostic.** P2-3.
+
+## v0.3.1 — Codex review absorbed + Phase 2 cleanup pass (2026-04-23)
+
+Same-day follow-up after v0.3.0 went live. Codex (GPT-5.4) adversarial review
+identified three latent bugs; all fixed and validated against the running droplet.
+
+### Codex latent bugs — FIXED in v0.3.1
+
+| # | Bug | Status | Where |
+|---|---|---|---|
+| C-1 | Discord adapter drainers spawned with bare `asyncio.create_task` and dropped handles; one transient exception silently kills task and container stays "up" but deaf | **FIXED** | `discord_adapter.py::_supervise` wraps each drainer in restart loop with capped exponential backoff |
+| C-2 | `/cancel` flips DB status but agent loop never polls; jobs run to natural end_turn through model + tool steps anyway | **FIXED** | `agent/context.py::JobCancelled` + `check_cancelled()`; modes call at iteration boundaries; validated live |
+| C-3 | `botctl jobs --since` declared but unused; watchdog directs operators to a lying flag during incidents | **FIXED** | `memory/jobs.py::recent_jobs(since=)` + `cli/botctl.py::_parse_since`; validated 1h/24h/all |
+
+### Phase 2 follow-ups previously OPEN — now FIXED in v0.3.1
+
+| # | Bug | Status |
+|---|---|---|
+| P2-9 | Container `bot` UID 10001 vs host UID 1001 — chmod hacks needed | **FIXED** by PR #7 (`user: "1001:1001"` override) + one-time `docker run alpine chown` migration to fix existing files |
+| P2-10 | Phoenix `:latest` broken upstream | **PARTIAL** — pinned 14.9.0 in PR #8 ALSO broken; re-disabled in PR #9 entirely. New OPEN: pick a working older tag or swap to Tempo/Jaeger |
+| P2-12 | `docker compose exec bot botctl` bypasses entrypoint, fails on `.env` comments | **FIXED** by PR #7 (Dockerfile shadows botctl with shell wrapper that forwards through entrypoint; `.env.example` scrubbed of inline comments) |
+| P2-13 | Bot drain tasks die during transient DB issues, don't auto-restart | **FIXED** by PR #9 (`_supervise` with backoff) |
+| P2-14 | `botctl jobs` truncates IDs incompatible with `botctl job <id>` | **FIXED** by PR #7 (full IDs shown; prefix-match accepted in `botctl job`) |
+
+### Smoke tests passing live against droplet (2026-04-23)
+
+- Basic DM round-trip — green
+- Web-tool summarize Wikipedia — green
+- Prompt-injection taint test — green (`tainted=⚠️` flag on web jobs)
+- Consent ✅/❌ flow — green (real `save_artifact` tool ran, markdown report
+  persisted to `/data/donna/artifacts/<sha256>.blob` with intact DB row)
+- `/cancel` via DB flip → agent halted within one iteration after 18 tool
+  calls — green
+- `botctl jobs --since` returns correct counts for 1h/24h/all — green
+- Multi-tool agent loop survived 19 tool calls in one job — green
+- Slash commands in DMs — pending Discord CDN propagation post-PR-#10
+  (~1h after merge first time)
+
+### Still open
+
+- **Off-droplet backups** (Codex priority 1) — DO snapshots + nightly rsync
+  to laptop or DO Spaces. Not configured. Single-disk failure = total loss.
+- **Phoenix observability** — re-enable with a confirmed-working tag (try
+  `arizephoenix/phoenix:13.x`) or swap to Tempo/Jaeger
+- **Auto-update timer** — `donna-update.timer` template installed by
+  `harden-droplet.sh` but never `systemctl enable`'d; deploys are manual
+  `git pull && docker compose pull && up -d`. Defer until backups land
+  (Codex prescription: "auto-deploying without backups + loop supervision
+  increases blast radius")
+- **Tailscale** for narrowing public port 22 — defer
+- **`botctl forget-artifact <id>`** — currently manual SQL DELETE + `rm`
+- **`botctl teach`** ingest pipeline never exercised in prod
+- **Grounded / speculative / debate modes** never smoke-tested in prod
+  (chat mode has been validated extensively)

@@ -25,27 +25,59 @@ Before anything else, read these files. Everything below assumes you have.
 
 ## 1 · Where we are
 
-**Donna v0.3.0 is live in production on DigitalOcean.** Four smoke tests green
-end-to-end against real APIs. Bot answering DMs as `Donna#3183`.
+**Donna v0.3.1 is live in production on DigitalOcean, fully smoke-tested.**
+Bot answering DMs as `Donna#3183`. Codex (GPT-5.4) adversarial review absorbed
+same-day; all three latent bugs Codex flagged are fixed and validated against
+the running droplet.
 
 - **Branch:** `main`, clean working tree
-- **Droplet:** `159.203.34.165` (Ubuntu 24.04 LTS), hardened (bot user, sshd
-  key-only, ufw, fail2ban, unattended-upgrades, docker, sops, age)
+- **Droplet:** `159.203.34.165` (Ubuntu 24.04 LTS), hardened (bot uid 1001,
+  sshd key-only, ufw, fail2ban, unattended-upgrades, docker, sops, age 1.1.1)
 - **Image:** `ghcr.io/globalcan/donna:latest` — published by GHA `build-and-push`
+  on every main merge; droplet pulls manually via `docker compose pull`
+- **Containers:** `donna-bot` + `donna-worker` Up; both run as host uid 1001
+  per compose `user:` override (`docker-compose.yml`). Phoenix temporarily
+  disabled (upstream `arizephoenix/phoenix:14.x` ships broken)
 - **Secrets:** sops-encrypted `secrets/prod.enc.yaml` in repo, 2 age recipients
-  (primary on laptop+droplet, backup offline); age private key at
-  `/etc/bot/age.key` on droplet
-- **DB:** `/data/donna/donna.db` on droplet (bind-mounted into containers),
-  migrations 0001 → 0005 all applied
+  (primary on laptop+droplet, backup paper); age private key at
+  `/etc/bot/age.key` on droplet, mode 600 owned by bot
+- **DB:** `/data/donna/donna.db` on droplet (bind-mounted into containers,
+  files chowned to 1001:1001 to match new container uid), migrations
+  0001 → 0005 all applied, ~30 tables
 - **Tests:** 70/70 green on Python 3.14.3
 - **Remote HEAD = local HEAD**
 
-**Still open after Phase 2** (see `docs/KNOWN_ISSUES.md` §Phase 2):
-- No off-droplet backups yet
-- Auto-update timer not enabled (manual `docker compose pull && up -d`)
-- Container UID 10001 vs host UID 1001 mismatch — worked around with chmod
-- Phoenix observability disabled (upstream image broken 2026-04-23)
-- `botctl` ergonomics: needs `/entrypoint.sh` prefix + full job IDs
+**Validated live in prod (2026-04-23):**
+
+- DM round-trip + multi-tool agent loop (19 tool calls in one orca research
+  job: search_web, fetch_url, send_update, save_artifact)
+- Taint propagation (web tools mark job tainted; consent gate triggers on
+  taint+write tool combo)
+- Consent ✅/❌ flow (real `save_artifact` ran end-to-end: blob in
+  `/data/donna/artifacts/<sha256>.blob`, matching DB row in `artifacts`
+  table with name/mime/tags/sha256/bytes/created_by_job)
+- `/cancel` agent-loop check (DB-flip → halted within one iteration)
+- `botctl jobs --since` filter (1h/24h/all all return correct counts)
+- Cost ledger ($0.26 for the orca job, queryable via `botctl cost`)
+- Outbox→Discord delivery, reaction handling, drainer supervision
+
+**Still open** (see `docs/KNOWN_ISSUES.md` §v0.3.1):
+
+- **Off-droplet backups** — not configured. Single-disk failure = total loss.
+  Codex's #1 priority. User has explicitly deferred but should revisit.
+- **Phoenix re-enable** — needs a confirmed-working older tag or swap to
+  Tempo/Jaeger
+- **Auto-update timer** (`donna-update.timer`) — installed but never
+  enabled; deploys are manual git pull + compose pull + up
+- **Tailscale** for narrowing public port 22 — defer until backups land
+- **`botctl teach`** ingest pipeline never exercised in prod
+- **Grounded / speculative / debate modes** never smoke-tested in prod
+  (chat mode validated extensively; the others have their own exit paths
+  that may have the same `_enqueue_final_text` bug Phase 1 found in chat)
+- **Slash commands in DMs** — global sync landed in PR #10; Discord CDN
+  may take ~1h post-deploy to show commands in DM autocomplete first time
+- **`botctl forget-artifact`** subcommand doesn't exist; manual SQL +
+  `rm` until then
 
 Three Codex review passes absorbed:
 - Pass-1 defect review (session `019d9bbf-a2e3-7a40-8bde-9ac5f5fe163e`) — all CRITICAL + HIGH + most MEDIUM fixed
