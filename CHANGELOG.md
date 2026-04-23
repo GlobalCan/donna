@@ -1,5 +1,71 @@
 # Changelog
 
+## [0.3.2] — 2026-04-23 — Off-droplet backups live
+
+Closes Codex's priority-#1 finding ("single-disk failure = total loss") same
+day as v0.3.1. Three-layer backup setup, ~$0.30/mo marginal cost, validated
+end-to-end against the live droplet. No source changes — two new scripts
+plus ops docs.
+
+### Added — Backup tooling
+
+- **`scripts/donna-backup.sh`** (PR #12) — runs on the droplet as `bot` via
+  crontab @ 03:00 UTC. Uses `python3 -c 'sqlite3.Connection.backup()'` so
+  the bot user never needs sudo (harden-droplet.sh creates bot with
+  `--disabled-password` so `sudo` in-group prompts but never authorizes).
+  Same SQLite online-backup API as `sqlite3 src ".backup dst"`, safe while
+  the bot writes via WAL. Tarballs snapshot + `/data/donna/artifacts/*`
+  blobs into `/home/bot/backups/donna-<UTC-stamp>.tar.gz`, maintains
+  `donna-latest.tar.gz` symlink, 7-day local retention via `find -mtime`.
+
+- **`scripts/donna-fetch-backup.ps1`** (PRs #12 + #13) — runs on the laptop
+  via Windows Task Scheduler @ 06:00 local. `scp -i id_ed25519_droplet`
+  pulls `donna-latest.tar.gz` into `%USERPROFILE%\OneDrive\Donna-Backups\`,
+  so OneDrive cloud sync auto-replicates to a 4th location. 30-day local
+  retention. Uses built-in Windows OpenSSH `scp` (no rsync/WSL). PR #13
+  fixed a PowerShell 7-ism (`Get-Date -AsUTC` doesn't exist in the PS 5.1
+  that Windows ships with).
+
+- **DO snapshots** (user-configured, web console) — daily frequency, 4-week
+  retention. $0.30/mo. Covers droplet death.
+
+### Changed — Docs
+
+- **`docs/OPERATIONS.md`** (PR #12) — replaced the "honest story" DR
+  placeholder with the concrete three-layer install playbook plus a working
+  restore-from-tarball recipe. Litestream demoted from "recommended" to
+  "optional later" (current ~24h RPO is fine for a personal assistant;
+  adding litestream is belt-and-suspenders when sub-minute RPO is needed).
+
+- **`docs/KNOWN_ISSUES.md`** — flipped "Off-droplet backups" out of the
+  still-open list; added `Backups — FIXED in v0.3.2` block with install
+  + validation summary.
+
+- **`docs/SESSION_RESUME.md`** — §1 updated with backup layers and restore
+  recipe pointer; "still open" list no longer leads with the existential
+  single-disk-failure risk.
+
+### Validated
+
+Live against the running droplet on 2026-04-23:
+
+- `scripts/donna-backup.sh` dry-run → 224KB tarball + symlink
+- `scripts/donna-fetch-backup.ps1` manual run → 224KB tarball landed in
+  `%USERPROFILE%\OneDrive\Donna-Backups\`
+- `schtasks /Create` registered "Donna Backup Fetch" with next run
+  06:00 local next morning
+
+### Still open (reordered now that backups exist)
+
+1. Quarterly restore drill (throwaway droplet → restore from OneDrive
+   tarball → boot → DM "hello")
+2. Phoenix re-enable with a confirmed-working tag
+3. `donna-update.timer` — unblocked by backups + drainer supervision;
+   do restore drill first
+4. Tailscale
+5. `botctl teach` ingest pipeline never exercised in prod
+6. Grounded / speculative / debate modes never smoke-tested in prod
+
 ## [0.3.1] — 2026-04-23 — Post-deploy hardening + Codex adversarial fixes
 
 Same-day follow-up after v0.3.0 went live. Codex (GPT-5.4) adversarial review

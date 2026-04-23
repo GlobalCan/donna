@@ -196,19 +196,38 @@ identified three latent bugs; all fixed and validated against the running drople
 - Slash commands in DMs — pending Discord CDN propagation post-PR-#10
   (~1h after merge first time)
 
+### Backups — FIXED in v0.3.2 (2026-04-23)
+
+Codex priority-#1 finding closed. Three-layer setup, ~$0.30/mo marginal
+cost (see `docs/OPERATIONS.md` §Disaster recovery for install + restore):
+
+- **Layer 1: DO snapshots** — web-console-configured, daily, 4-week retention
+- **Layer 2: droplet cron** — `scripts/donna-backup.sh` @ 03:00 UTC, uses
+  `python3 -c 'sqlite3.Connection.backup()'` for WAL-safe snapshot so bot user
+  never needs sudo. Tarballs snapshot + artifacts into
+  `/home/bot/backups/donna-<stamp>.tar.gz` + `donna-latest.tar.gz` symlink;
+  7-day local retention
+- **Layer 3: laptop Task Scheduler** — `scripts/donna-fetch-backup.ps1`
+  @ 06:00 local, scps latest into `%USERPROFILE%\OneDrive\Donna-Backups\`;
+  OneDrive cloud sync auto-replicates to a 4th location; 30-day retention
+
+Validated live 2026-04-23: droplet dry-run produced 224KB tarball, laptop
+manual pull landed in OneDrive folder, scheduled task registered with next
+run 06:00 local.
+
 ### Still open
 
-- **Off-droplet backups** (Codex priority 1) — DO snapshots + nightly rsync
-  to laptop or DO Spaces. Not configured. Single-disk failure = total loss.
 - **Phoenix observability** — re-enable with a confirmed-working tag (try
   `arizephoenix/phoenix:13.x`) or swap to Tempo/Jaeger
 - **Auto-update timer** — `donna-update.timer` template installed by
   `harden-droplet.sh` but never `systemctl enable`'d; deploys are manual
-  `git pull && docker compose pull && up -d`. Defer until backups land
-  (Codex prescription: "auto-deploying without backups + loop supervision
-  increases blast radius")
-- **Tailscale** for narrowing public port 22 — defer
+  `git pull && docker compose pull && up -d`. Backups now exist but Codex's
+  secondary condition (loop supervision) is also in place, so this could
+  land next. Worth a quarterly restore drill first.
+- **Tailscale** for narrowing public port 22
 - **`botctl forget-artifact <id>`** — currently manual SQL DELETE + `rm`
 - **`botctl teach`** ingest pipeline never exercised in prod
 - **Grounded / speculative / debate modes** never smoke-tested in prod
   (chat mode has been validated extensively)
+- **Quarterly restore drill** not yet done (throwaway droplet → restore
+  from OneDrive tarball → boot → DM "hello")
