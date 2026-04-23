@@ -74,7 +74,7 @@ src/donna/
 
 ## Status
 
-**v0.2.1** · Python 3.14 · 70/70 tests green · **Phase 1 live-verified**.
+**v0.3.0** · Python 3.14 · 70/70 tests green · **live in production on DO**.
 
 - Foundation built and survived three Codex review passes (defect, adversarial
   challenge, Hermes comparison)
@@ -83,11 +83,16 @@ src/donna/
 - ModelRuntime registry (vendor abstraction as data, not slogan)
 - Compaction audit trail preserves pre-compaction history as artifact
 - Stuck-job watchdog + cache-hit rate telemetry
-- **Phase 1 end-to-end pass against real Anthropic / Discord / Tavily / Voyage
-  APIs** (2026-04-22) — four smoke tests green: happy-path summarize, ops CLI,
-  taint propagation (model articulated the "web content is data, not
-  instructions" boundary unprompted), consent ✅/❌ reaction flow.
-- Phase 2 is droplet deploy — same processes inside Docker.
+- **Phase 1 local end-to-end pass** against real Anthropic / Discord / Tavily /
+  Voyage APIs (2026-04-22)
+- **Phase 2 production deploy to DigitalOcean** (2026-04-23) — hardened Ubuntu
+  droplet (`bot` user + ufw + fail2ban + unattended-upgrades), Docker compose
+  bot + worker, sops+age encrypted secrets, SQLite at `/data/donna/donna.db`,
+  `ghcr.io/globalcan/donna:latest` pulled from GHCR. All four smoke tests green
+  against the live deploy.
+- **Current limitations:** Phoenix observability temporarily disabled (upstream
+  image broken 2026-04-23); auto-deploy timer not yet enabled; no off-droplet
+  backups yet.
 
 **Next planned addition:** extract the knowledge / retrieval / graph-RAG layer
 into a sibling `src/corpus/` package inside this monorepo. The oracle mode

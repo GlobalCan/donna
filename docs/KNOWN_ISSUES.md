@@ -108,3 +108,53 @@ test suite couldn't catch. All fixed in v0.2.1 (see CHANGELOG).
 - **Wikipedia 403 on fetch_url** — `DonnaBot/0.1 (+personal)` UA is policy-compliant but Wikipedia has gotten stricter. Agent falls back to Tavily + non-Wikipedia source, so not blocking. Fix: beef up UA string with contact URL.
 - **1500-char truncation on send_update** — long-form summaries get cut mid-sentence. Real fix: save long outputs as artifact, update the agent prompt to send a pointer + short excerpt rather than full text.
 - **Other modes likely have the same orphaned-final-text hole.** Chat mode was fixed in `_run_chat`; grounded/speculative/debate each have their own exit path. Will surface when those modes' smoke tests run.
+
+## Phase 2 production deploy pass (2026-04-23)
+
+First real deploy to the DigitalOcean droplet surfaced a batch of
+production-only bugs the Phase 1 localhost run couldn't catch. All resolved or
+tracked as follow-ups; v0.3.0 shipped with the fixes.
+
+### Deploy pipeline
+
+| # | Bug | Status | Where |
+|---|---|---|---|
+| P2-1 | `harden-droplet.sh` step [5/9] races with unattended-upgrades' dpkg lock, aborts, leaves sshd hardened + bot with no sudo password (catch-22 recovery) | **FIXED** | `scripts/harden-droplet.sh` — replaced `dpkg-reconfigure` with direct `20auto-upgrades` write, added `wait_for_apt_lock` helper |
+| P2-2 | CI was red for 10+ consecutive runs; `ghcr.io/globalcan/donna:latest` never actually existed | **FIXED** | 133 ruff errors cleaned in one pass; image now publishing |
+| P2-3 | `sops -e` against `.sops.yaml` path_regex fails on Windows sops 3.12 (works on Linux sops 3.9) | **DEFERRED — workaround** | `ren .sops.yaml .sops.yaml.bak` + explicit `--age <recipients>` to encrypt; restore the file after. Follow-up: path_regex slash-separator agnostic |
+| P2-4 | Docs' `sops -e file > out` command matches path_regex against INPUT not output; always misses the rule | **FIXED** | `docs/MORNING_START.md` §6, `secrets/README.md` — use `--filename-override` |
+| P2-5 | Plaintext-secrets example used dotenv (`KEY=VALUE`) while entrypoint parses YAML (`KEY: VALUE`) | **FIXED** | same as P2-4 |
+| P2-6 | `entrypoint.sh` swallowed sops errors and silent-success'd empty-keys into an env-less container | **FIXED** | `scripts/entrypoint.sh` — captures exports, validates non-empty mapping + ≥1 `[A-Z_]+` key, aborts with FATAL on any failure |
+
+### Image / Dockerfile
+
+| # | Bug | Status | Where |
+|---|---|---|---|
+| P2-7 | `ModuleNotFoundError: No module named 'yaml'` — PyYAML not in deps; entrypoint's YAML parser can't load | **FIXED** | `pyproject.toml` — added `pyyaml>=6.0` |
+| P2-8 | `alembic upgrade head` failed with `No 'script_location' key` — `alembic.ini` + `migrations/` not in image | **FIXED** | `Dockerfile` — added `COPY alembic.ini` + `COPY migrations/` |
+| P2-9 | Container `bot` UID (10001) mismatches host `bot` UID (1001); `/etc/bot/age.key` and `/data/donna` unreachable from container | **MITIGATED — hacks in place** | Host-side `chmod 644 /etc/bot/age.key` + `chmod 777 /data/donna`. Follow-up: add `user: "1001:1001"` to `docker-compose.yml` |
+| P2-10 | `arizephoenix/phoenix:latest` shipped broken upstream (their own `ModuleNotFoundError`) | **DISABLED — temp** | Phoenix service commented out in `docker-compose.yml`. Bot/worker log unreachable-endpoint warnings. Follow-up: pin to a known-working tag |
+
+### `.env` / runtime
+
+| # | Bug | Status | Where |
+|---|---|---|---|
+| P2-11 | `.env.example` ships `DONNA_DATA_DIR=./data`, which the container resolves to the read-only rootfs | **FIXED — prod .env set to `/data`** | Follow-up: flip the default; have dev mode override |
+| P2-12 | `docker compose exec bot botctl` bypasses entrypoint; inline comments in `.env` become the env var value; pydantic int parsing fails | **WORKAROUND** | Use `docker compose exec bot /entrypoint.sh botctl …`. Follow-up: ship `botctl` wrapper or strip comments on `.env` creation |
+| P2-13 | Bot's async drain tasks died during early DB-unreachable period and didn't auto-restart | **FIXED — restart recovers** | `docker compose restart bot` revived them. Follow-up: make drain tasks self-restart on transient `OperationalError` |
+| P2-14 | `botctl jobs` truncates IDs to 18 chars; `botctl job <truncated>` returns "not found" | **OPEN** | `src/donna/cli/botctl.py:53` — `j.id[:18]`. Follow-up: accept prefix match in `get_job` or widen display |
+
+### Security
+
+| # | Bug | Status | Where |
+|---|---|---|---|
+| P2-15 | Original backup age key private half was shown in a chat transcript during the "offline backup" walkthrough | **FIXED — rotated** | `.sops.yaml` — swapped backup recipient to a freshly-generated keypair |
+
+### Open follow-ups from Phase 2 (not blocking)
+
+- **No off-droplet backups.** Current state is "one SQLite file on one droplet." DO droplet snapshots would cover OS-level loss; nightly rsync to laptop + OneDrive would cover age-key loss. Not configured yet.
+- **`donna-update.timer` not enabled.** Systemd unit was created by `harden-droplet.sh` but never `systemctl enable --now`'d. Every deploy is manual `git pull && docker compose pull && up -d` until this is flipped.
+- **`user: "1001:1001"` in compose.** P2-9 workaround.
+- **`botctl` ergonomics.** P2-12 + P2-14 both want resolving.
+- **Phoenix re-enable with pinned tag.** P2-10.
+- **`.sops.yaml` path_regex slash-agnostic.** P2-3.
