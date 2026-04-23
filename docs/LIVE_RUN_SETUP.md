@@ -318,7 +318,7 @@ Steps (high level):
 
 Full walkthrough: `scripts/first-deploy.sh` + `scripts/harden-droplet.sh`.
 
-**Phase 3 — Corpus integration** — the parallel session building `src/corpus/`
+**Phase 3 — Think integration** — the parallel session building `src/think/`
 will expose an `EvidencePack` contract. Donna's existing `recall_knowledge`
-tool will switch from reading `knowledge_chunks` directly to calling Corpus.
-No interface redesign needed on the Donna side — see `docs/CORPUS_BRIEF.md`.
+tool will switch from reading `knowledge_chunks` directly to calling Think.
+No interface redesign needed on the Donna side — see `docs/THINK_BRIEF.md`.

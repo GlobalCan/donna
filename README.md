@@ -95,9 +95,9 @@ src/donna/
   backups yet.
 
 **Next planned addition:** extract the knowledge / retrieval / graph-RAG layer
-into a sibling `src/corpus/` package inside this monorepo. The oracle mode
+into a sibling `src/think/` package inside this monorepo. The oracle mode
 ("what would Michael Lewis say about X?") and cross-author synthesis ("where
 do Lewis and Dalio overlap?") are the target use cases. See
-`docs/CORPUS_BRIEF.md` for the full bootstrap brief.
+`docs/THINK_BRIEF.md` for the full bootstrap brief.
 
 **History:** see `CHANGELOG.md` for the full v0.1.0 → v0.2.0 evolution.
