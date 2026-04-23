@@ -40,6 +40,15 @@ COPY migrations/ ./migrations/
 COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Wrap the pip-installed botctl so `docker compose exec bot botctl ...`
+# routes through the entrypoint (sops decrypt + export) instead of
+# bypassing it. Without this, botctl inherits whatever env_file the
+# compose file sets — which has empty/commented secret fields that
+# pydantic's int validator rejects.
+RUN mv /usr/local/bin/botctl /usr/local/bin/_botctl.real \
+ && printf '#!/bin/sh\nexec /entrypoint.sh /usr/local/bin/_botctl.real "$@"\n' > /usr/local/bin/botctl \
+ && chmod +x /usr/local/bin/botctl
+
 USER bot
 VOLUME ["/data"]
 ENV DONNA_ENV=prod \
