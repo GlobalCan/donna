@@ -6,6 +6,11 @@ services:
     container_name: donna-bot
     restart: unless-stopped
     command: ["python", "-m", "donna.main"]
+    # Override the container's default USER (uid 10001) with the host's `bot`
+    # uid (1001 on a freshly-harden'd DO droplet). This makes bind-mounted
+    # host files (e.g. /etc/bot/age.key, /data/donna/*) readable/writable
+    # without chmod 644/777 hacks on the host side.
+    user: "${DONNA_UID:-1001}:${DONNA_GID:-1001}"
     env_file: .env
     environment:
       DONNA_PROCESS_ROLE: bot
@@ -28,6 +33,7 @@ services:
     container_name: donna-worker
     restart: unless-stopped
     command: ["python", "-m", "donna.worker"]
+    user: "${DONNA_UID:-1001}:${DONNA_GID:-1001}"
     env_file: .env
     environment:
       DONNA_PROCESS_ROLE: worker
