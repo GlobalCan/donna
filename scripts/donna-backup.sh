@@ -2,14 +2,18 @@
 # Donna nightly backup — runs on the droplet as user `bot` via cron.
 #
 # Produces a single tarball containing:
-#   - Consistent SQLite snapshot (via .backup API; safe with WAL mode and a live writer)
+#   - Consistent SQLite snapshot (via Python's sqlite3.Connection.backup() API;
+#     this is SQLite's online backup, safe to run while the bot writes via WAL)
 #   - All artifact blobs from /data/donna/artifacts/
+#
+# Uses python3 (stock on Ubuntu 24.04) so the bot user never needs sudo to
+# install a host sqlite3 binary. The backup is equivalent to what
+# `sqlite3 src ".backup dst"` would produce.
 #
 # Output: $BACKUP_DIR/donna-<UTC-stamp>.tar.gz, plus a `donna-latest.tar.gz`
 # symlink the laptop-side fetch script pulls. Local retention is RETAIN_DAYS.
 #
 # Install:
-#   sudo apt-get install -y sqlite3
 #   scp scripts/donna-backup.sh bot@<ip>:/home/bot/donna-backup.sh
 #   ssh bot@<ip> chmod +x /home/bot/donna-backup.sh
 #   ssh bot@<ip> '(crontab -l 2>/dev/null; echo "0 3 * * * /home/bot/donna-backup.sh >>/home/bot/backups/.cron.log 2>&1") | crontab -'
@@ -25,9 +29,20 @@ trap 'rm -rf "$work"' EXIT
 
 mkdir -p "$BACKUP_DIR"
 
-# Consistent SQLite snapshot. .backup uses SQLite's online backup API,
-# which is safe to run while the bot is actively writing via WAL.
-sqlite3 "$DATA_DIR/donna.db" ".backup '$work/donna.db'"
+# Consistent SQLite snapshot via Python's built-in sqlite3. Connection.backup()
+# uses SQLite's online backup API, which is safe to run while the bot is
+# actively writing via WAL. Equivalent to `sqlite3 src ".backup dst"` but
+# doesn't require the host sqlite3 binary.
+python3 - "$DATA_DIR/donna.db" "$work/donna.db" <<'PY'
+import sqlite3, sys
+src_path, dst_path = sys.argv[1], sys.argv[2]
+src = sqlite3.connect(f"file:{src_path}?mode=ro", uri=True)
+dst = sqlite3.connect(dst_path)
+with dst:
+    src.backup(dst)
+src.close()
+dst.close()
+PY
 
 # Stage artifacts alongside the db so the tarball has a flat layout.
 mkdir -p "$work/artifacts"
