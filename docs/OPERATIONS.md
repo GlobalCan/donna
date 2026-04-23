@@ -85,36 +85,65 @@ Or via Discord: `/teach` (not wired in v1 — use CLI).
 - **Add a second recipient** to `.sops.yaml` — ideally a paper-backup key stored offline or in a bank deposit box. With two recipients, losing either one still leaves you able to decrypt with the other. Re-encrypt every `secrets/*.enc.yaml` after adding the second recipient.
 - If you lose BOTH recipients, every committed encrypted secret is unreadable. Rotate all API keys at their providers and start fresh.
 
-### Database backups — use `litestream` (recommended)
-`litestream` streams SQLite WAL frames to a remote store (DO Spaces, S3, SFTP).
-Low overhead, continuous replication, point-in-time restore.
+### Database backups — current setup (v0.3.1)
+
+Three layers: DO snapshots, droplet-local cron snapshot, laptop pull.
+
+**Layer 1: DO snapshots ($0.30/mo).** Web console → Droplets → donna →
+Backups → Enable backups → Daily, 4-week retention. DO ships these to its own
+storage; restore = clone droplet from snapshot. Covers droplet death.
+
+**Layer 2: nightly cron on droplet.** `scripts/donna-backup.sh` produces
+`/home/bot/backups/donna-<UTC-stamp>.tar.gz` containing a WAL-safe SQLite
+snapshot (via `.backup` API, runs concurrently with the live bot) plus all
+artifact blobs. Keeps last 7 days locally. Install:
 
 ```bash
-# on droplet
-apt-get install -y litestream
-# /etc/litestream.yml example (edit endpoints for your own DO Space)
-cat > /etc/litestream.yml <<'EOF'
-dbs:
-  - path: /data/donna/donna.db
-    replicas:
-      - type: s3
-        endpoint: https://nyc3.digitaloceanspaces.com
-        bucket: donna-backups
-        path: donna.db
-        access-key-id: ...
-        secret-access-key: ...
-EOF
-systemctl enable --now litestream
+ssh -i %USERPROFILE%\.ssh\id_ed25519_droplet bot@<ip>
+sudo apt-get install -y sqlite3                                    # one-time
+mkdir -p /home/bot/backups
+# paste contents of scripts/donna-backup.sh -> /home/bot/donna-backup.sh
+chmod +x /home/bot/donna-backup.sh
+/home/bot/donna-backup.sh                                          # dry-run smoke
+(crontab -l 2>/dev/null; echo "0 3 * * * /home/bot/donna-backup.sh >>/home/bot/backups/.cron.log 2>&1") | crontab -
+crontab -l                                                         # verify
 ```
 
-Restore: `litestream restore -o /data/donna/donna.db s3://donna-backups/donna.db`
+**Layer 3: laptop pull → OneDrive.** `scripts/donna-fetch-backup.ps1` scps
+`donna-latest.tar.gz` to `%USERPROFILE%\OneDrive\Donna-Backups\` (so the
+backup gets a 4th copy in OneDrive cloud automatically). 30-day local
+retention. Wire up via Task Scheduler:
 
-### Manual fallback (if no litestream yet)
+```cmd
+schtasks /Create /SC DAILY /ST 06:00 /TN "Donna Backup Fetch" ^
+  /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\dev\donna\scripts\donna-fetch-backup.ps1" /F
+```
+
+Manual run any time:
+
+```cmd
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\donna-fetch-backup.ps1
+```
+
+### Restore from a tarball
+
 ```bash
-# on droplet — run nightly via cron
-sqlite3 /data/donna/donna.db ".backup '/tmp/donna-$(date +%F).db'"
-# ship off-droplet somehow — rsync to laptop, or `doctl spaces upload`
+# on a new droplet (already harden + first-deploy'd)
+docker compose stop bot worker
+tar -xzf donna-<stamp>.tar.gz -C /tmp/restore
+mv /data/donna/donna.db /data/donna/donna.db.broken
+mv /data/donna/artifacts /data/donna/artifacts.broken
+cp /tmp/restore/donna.db /data/donna/donna.db
+cp -r /tmp/restore/artifacts /data/donna/artifacts
+chown -R 1001:1001 /data/donna
+docker compose up -d
 ```
+
+### Optional later: `litestream` for continuous replication
+The current cron+scp approach gives ~24h RPO. Acceptable for a personal
+assistant; not acceptable for anything transactional. If you ever need
+sub-minute RPO, add `litestream` streaming to DO Spaces (~$5/mo). Keep the
+cron as belt-and-suspenders.
 
 ### Quarterly restore drill
 Pick a random Saturday every 3 months. Provision a throwaway droplet, restore
