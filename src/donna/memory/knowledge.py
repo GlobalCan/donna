@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 import struct
 from typing import Any
@@ -10,6 +11,19 @@ import numpy as np
 
 from ..types import Chunk
 from . import ids
+
+
+def _fts_sanitize(query: str) -> str:
+    """Convert an untrusted natural-language query into a safe FTS5 MATCH
+    expression. FTS5 reserves `" ( ) * ? : + ^ ~ -` plus bareword operators
+    (`AND OR NOT NEAR`), so passing user input straight through raises
+    ``sqlite3.OperationalError: fts5: syntax error``. We extract word tokens
+    and wrap each in double quotes so special characters inside are treated
+    literally; the implicit conjunction across quoted terms preserves the
+    previous AND semantics.
+    """
+    tokens = re.findall(r"\w+", query, flags=re.UNICODE)
+    return " ".join(f'"{t}"' for t in tokens)
 
 # ---------- sources ---------------------------------------------------------
 
@@ -177,6 +191,9 @@ def keyword_search(
     limit: int = 40,
 ) -> list[tuple[Chunk, float]]:
     """FTS5 keyword over chunks, scoped to agent."""
+    match_expr = _fts_sanitize(query)
+    if not match_expr:
+        return []
     rows = conn.execute(
         """
         SELECT c.id, c.source_id, c.agent_scope, c.work_id, c.publication_date,
@@ -191,7 +208,7 @@ def keyword_search(
         ORDER BY rank
         LIMIT ?
         """,
-        (query, agent_scope, limit),
+        (match_expr, agent_scope, limit),
     ).fetchall()
     # rank is FTS5 bm25-like; more negative = better
     return [(_row_to_chunk(r, -float(r["score"])), -float(r["score"])) for r in rows]
