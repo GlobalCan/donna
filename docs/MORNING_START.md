@@ -60,13 +60,18 @@ Edit `.sops.yaml` — replace `age1REPLACE_WITH_YOUR_PUBLIC_KEY_HERE` with yours
 
 ## 6. Encrypt the first secrets file (5 min)
 
+`prod.enc.yaml` is parsed as YAML at container startup (`scripts/entrypoint.sh`),
+so the plaintext source must be YAML (`KEY: value`), not dotenv (`KEY=value`).
+Quote Discord snowflake IDs so they stay strings rather than being coerced to int.
+
 ```bash
 cat > /tmp/plain.yaml <<'EOF'
-DISCORD_BOT_TOKEN=mfa.xxx
-DISCORD_ALLOWED_USER_ID=123456789012345678
-ANTHROPIC_API_KEY=sk-ant-xxx
-TAVILY_API_KEY=tvly-xxx
-VOYAGE_API_KEY=pa-xxx
+DISCORD_BOT_TOKEN: mfa.xxx
+DISCORD_ALLOWED_USER_ID: "123456789012345678"
+DISCORD_GUILD_ID: "123456789012345678"   # optional; omit if you don't use a guild
+ANTHROPIC_API_KEY: sk-ant-xxx
+TAVILY_API_KEY: tvly-xxx
+VOYAGE_API_KEY: pa-xxx
 EOF
 sops -e /tmp/plain.yaml > secrets/prod.enc.yaml
 rm /tmp/plain.yaml
