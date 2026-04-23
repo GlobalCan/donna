@@ -8,7 +8,92 @@ Why monorepo: single maintainer, single deployment target, one-process product. 
 
 ---
 
-## 0 · How to use this brief
+## 0 · State-of-the-base update (2026-04-23) — READ THIS FIRST
+
+This brief was written before Donna went to production. As of 2026-04-23 the
+base Corpus depends on has materially matured. Many assumptions in this brief
+have now moved from "planned" to "validated live." A couple of defaults and
+path conventions have also changed. Everything below the horizontal rule in
+this section is still current — but read this section first or you will make
+decisions based on stale assumptions.
+
+### What Donna is now
+
+- **v0.3.2** · Python **3.14.3** (not 3.12 — 3.14 confirmed everywhere: pyproject, Dockerfile, droplet, CI) · **74 tests green** · **live in production** on a DigitalOcean droplet at `159.203.34.165`
+- **Containers:** `donna-bot` + `donna-worker`, `ghcr.io/globalcan/donna:latest`, built automatically by GHA on every `main` merge
+- **Three-layer backups live:** DO snapshots (daily, 4-week retention), droplet cron tarball (@ 03:00 UTC, 7-day), laptop scp → OneDrive (@ 06:00 local, 30-day). Corpus data in the same SQLite file inherits all three layers automatically — no new backup work needed. Scripts: `scripts/donna-backup.sh` and `scripts/donna-fetch-backup.ps1`.
+- **Codex reviews absorbed:** three passes (defect, adversarial challenge, Hermes comparison) plus a fourth latent-bug hunt post-deploy. All findings either fixed or explicitly deferred with mitigation. The FTS5 bug below was a fifth Codex-style finding we caught ourselves during the v0.3.2 Huck Finn smoke test.
+
+### Stack that Corpus will build on — validated live (2026-04-23)
+
+The knowledge layer assumptions in this brief (§7-8) are no longer aspirational. They ran end-to-end against the live droplet:
+
+- **Ingest pipeline:** 402-chunk Huck Finn novel ingested via `botctl teach`. Voyage-3 embeddings via direct HTTP (the `voyageai` SDK is still broken on Py 3.14 — Donna's HTTP pattern in `src/donna/ingest/embed.py` is the reference). `insert_source` + `insert_chunk` + `chunks_fts` INSERT/DELETE/UPDATE triggers all work. ~5 seconds for the whole pipeline on a $6 droplet.
+- **Hybrid retrieval:** `retrieve_knowledge()` in `src/donna/modes/retrieval.py` runs semantic (`vec_distance_cosine`) + FTS5 keyword + RRF merge + diversity cap. Returned top-3 chunks for "what does Huck say about civilization" with the chapter-1 table-of-contents chunk ranked first (score 0.588). The sqlite-vec native path, not the Python fallback.
+- **Grounded mode + `quoted_span` validator:** `answer_grounded()` called live against the 402-chunk scope. Model produced well-formed JSON with `claims[].citations[]` + `claims[].quoted_span` + `prose`. Validator (`src/donna/security/validator.py`) caught a real hallucination: model cited a Jim-dialogue chunk for an Aunt Sally quote from the book's ending. Validator rejected the claim because the span wasn't in the cited chunk. **The "constrained transparency" model Codex demanded is not theoretical — it works and it's strict.** This is directly what Corpus oracle mode will be.
+
+### Bugs found and fixed that Corpus would have inherited
+
+- **FTS5 syntax injection** (PR #15) — `knowledge.keyword_search()` passed raw user input into `chunks_fts MATCH ?`. Any natural-language query containing `"`, `(`, `)`, `*`, `?`, `:`, `+`, `^`, `~`, `-`, or bareword operators (`AND`, `OR`, `NOT`, `NEAR`) raised `sqlite3.OperationalError`. Fix: new `_fts_sanitize(query)` helper (`src/donna/memory/knowledge.py`) tokenizes via `re.findall(r"\w+", q)` and wraps each token in double quotes. Preserves FTS5's implicit-AND semantics; empty-token queries short-circuit to `[]`. **Corpus: when you port or mirror this FTS path, reuse or copy `_fts_sanitize` — do not send raw queries to MATCH.** Tests live in `tests/test_fts_sanitize.py`.
+- **`/cancel` didn't cancel** (PR #9) — jobs ignored the CANCELLED status flip. Fixed via `JobContext.check_cancelled()` raised in each mode's iteration loop. Not directly your concern but: **Corpus's long-running ingestion jobs will run through Donna's `JobContext`. Inherit the pattern — call `ctx.check_cancelled()` between expensive steps (entity extraction per chunk, pillar distillation per cluster, etc).**
+- **`docker compose exec bot python -c ...` bypasses sops-decrypted secrets** — Donna's entrypoint decrypts `secrets/prod.enc.yaml` on container start, but `docker exec` skips ENTRYPOINT so pydantic blows up on inline comments in `.env`. Workaround: `docker compose exec bot /entrypoint.sh python -c ...`. `botctl` already routes through a wrapper; `corpusctl` should do the same. See PR #7 for the Dockerfile shim pattern.
+- **PowerShell 5.1 vs 7** (PR #13) — Windows ships PS 5.1 by default. `Get-Date -AsUTC` is PS 7+. Use `(Get-Date).ToUniversalTime().ToString('...')`. Relevant if you build laptop-side tooling for corpus ingestion or review.
+- **`flags=re.UNICODE`** — redundant on Py3 str patterns; ruff `UP` rules flag it. Trivial but catches regressions.
+- **Droplet `bot` user has NO sudo password** — `harden-droplet.sh` creates it with `--disabled-password` but adds it to the `sudo` group, so `sudo` prompts forever. Anything requiring root must go through DO web console or docker-group escape hatch (`docker run --rm -v /path:/path alpine ...`). Corpus tooling on the droplet must not assume `sudo`.
+- **Phoenix upstream broken (14.x line)** — disabled in `docker-compose.yml` with a big comment block. OpenTelemetry export still runs (it just logs "unreachable" warnings). **Corpus inherits the same OTEL exporter — your spans will go nowhere useful until we find a working tag or swap to Tempo/Jaeger. Plan accordingly for pillar-distillation eval debugging: pipe to structlog, not traces, for now.**
+
+### Original assumptions in this brief that have moved to "validated"
+
+- §7 layered retrieval model (chunks + concept + pillars) — chunks layer proven on 402-chunk corpus ✓
+- §8 ingestion pipeline — through the "embed" step proven live ✓. Extraction / canonicalization / distillation still new work.
+- §12 dependencies list — all confirmed except Phoenix (see above). Voyage-3 direct-HTTP pattern ships; don't try the SDK.
+- §16 quality signal ("this sounds like Claude writing a book report") is even more real now that grounded mode is live — the validator caught exactly that class of hallucination today.
+
+### Original assumptions in this brief that have NOT changed
+
+- Monorepo with hard internal boundary. Confirmed with the deploy — Corpus riding Donna's SQLite file + Donna's deploy pipeline is cleaner now, not worse.
+- `agent_scope` is still Donna's primitive; it's still the wrong primitive for corpus interpretation. §4's attributed-knowledge-graph model is right.
+- No framework. No fine-tuning. No Neo4j day-one. All still right.
+- Phase 0 design doc first. User will push back if you skip to coding. They've been burned by agents jumping the gun before.
+- EvidencePack contract (Corpus returns structure; Donna composes prose) is the load-bearing decision. Holds.
+
+### Paths and environment
+
+- User's primary laptop repo path may differ from the brief's old example (`C:\Users\rchan\OneDrive\Desktop\donna`). On the laptop you're running on, check `git remote -v` in the repo root and trust whatever that shows. Remote is still `GlobalCan/donna`.
+- Droplet repo at `/home/bot/donna`. DB at `/data/donna/donna.db` (bind-mounted from host; `/data/donna.db` inside container).
+- GHCR publish is automatic — any `main` merge triggers image rebuild. Droplet pulls manually via `docker compose pull && up -d`; `donna-update.timer` is installed but intentionally not enabled yet (Codex prescription: auto-deploy without loop-supervision + backups raises blast radius — backups exist now, supervision exists, auto-deploy re-evaluation is on the open list).
+
+### Split of concerns for the multi-session workflow
+
+The user is continuing **Donna-side development on their primary laptop** (this session / successor sessions on the same machine). They're running **Corpus development on a second laptop** via a separate Claude Code session. That split is the workflow, not a temporary arrangement.
+
+- **Corpus session owns:** `src/corpus/*`, `tests/corpus/*`, `evals/corpus/*`, `migrations/versions/corpus_*`, `docs/CORPUS_*`
+- **Donna session owns:** everything else
+- **Both sessions share:** `main` branch via GitHub. Coordinate via PR descriptions. Merges happen on whichever laptop is current.
+- **Conflict avoidance:** don't edit `src/donna/*` from the Corpus session unless the change is explicitly the "Donna wires corpus.Corpus into tools/knowledge.py" integration PR — and even then, open it as a separate small PR, don't bundle with Corpus phase work.
+- **When Corpus needs something from Donna** (pattern, helper, test fixture), copy first, unify later. Small duplication is cheaper than cross-session coupling.
+
+### Pointers into the current code you'll want in your first hour
+
+- `src/donna/ingest/embed.py` — Voyage-3 via direct HTTP (pattern to port)
+- `src/donna/ingest/chunk.py` + `src/donna/ingest/pipeline.py` — chunking + within-batch dedupe
+- `src/donna/memory/knowledge.py` — `insert_source`, `insert_chunk`, `semantic_search`, `keyword_search`, `_fts_sanitize`, `_row_to_chunk`
+- `src/donna/modes/retrieval.py` — `retrieve_knowledge`, `_rrf_merge`, `_apply_diversity`, `_apply_temporal_prior`
+- `src/donna/modes/grounded.py` — `answer_grounded` (legacy dict-returning shape you can mirror for `Corpus.answer()` before EvidencePack is fully defined)
+- `src/donna/security/validator.py` — `validate_grounded`, `quoted_span` logic — port as-is
+- `src/donna/security/sanitize.py` — dual-call untrusted-content pattern — port as-is
+- `src/donna/agent/context.py` — `JobContext` primitives (`model_step`, `tool_step`, `check_cancelled`, `maybe_compact`, `checkpoint`, `finalize`) — Corpus's long-running jobs (extraction, distillation) should run inside this, not invent their own
+- `src/donna/memory/ids.py` — typed ID prefixes. Use `ids.chunk_id()` style for corpus IDs too; keep the convention.
+- `tests/conftest.py` — `fresh_db` fixture (alembic upgrade via subprocess). Corpus tests should reuse.
+- `tests/test_fts_sanitize.py` — the pattern for testing a DB-touching primitive. Copy.
+
+### The one hard-learned ops lesson
+
+Don't run ad-hoc SQL or Python against the live DB without going through `docker compose exec bot /entrypoint.sh` — `secrets/prod.enc.yaml` must be decrypted first or pydantic rejects config. This trips every fresh debugging session at least once.
+
+---
+
+## 0.1 · How to use this brief
 
 You (the agent reading this) are a session operating inside the existing Donna repository at `C:\Users\rchan\OneDrive\Desktop\donna` (remote: `GlobalCan/donna`). Your job is to add a new `corpus/` package alongside `donna/`.
 
