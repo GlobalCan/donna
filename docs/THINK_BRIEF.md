@@ -37,7 +37,7 @@ The knowledge layer assumptions in this brief (§7-8) are no longer aspirational
 ### Bugs found and fixed that Think would have inherited
 
 - **FTS5 syntax injection** (PR #15) — `knowledge.keyword_search()` passed raw user input into `chunks_fts MATCH ?`. Any natural-language query containing `"`, `(`, `)`, `*`, `?`, `:`, `+`, `^`, `~`, `-`, or bareword operators (`AND`, `OR`, `NOT`, `NEAR`) raised `sqlite3.OperationalError`. Fix: new `_fts_sanitize(query)` helper (`src/donna/memory/knowledge.py`) tokenizes via `re.findall(r"\w+", q)` and wraps each token in double quotes. Preserves FTS5's implicit-AND semantics; empty-token queries short-circuit to `[]`. **Think: when you port or mirror this FTS path, reuse or copy `_fts_sanitize` — do not send raw queries to MATCH.** Tests live in `tests/test_fts_sanitize.py`.
-- **`/cancel` didn't cancel** (PR #9) — jobs ignored the CANCELLED status flip. Fixed via `JobContext.check_cancelled()` raised in each mode's iteration loop. Not directly your concern but: **Think's long-running ingestion jobs will run through Donna's `JobContext`. Inherit the pattern — call `ctx.check_cancelled()` between expensive steps (entity extraction per chunk, pillar distillation per cluster, etc).**
+- **`/cancel` didn't cancel** (PR #9) — jobs ignored the CANCELLED status flip. Fixed via `JobContext.check_cancelled()` raised in each mode's iteration loop. This is Donna's pattern; study it as prior art, but **Think owns its own runtime** (see §5) — do not wire Think jobs into `donna.agent.context.JobContext`. Build Think's own cancellable-task primitive (simple `threading.Event`, `asyncio.Event`, or a `think_jobs` table with your own status column — whichever matches your chosen job-runner shape). The conceptual pattern (checkpoint between expensive steps, read status between iterations) is what to port, not the Donna code.
 - **`docker compose exec bot python -c ...` bypasses sops-decrypted secrets** — Donna's entrypoint decrypts `secrets/prod.enc.yaml` on container start, but `docker exec` skips ENTRYPOINT so pydantic blows up on inline comments in `.env`. Workaround: `docker compose exec bot /entrypoint.sh python -c ...`. `botctl` already routes through a wrapper; `thinkctl` should do the same. See PR #7 for the Dockerfile shim pattern.
 - **PowerShell 5.1 vs 7** (PR #13) — Windows ships PS 5.1 by default. `Get-Date -AsUTC` is PS 7+. Use `(Get-Date).ToUniversalTime().ToString('...')`. Relevant if you build laptop-side tooling for corpus ingestion or review.
 - **`flags=re.UNICODE`** — redundant on Py3 str patterns; ruff `UP` rules flag it. Trivial but catches regressions.
@@ -84,7 +84,7 @@ The user is continuing **Donna-side development on their primary laptop** (this 
 - `src/donna/modes/grounded.py` — `answer_grounded` (legacy dict-returning shape you can mirror for `Think.answer()` before EvidencePack is fully defined)
 - `src/donna/security/validator.py` — `validate_grounded`, `quoted_span` logic — port as-is
 - `src/donna/security/sanitize.py` — dual-call untrusted-content pattern — port as-is
-- `src/donna/agent/context.py` — `JobContext` primitives (`model_step`, `tool_step`, `check_cancelled`, `maybe_compact`, `checkpoint`, `finalize`) — Think's long-running jobs (extraction, distillation) should run inside this, not invent their own
+- `src/donna/agent/context.py` — `JobContext` primitives (`model_step`, `tool_step`, `check_cancelled`, `maybe_compact`, `checkpoint`, `finalize`) — **read as prior art**, not a dependency. Think builds its own lighter runtime (see §5); borrow the shapes that make sense (checkpoint between steps, status polling for cancellation), re-implement them against Think's own job table so Think stays standalone.
 - `src/donna/memory/ids.py` — typed ID prefixes. Use `ids.chunk_id()` style for corpus IDs too; keep the convention.
 - `tests/conftest.py` — `fresh_db` fixture (alembic upgrade via subprocess). Think tests should reuse.
 - `tests/test_fts_sanitize.py` — the pattern for testing a DB-touching primitive. Copy.
@@ -229,7 +229,20 @@ It's also the only schema that answers cross-author questions naturally. Donna v
 
 ## 5 · The Think ↔ Donna integration contract
 
-Think is an **internal Python package** that Donna imports directly. Same repo, same process, same SQLite file. No HTTP boundary, no separate deployment.
+Think is an **internal Python package** that Donna imports *when it wants to use Think's query API*. Same repo, same SQLite file, shared process only when Donna is actively calling `Think.answer()`. No HTTP boundary, no separate deployment.
+
+**Crucially: Think is standalone.** You can:
+- `thinkctl teach <book>` with no Donna running
+- `python -c "from think import Think; t = Think.open('./data.db'); print(t.answer(...))"` with no Donna running
+- Run all of Think's evals, ingestion, canonicalization, pillar distillation without Donna anywhere in the picture
+- Deploy Think-only (e.g. a future batch ingestion container) without deploying Donna
+
+Donna is a **consumer** of Think's query API, not a **host** of Think's runtime. Think owns its own:
+
+- **Background jobs** — ingestion, extraction, canonicalization, pillar distillation. Think has its own job primitive (simplest start: synchronous `thinkctl` commands; upgrade to an in-process async queue or a `think_jobs` table when scale demands). Do **not** plug into `donna.agent.context.JobContext` or `donna.jobs.*`. If Donna's worker is down, Think's ingestion must still run.
+- **CLI** — `thinkctl` is a full-featured command, not a botctl subcommand.
+- **Tests / evals** — separate pytest and eval harness, runnable in isolation.
+- **LLM calls** — Think makes its own Anthropic / Voyage HTTP calls (copy Donna's patterns, don't import Donna's `model_adapter`). Think's calls are "curation-time" or "retrieval-side LLM"; they shouldn't go through Donna's cost ledger or rate limiter. (If you later want unified cost accounting, add a shared `costs` table you both write to — don't couple runtimes.)
 
 The contract — load-bearing:
 
@@ -577,7 +590,7 @@ From two Codex reviews + Hermes comparison:
 
 Do NOT add:
 - Neo4j / FalkorDB
-- Redis (no queue; background jobs in-process or reuse Donna's worker)
+- Redis (no queue; Think's background jobs run in-process — synchronous to start, add an in-process async queue or a `think_jobs` status table only when needed. Do NOT route through Donna's worker; Think stays standalone)
 - Postgres
 - LangChain / LlamaIndex frameworks
 
@@ -627,7 +640,7 @@ From multiple days of design conversation:
 3. **Pillar cardinality**: 7-12 per profile default, configurable. Confirm.
 4. **Alignment approval thresholds**: auto-apply `close_to` at confidence > 0.9? Never auto-apply `same_as`. Confirm defaults.
 5. **Oracle refusal strictness**: retrieval confidence threshold for refusal. Start at 0.3, calibrate on real use.
-6. **Background ingestion runner**: reuse Donna's worker process, or spawn a separate `corpus-worker`? Default: reuse Donna's worker since it already has lease-and-recovery.
+6. **Background ingestion runner**: Think stays standalone — start **synchronous** (`thinkctl teach` blocks until done, progress bar via rich). When ingestion times get long enough to matter (multi-book bulk loads, pillar re-distillation across a changed corpus), upgrade to an **in-process async queue** or a small `think_jobs` status table with its own poll loop. Do **not** reuse `donna-worker`; Think must be runnable when Donna's container is down or uninstalled.
 
 ---
 
