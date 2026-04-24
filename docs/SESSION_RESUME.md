@@ -25,41 +25,52 @@ Before anything else, read these files. Everything below assumes you have.
 
 ## 1 · Where we are
 
-**Donna v0.3.1 is live in production on DigitalOcean, fully smoke-tested.**
-Bot answering DMs as `Donna#3183`. Codex (GPT-5.4) adversarial review absorbed
-same-day; all three latent bugs Codex flagged are fixed and validated against
-the running droplet.
+**Donna v0.3.3 is live in production on DigitalOcean, fully smoke-tested.**
+Bot answering DMs as `Donna#3183`. Two Codex (GPT-5.4) adversarial reviews
+absorbed in this session-stack; **all 9 findings of the second pass fixed
+and validated live** alongside the original 3-pass review.
 
 - **Branch:** `main`, clean working tree
 - **Droplet:** `159.203.34.165` (Ubuntu 24.04 LTS), hardened (bot uid 1001,
   sshd key-only, ufw, fail2ban, unattended-upgrades, docker, sops, age 1.1.1)
 - **Image:** `ghcr.io/globalcan/donna:latest` — published by GHA `build-and-push`
   on every main merge; droplet pulls manually via `docker compose pull`
-- **Containers:** `donna-bot` + `donna-worker` Up; both run as host uid 1001
-  per compose `user:` override (`docker-compose.yml`). Phoenix temporarily
-  disabled (upstream `arizephoenix/phoenix:14.x` ships broken)
+- **Containers:** `donna-bot` + `donna-worker` + `donna-jaeger` all Up.
+  Bot/worker run as host uid 1001 per compose `user:` override. Jaeger
+  all-in-one (`jaegertracing/all-in-one:1.60`) replaced Phoenix after the
+  14.x line shipped broken upstream — same OTLP-gRPC port (4317), UI on
+  `:16686` via SSH tunnel.
 - **Secrets:** sops-encrypted `secrets/prod.enc.yaml` in repo, 2 age recipients
   (primary on laptop+droplet, backup paper); age private key at
   `/etc/bot/age.key` on droplet, mode 600 owned by bot
 - **DB:** `/data/donna/donna.db` on droplet (bind-mounted into containers,
   files chowned to 1001:1001 to match new container uid), migrations
   0001 → 0005 all applied, ~30 tables
-- **Tests:** 70/70 green on Python 3.14.3
+- **Tests:** 102 passing on Python 3.14.3 (was 60 start of v0.3.x)
 - **Remote HEAD = local HEAD**
 
-**Validated live in prod (2026-04-23):**
+**Validated live in prod (2026-04-23 + 2026-04-24):**
 
 - DM round-trip + multi-tool agent loop (19 tool calls in one orca research
   job: search_web, fetch_url, send_update, save_artifact)
 - Taint propagation (web tools mark job tainted; consent gate triggers on
   taint+write tool combo)
 - Consent ✅/❌ flow (real `save_artifact` ran end-to-end: blob in
-  `/data/donna/artifacts/<sha256>.blob`, matching DB row in `artifacts`
-  table with name/mime/tags/sha256/bytes/created_by_job)
+  `/data/donna/artifacts/<sha256>.blob`, matching DB row in `artifacts`)
 - `/cancel` agent-loop check (DB-flip → halted within one iteration)
 - `botctl jobs --since` filter (1h/24h/all all return correct counts)
 - Cost ledger ($0.26 for the orca job, queryable via `botctl cost`)
 - Outbox→Discord delivery, reaction handling, drainer supervision
+- Slash commands visible in Discord DM (global sync + guild copy)
+- **402-chunk Huck Finn corpus** teach → retrieval → grounded-mode
+  generation → quoted_span validator (caught a real model hallucination
+  citing Jim-dialogue chunk for Aunt Sally quote)
+- **FTS5 sanitizer** live: `?`-terminated grounded query now runs to
+  completion where it used to crash
+- **Backup→verify loop** on real prod data: 2.6MB tarball round-trips
+  cleanly (402 chunks, 8 blobs, integrity_check OK)
+- **Jaeger trace backend**: UI responds 200 on `:16686`, bot no longer
+  emits "Failed to export traces to phoenix:4317" warnings
 
 **Backups — three layers live (2026-04-23, PRs #12/#13):**
 
@@ -74,20 +85,22 @@ the running droplet.
 
 Restore recipe: `docs/OPERATIONS.md` §Restore from a tarball.
 
-**Still open** (see `docs/KNOWN_ISSUES.md` §v0.3.1):
+**Still open** (see `docs/KNOWN_ISSUES.md` §v0.3.3):
 
-- **Phoenix re-enable** — needs a confirmed-working older tag or swap to
-  Tempo/Jaeger
-- **Auto-update timer** (`donna-update.timer`) — installed but never
-  enabled; deploys are manual git pull + compose pull + up. Now unblocked
-  (backups live + supervision done), but do a quarterly restore drill first
-- **Tailscale** for narrowing public port 22
-- **`botctl teach`** ingest pipeline never exercised in prod
-- **Grounded / speculative / debate modes** never smoke-tested in prod
-  (chat mode validated extensively; the others have their own exit paths
-  that may have the same `_enqueue_final_text` bug Phase 1 found in chat)
-- **Slash commands in DMs** — global sync landed in PR #10; Discord CDN
-  may take ~1h post-deploy to show commands in DM autocomplete first time
+- **Full quarterly restore drill** — throwaway droplet + token-juggling
+  (~5 min downtime). Lightweight tarball verifier
+  (`scripts/donna-verify-backup.sh`) covers the "data is restorable"
+  case; the throwaway-droplet drill is the "deploy comes up" case.
+- **Tailscale** for narrowing public port 22 — lockout risk; do on
+  a weekend with DO recovery console available
+- **Auto-update timer** (`donna-update.timer`) — unblock requires full
+  restore drill per Codex rule. Currently deploys are manual git pull +
+  compose pull + up
+- **Phoenix re-enable path** — documented in `docker-compose.yml`. Jaeger
+  is the current backend. If Phoenix fixes their image, swap back is
+  a hostname change (`OTEL_EXPORTER_OTLP_ENDPOINT`)
+- **Speculative / debate modes** never smoke-tested in prod (grounded
+  has been validated; chat extensively so)
 - **`botctl forget-artifact`** subcommand doesn't exist; manual SQL +
   `rm` until then
 - **Quarterly restore drill** — not yet done

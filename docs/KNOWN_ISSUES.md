@@ -215,19 +215,69 @@ Validated live 2026-04-23: droplet dry-run produced 224KB tarball, laptop
 manual pull landed in OneDrive folder, scheduled task registered with next
 run 06:00 local.
 
+## v0.3.3 — Codex adversarial round 2 + Jaeger swap (2026-04-24)
+
+Second targeted Codex (GPT-5.4) adversarial scan after the two FTS5
+injection fixes in v0.3.2. Nine findings, all legitimate, all fixed same
+day. Plus Phoenix → Jaeger swap (broken upstream).
+
+### Codex adversarial round 2 — ALL 9 FIXED
+
+| # | Category | Finding | PR | Severity |
+|---|---|---|---|---|
+| 1 | FTS5 sibling | `facts.search_facts_fts` had same injection as `keyword_search` | #19 | high |
+| 2 | Untrusted content | `fetch_url` no content-type / size guard | #20 | high |
+| 3 | Untrusted content | `ingest_discord_attachment` no byte/page/char cap | #20 | high |
+| 4 | Taint propagation | `recall` taint nested in `results[]`, JobContext misses it | #21 | high |
+| 5 | Taint propagation | `teach` / `propose_heuristic` missing from `TAINT_ESCALATED_TOOLS` | #21 | high |
+| 6 | Crash safety | `validate_grounded` assumes dict from `json.loads` | #22 | med |
+| 7 | Crash safety | `debate.run_debate_in_context` `int(rounds)` unguarded | #22 | med |
+| 8 | State machine | `consent.check` wait loop ignores `/cancel` | #22 | med |
+| 9 | ReDoS | `_has_substring_overlap` O(n*m) on unbounded text | #22 | med |
+| 10 | Ownership | `_persist_pending` no owner guard on writes | #23 | med |
+
+(#10 was Codex's final one, deferred one round because "bigger" — landed
+in v0.3.3 alongside the rest.)
+
+### Phoenix → Jaeger (PR #25)
+
+`arizephoenix/phoenix:14.x` ships a broken image upstream. Swapped to
+`jaegertracing/all-in-one:1.60` — same OTLP-gRPC port (4317), hostname
+rename is the only real change. UI at `:16686` via SSH tunnel. Tradeoff
+documented: Jaeger is generic distributed tracing (not LLM-native),
+in-memory storage by default (audit spans still land in `traces` SQLite
+table). Phoenix re-enable path documented in `docker-compose.yml` for
+when they fix their image.
+
+### Added — backup verifier (PR #24)
+
+`scripts/donna-verify-backup.sh` — lightweight restore drill. Extract
+tarball, `PRAGMA integrity_check` + `foreign_key_check`, row counts on
+core tables, SHA-256 verify every artifact blob against its filename.
+Validated live against a 2.6MB tarball with 402 Huck Finn chunks: all
+green.
+
+### Validated live (2026-04-24)
+
+- Three-layer backup + verify loop on real prod data (Huck Finn corpus)
+- Grounded mode with `?`-terminated query runs to completion (FTS5 fix)
+- Jaeger UI responds 200 on `:16686`; bot trace export clean
+- Slash commands visible in Discord DM post-PR-#10 CDN propagation
+- 102 tests green on Py 3.12 (CI) / locally
+
 ### Still open
 
-- **Phoenix observability** — re-enable with a confirmed-working tag (try
-  `arizephoenix/phoenix:13.x`) or swap to Tempo/Jaeger
-- **Auto-update timer** — `donna-update.timer` template installed by
-  `harden-droplet.sh` but never `systemctl enable`'d; deploys are manual
-  `git pull && docker compose pull && up -d`. Backups now exist but Codex's
-  secondary condition (loop supervision) is also in place, so this could
-  land next. Worth a quarterly restore drill first.
-- **Tailscale** for narrowing public port 22
+- **Full quarterly restore drill** — tarball verifier covers the "data
+  is restorable" case weekly; full throwaway-droplet drill (boot bot +
+  DM test) remains quarterly. Needs Discord-token juggling (~5 min
+  downtime).
+- **Tailscale** for narrowing public port 22 — lockout risk if
+  misconfigured; weekend task with DO console as recovery
+- **Auto-update timer** — unblock requires full restore drill per Codex
+  rule. Currently manual deploys.
+- **Phoenix re-enable path** documented; one-line swap back if their
+  image is fixed
 - **`botctl forget-artifact <id>`** — currently manual SQL DELETE + `rm`
-- **`botctl teach`** ingest pipeline never exercised in prod
-- **Grounded / speculative / debate modes** never smoke-tested in prod
-  (chat mode has been validated extensively)
-- **Quarterly restore drill** not yet done (throwaway droplet → restore
-  from OneDrive tarball → boot → DM "hello")
+- **Speculative / debate modes** never smoke-tested in prod
+- **`botctl teach`** ingest pipeline validated via direct CLI; Discord-
+  initiated `/teach` slash command not yet exercised
