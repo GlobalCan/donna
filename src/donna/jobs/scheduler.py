@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
+from croniter import croniter
+
 from ..logging import get_logger
 from ..memory import jobs as jobs_mod
 from ..memory import schedules as sched_mod
@@ -40,6 +42,27 @@ class Scheduler:
             await self._fire(s)
 
     async def _fire(self, sched: dict) -> None:
+        # Belt-and-suspenders: if a row somehow has a broken cron_expr
+        # (data corruption, manual SQL bypassing `insert_schedule`'s
+        # validator), `mark_ran` raises inside the transaction. Without
+        # this guard the schedule keeps appearing in `due_schedules` every
+        # tick forever and every tick emits an exception — noisy log spam
+        # for what should be "this schedule is broken, stop retrying."
+        # Auto-disable on parse failure with a distinct log line.
+        if not croniter.is_valid(sched["cron_expr"]):
+            log.error(
+                "scheduler.disabling_bad_cron",
+                schedule_id=sched["id"],
+                cron_expr=sched["cron_expr"],
+            )
+            conn = connect()
+            try:
+                with transaction(conn):
+                    sched_mod.disable_schedule(conn, sched["id"])
+            finally:
+                conn.close()
+            return
+
         conn = connect()
         try:
             with transaction(conn):
