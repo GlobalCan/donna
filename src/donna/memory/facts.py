@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from . import ids
+from .fts import fts_sanitize
 
 
 def insert_fact(
@@ -54,6 +55,9 @@ def search_facts_fts(
     on a fresh connection — doesn't block the read, doesn't share the caller's
     connection.
     """
+    match_expr = fts_sanitize(query)
+    if not match_expr:
+        return []
     if agent_scope:
         rows = conn.execute(
             """
@@ -66,7 +70,7 @@ def search_facts_fts(
             ORDER BY rank
             LIMIT ?
             """,
-            (query, agent_scope, limit),
+            (match_expr, agent_scope, limit),
         ).fetchall()
     else:
         rows = conn.execute(
@@ -79,7 +83,7 @@ def search_facts_fts(
             ORDER BY rank
             LIMIT ?
             """,
-            (query, limit),
+            (match_expr, limit),
         ).fetchall()
 
     if rows:
