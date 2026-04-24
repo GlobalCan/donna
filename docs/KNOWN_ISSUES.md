@@ -101,13 +101,13 @@ test suite couldn't catch. All fixed in v0.2.1 (see CHANGELOG).
 |---|---|---|---|
 | P1-1 | `bot.loop.create_task` pre-start fails on discord.py 2.x | **FIXED** | `main.py` — `asyncio.create_task` inside async `_run()` |
 | P1-2 | Cross-process outbox (in-memory asyncio.Queue) — updates/asks/consent lost between bot + worker processes | **FIXED** | migration `0005`, `tools/communicate.py`, `security/consent.py`, `adapter/discord_adapter.py` — SQLite is now the outbox |
-| P1-3 | Chat mode's `final_text` orphaned — agent's answer never delivered to Discord | **FIXED** | `agent/loop.py::_enqueue_final_text` writes to `outbox_updates` on mode exit |
+| P1-3 | Chat mode's `final_text` orphaned — agent's answer never delivered to Discord | **FIXED** | `agent/loop.py::_enqueue_final_text` writes to `outbox_updates` on mode exit (superseded by P1-4 unification) |
+| P1-4 | Grounded / speculative / debate modes had the same orphaned-final-text hole flagged in P1-3's deferral | **FIXED** | `agent/context.py::JobContext.finalize()` now writes `outbox_updates` atomically with the DONE status flip. Removed the chat-only `_enqueue_final_text` helper; every mode inherits delivery. Also closes a latent chat-mode double-delivery bug on finalize-retry (outbox write was in a separate transaction from DONE flip). |
 
 ### Open follow-ups from Phase 1 (not blocking)
 
 - **Wikipedia 403 on fetch_url** — `DonnaBot/0.1 (+personal)` UA is policy-compliant but Wikipedia has gotten stricter. Agent falls back to Tavily + non-Wikipedia source, so not blocking. Fix: beef up UA string with contact URL.
-- **1500-char truncation on send_update** — long-form summaries get cut mid-sentence. Real fix: save long outputs as artifact, update the agent prompt to send a pointer + short excerpt rather than full text.
-- **Other modes likely have the same orphaned-final-text hole.** Chat mode was fixed in `_run_chat`; grounded/speculative/debate each have their own exit path. Will surface when those modes' smoke tests run.
+- **1500-char truncation on send_update** — long-form summaries get cut mid-sentence. Real fix: save long outputs as artifact, update the agent prompt to send a pointer + short excerpt rather than full text. `JobContext.finalize()` inherits the same 1500 cap on `final_text`; same long-form fix applies here too.
 
 ## Phase 2 production deploy pass (2026-04-23)
 

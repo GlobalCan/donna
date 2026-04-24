@@ -24,6 +24,7 @@ from typing import Any
 
 from ..config import settings
 from ..logging import get_logger
+from ..memory import ids as ids_mod
 from ..memory import jobs as jobs_mod
 from ..memory import tool_calls as tool_calls_mod
 from ..memory.db import connect, transaction
@@ -301,7 +302,14 @@ class JobContext:
             raise LeaseLost(self.job.id)
 
     def finalize(self) -> bool:
-        """Owner-guarded final write + DONE transition."""
+        """Owner-guarded final write + DONE transition + outbox delivery.
+
+        The outbox insert is atomic with the DONE status flip inside a single
+        transaction. All four modes (chat, grounded, speculative, debate) set
+        `final_text` + `done=True`; unifying the outbox write here means every
+        mode delivers its answer to Discord without each one having to
+        remember — which chat was the only mode that did.
+        """
         conn = connect()
         try:
             with transaction(conn):
@@ -315,6 +323,18 @@ class JobContext:
                 )
                 if not ok1:
                     return False
+                text = (self.state.final_text or "").strip()
+                if text:
+                    conn.execute(
+                        "INSERT INTO outbox_updates (id, job_id, text, tainted) "
+                        "VALUES (?, ?, ?, ?)",
+                        (
+                            ids_mod.new_id("upd"),
+                            self.state.job_id,
+                            text[:1500],
+                            1 if self.state.tainted else 0,
+                        ),
+                    )
                 return jobs_mod.set_status(
                     conn, self.state.job_id, JobStatus.DONE, worker_id=self.worker_id,
                 )

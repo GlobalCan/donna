@@ -143,7 +143,7 @@ Small PRs that remove the hacks and improve ops ergonomics. Each is self-contain
 Tests beyond the four smoke tests:
 
 1. **Teach a real corpus** — `botctl teach author_twain huck.txt` against a Project Gutenberg public-domain book. Validates ingest → chunk → embed → knowledge_chunks pipeline end-to-end, which the smoke tests didn't hit.
-2. **Grounded / speculative / debate modes** — smoke-test them. Chat mode's `_enqueue_final_text` fix likely needs to be replicated for the other three modes (flagged in Phase 1 CHANGELOG).
+2. **Grounded / speculative / debate modes** — smoke-test them. The orphaned-final-text hole (chat mode was patched in Phase 1, other three deferred) was closed on `claude/load-up-setup-7XtVU`: `JobContext.finalize()` now writes to `outbox_updates` atomically with the DONE status flip, so every mode inherits delivery. 8 new tests in `tests/test_outbox.py` lock it in (finalize unit × 4 + grounded/speculative/debate integration × 3 + cancelled-no-deliver regression × 1). **Live Discord smoke still needed** — the refactor is validated against the SQLite path; the `adapter/discord_adapter.py::_drain_updates` loop behaviour from real non-chat modes has never been exercised in prod.
 3. **`/schedule`** — set a daily morning brief via `/schedule`, confirm the scheduler + cron tick fires it overnight.
 
 ### Track C — Think package scaffolding
