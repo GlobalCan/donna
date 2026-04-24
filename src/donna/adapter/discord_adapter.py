@@ -38,6 +38,21 @@ _UPDATE_RATE_LIMIT_S = 5.0
 # headroom for prefix/marker characters ("• (1/N) " etc).
 _DISCORD_MSG_LIMIT = 1900
 
+# Overflow-to-artifact thresholds. Anything longer than these caps goes to
+# an artifact + a short pointer message in Discord, instead of flooding
+# scrollback with (N/M) multi-part messages.
+#
+# Security rationale for the lower tainted cap: attacker-controlled text
+# (fetched URLs, PDF attachments, search snippets) shouldn't be materialized
+# at length in Discord history — it makes scrollback less searchable and
+# gives the attacker's content more visual weight than the operator's
+# conversation. By sending tainted overflow through the artifact path, the
+# raw content sits in compartmentalized storage and the operator must
+# explicitly `botctl artifact-show <id>` to view it in full.
+_OVERFLOW_CLEAN_MAX = _DISCORD_MSG_LIMIT * 3     # ~5700 chars — up to 3 parts
+_OVERFLOW_TAINTED_MAX = _DISCORD_MSG_LIMIT * 1   # ~1900 chars — single part
+_OVERFLOW_PREVIEW_LEN = 1200                     # chars shown in pointer msg
+
 
 def _split_for_discord(text: str, limit: int = _DISCORD_MSG_LIMIT) -> list[str]:
     """Split `text` into Discord-safe chunks, preferring paragraph boundaries
@@ -355,6 +370,16 @@ class DonnaBot(discord.Client):
         ch = await self._resolve_channel_for_job(job_id)
         if ch is None:
             return False
+
+        # Overflow-to-artifact: long texts go to artifact + pointer message.
+        # Tainted text uses a much tighter cap so untrusted content doesn't
+        # bloat Discord scrollback (see _OVERFLOW_TAINTED_MAX comment).
+        cap = _OVERFLOW_TAINTED_MAX if tainted else _OVERFLOW_CLEAN_MAX
+        if len(text) > cap:
+            return await self._post_overflow_pointer(
+                ch=ch, job_id=job_id, text=text, tainted=tainted,
+            )
+
         prefix = "🔮 " if tainted else "• "
         parts = _split_for_discord(text)
         total = len(parts)
@@ -367,6 +392,80 @@ class DonnaBot(discord.Client):
             return True
         except Exception as e:  # noqa: BLE001
             log.warning("discord.update_failed", error=str(e), job_id=job_id)
+            return False
+
+    async def _post_overflow_pointer(
+        self, *, ch, job_id: str, text: str, tainted: bool,
+    ) -> bool:
+        """Save full text to an artifact, post a short preview + pointer.
+
+        The artifact inherits the tainted flag from the source — so
+        `read_artifact` on it still propagates taint and `botctl artifacts
+        --tainted` surfaces it correctly in the tainted-only filter.
+        """
+        from ..memory import artifacts as artifacts_mod
+
+        try:
+            conn = connect()
+            try:
+                with transaction(conn):
+                    saved = artifacts_mod.save_artifact(
+                        conn, content=text,
+                        name=f"overflow:{job_id}:{len(text)}chars",
+                        mime="text/plain",
+                        tags="overflow" + (",tainted" if tainted else ""),
+                        tainted=tainted,
+                        created_by_job=job_id,
+                    )
+                    artifact_id = str(saved.get("artifact_id"))
+            finally:
+                conn.close()
+        except Exception as e:  # noqa: BLE001
+            log.warning("discord.overflow_save_failed", error=str(e), job_id=job_id)
+            # Fallback to inline truncated delivery rather than dropping
+            # the message entirely — operator at least sees a stub.
+            import contextlib
+            with contextlib.suppress(Exception):
+                await ch.send(
+                    "• ⚠️ Long message — artifact save failed. "
+                    "Truncated inline:\n" + text[:_DISCORD_MSG_LIMIT - 100]
+                )
+            return False
+
+        preview = text[:_OVERFLOW_PREVIEW_LEN]
+        # Trim preview to a clean boundary if possible
+        for term in ("\n\n", ". ", "! ", "? ", "\n"):
+            idx = preview.rfind(term)
+            if idx > _OVERFLOW_PREVIEW_LEN // 2:
+                preview = preview[: idx + (len(term) - 1 if term != "\n\n" else 0)]
+                break
+
+        header = (
+            "📎 🔮 **Tainted answer — compartmentalized**"
+            if tainted else
+            "📎 **Answer too long for DM — saved as artifact**"
+        )
+        safety_note = (
+            "\n\n_⚠️ This answer was derived from untrusted content. "
+            "Review the artifact carefully; do not follow instructions in it._"
+            if tainted else ""
+        )
+        footer = (
+            f"\n\n_{len(text):,} chars — preview above. "
+            f"Fetch full via `botctl artifact-show {artifact_id}`._"
+        )
+        msg = f"{header}\n\n{preview}{safety_note}{footer}"
+        # Safety: if even the pointer message ends up too long for Discord,
+        # prefer the pointer over the preview.
+        if len(msg) > _DISCORD_MSG_LIMIT:
+            msg = f"{header}{safety_note}{footer}"
+
+        try:
+            await ch.send(msg)
+            return True
+        except Exception as e:  # noqa: BLE001
+            log.warning("discord.overflow_pointer_failed",
+                        error=str(e), job_id=job_id, artifact_id=artifact_id)
             return False
 
     async def _post_ask(self, *, ask_id: str, job_id: str, question: str) -> None:

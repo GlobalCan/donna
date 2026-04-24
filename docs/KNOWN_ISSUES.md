@@ -107,7 +107,10 @@ test suite couldn't catch. All fixed in v0.2.1 (see CHANGELOG).
 ### Open follow-ups from Phase 1 (not blocking)
 
 - ~~**Wikipedia 403 on fetch_url** — `DonnaBot/0.1 (+personal)` UA is policy-compliant but Wikipedia has gotten stricter. Agent falls back to Tavily + non-Wikipedia source, so not blocking. Fix: beef up UA string with contact URL.~~ **FIXED** — `src/donna/tools/web.py::fetch_url` sends `Donna/0.2 (+https://github.com/GlobalCan/donna; solo-operator personal AI assistant) httpx` plus browser-typical Accept headers. Re-verify with a live fetch if 403s reappear.
-- ~~**1500-char truncation on send_update** — long-form summaries get cut mid-sentence.~~ **FIXED for final_text** on `claude/load-up-setup-7XtVU`. `JobContext.finalize()` now stores up to 20k chars in the outbox row; the Discord adapter's `_split_for_discord` helper breaks long text at paragraph / sentence / newline boundaries and posts multi-part messages with `(i/N)` markers. The `send_update` tool itself keeps its 1500-char cap — those are progress pings, not final answers. Artifact-pointer pattern remains an option for truly massive (>20k char) outputs but no longer the only path.
+- ~~**1500-char truncation on send_update** — long-form summaries get cut mid-sentence.~~ **FIXED** on `claude/load-up-setup-7XtVU` via a two-tier delivery:
+  1. `_split_for_discord` breaks text at paragraph / sentence / newline boundaries into `(i/N)` multi-part messages — up to **3 parts inline for clean text**, **1 part for tainted**.
+  2. Anything longer gets routed through `_post_overflow_pointer` — the full text is saved as an artifact (tagged `overflow` + `tainted` when applicable, inherits the taint flag), and Discord gets a short preview + `botctl artifact-show <id>` pointer. Security rationale: attacker-controlled output doesn't flood Discord scrollback; viewing the full content requires an explicit operator fetch.
+  The `send_update` tool keeps its 1500-char cap — progress pings are meant to be terse. Job-level `final_text` uses the overflow pattern end-to-end.
 
 ## Phase 2 production deploy pass (2026-04-23)
 
