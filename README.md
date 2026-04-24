@@ -74,7 +74,7 @@ src/donna/
 
 ## Status
 
-**v0.3.2** · Python 3.14 · 70/70 tests green · **live in production on DO**, fully smoke-tested, three-layer backups live.
+**v0.3.3** · Python 3.14 · 102 tests green · **live in production on DO**, fully smoke-tested, three-layer backups live, Jaeger traces, all 9 Codex adversarial-scan findings closed.
 
 - Foundation built and survived three Codex review passes (defect, adversarial
   challenge, Hermes comparison)

@@ -1,5 +1,133 @@
 # Changelog
 
+## [0.3.3] — 2026-04-24 — Codex adversarial round 2 + Jaeger trace backend
+
+Continuation of v0.3.2 same day. A second Codex (GPT-5.4) adversarial scan,
+targeted specifically at the "same-class" latent-bug hunt: given two FTS5
+injections we'd just found, what else of the same pattern was lurking?
+Nine findings, all legitimate, all fixed in the same session. Phoenix
+was also retired (broken upstream) and replaced with Jaeger. Ten PRs
+merged (#15, #19, #20, #21, #22, #23, #24, #25, plus two docs-wrap).
+
+### Fixed — Codex adversarial round 2
+
+All nine of Codex's findings are closed. Four categories:
+
+#### FTS5 syntax injection (same class, second site)
+- **`memory.facts.search_facts_fts`** (PR #19) — identical latent bug to the
+  one PR #15 fixed in `keyword_search`, just a different table. The `recall`
+  tool hits this path on every LLM-initiated memory lookup; any natural-
+  language `recall("…?")` query would have crashed the agent loop with
+  `sqlite3.OperationalError: fts5: syntax error`. Fix extracted the
+  shared helper to `memory/fts.py::fts_sanitize`.
+
+#### Untrusted-content materialization caps
+- **`tools.web.fetch_url`** (PR #20) — no content-type or size guard.
+  Model-chosen URL pointing at a binary or HTML bomb would download
+  fully, pass through `markdownify` + dual-call sanitize before anything
+  noticed. Fix: stream with `httpx.AsyncClient.stream()`, content-type
+  whitelist (text/*, json, xml, rss, atom, ld+json), 5MB cap with
+  mid-stream abort, `truncated: bool` in the return shape.
+- **`tools.attachments.ingest_discord_attachment`** (PR #20) — same
+  vulnerability class. 10MB download cap, 500-page PDF cap via
+  `reader.pages[:500]`, 1M-char text cap. Returns `pages_read` +
+  `truncated_chars`.
+
+#### Taint-propagation completeness
+- **`tools.memory.recall`** (PR #21) — was returning `{"results": [...tainted...]}` with
+  taint nested inside each result. `JobContext._execute_one` only checks
+  top-level `result.get("tainted")`, so tainted facts silently bypassed
+  the "escalate subsequent writes" guarantee. Fix: surface
+  `any_tainted = any(r.get("tainted") for r in results)` at the top.
+- **`security.taint.TAINT_ESCALATED_TOOLS`** (PR #21) — was missing `teach`
+  and `propose_heuristic`. Tainted jobs could write to the corpus /
+  propose reasoning rules without the always-confirm gate. Both added;
+  persistence-of-damage is higher than `remember` because they poison
+  grounded-mode answers and the heuristic layer.
+
+#### Crash safety in validators + state loops
+- **`security.validator.validate_grounded`** (PR #22) — `json.loads("[]")`
+  or `json.loads('"hello"')` returned non-dicts; the following
+  `data.get("claims", [])` crashed with `AttributeError`. Now returns
+  `schema_missing` validation issue.
+- **`modes.debate`** (PR #22) — `int(payload.get("rounds", 3))` crashed
+  on `{"rounds": []}` / `{"rounds": "abc"}`. Wrap in
+  `try/except (TypeError, ValueError)` → fallback 3.
+- **`security.consent.check`** (PR #22) — wait loop ignored
+  `jobs.status = 'cancelled'`. User running `/cancel` during consent
+  saw the bot keep polling for approval up to the 30-min timeout. Now
+  joins against `jobs` and exits in one poll interval.
+- **`security.validator._has_substring_overlap`** (PR #22) — O(n*m)
+  scan on unbounded model debate-turn text. Capped both inputs at
+  50k chars; wall-clock verified bounded (<1s on 200k inputs).
+
+#### State-machine ownership guards
+- **`security.consent._persist_pending`** (PR #23) — writes `pending_consents`
+  + flips `jobs.status` without owner guard. Stale worker (lost lease)
+  could insert spurious consent rows and reset status for jobs owned
+  by a different worker now. Fix: `consent.check` takes optional
+  `worker_id` keyword; `_persist_pending` guards both writes inside
+  a single transaction on `jobs.owner = ?`; mismatch returns `None`
+  → `ConsentResult(approved=False, reason="lease_lost")`.
+  `JobContext._execute_one` passes `self.worker_id` through.
+
+### Added — Observability swap
+
+- **Phoenix → Jaeger** (PR #25) — `arizephoenix/phoenix:14.x` ships a
+  broken image upstream (`ModuleNotFoundError: No module named 'phoenix'`).
+  Swapped to `jaegertracing/all-in-one:1.60`. Same OTLP-gRPC port (4317)
+  so exporter code is unchanged — only the hostname moves. UI at
+  `:16686`, port-forward via SSH. Tradeoff documented: Jaeger is a
+  generic distributed-tracing UI (not LLM-native like Phoenix was);
+  in-memory storage by default (audit spans still land in the `traces`
+  SQLite table via `SqliteSpanProcessor`).
+
+### Added — Ops tooling
+
+- **`scripts/donna-verify-backup.sh`** (PR #24) — lightweight
+  restore-drill. Extracts a backup tarball to a temp dir, runs
+  `PRAGMA integrity_check` + `PRAGMA foreign_key_check`, counts rows
+  on core tables, SHA-256-verifies every artifact blob against its
+  sha-named filename. Validated live against a 2.6MB tarball with
+  402 Huck Finn chunks: 8/8 blobs OK, integrity ok. Recommended
+  crontab entry (3:15 UTC daily, 15 min after the nightly backup)
+  included in `docs/OPERATIONS.md`.
+
+### Changed — Renames + doc hygiene
+
+- **CORPUS → Think** — the sibling corpus-interpretation-engine
+  project was called "Corpus" in earlier design docs and Codex
+  sessions. Renamed throughout to free "corpus" as the data-concept
+  word (an author's body of work). `docs/CORPUS_BRIEF.md` →
+  `docs/THINK_BRIEF.md`, module/CLI/schema/migration prefixes all
+  flipped.
+- **Think-is-standalone** (PR #18) — clarified that Donna consumes
+  Think's query API but does NOT host Think's runtime. Think has
+  its own CLI, job model, tests, LLM calls. Must be runnable when
+  Donna's container is down.
+
+### Validated live (2026-04-24)
+
+- Full backup→verify loop on real prod data: 2.6MB tarball with 402
+  Huck Finn chunks + 8 artifact blobs round-trips cleanly
+- Grounded mode with `?`-terminated query no longer crashes (PR #15/#19
+  live)
+- Jaeger UI responds 200 on `:16686` after redeploy
+- Bot logs stop emitting "Failed to export traces to phoenix:4317"
+  warnings after Jaeger redeploy (clean trace export path)
+- 102 tests green locally (was 60 start of week)
+
+### Still open (reordered)
+
+1. Full throwaway-droplet restore drill — quarterly task; needs
+   Discord-token-juggling coordination (~5 min downtime)
+2. Tailscale for port-22 egress — lockout risk if misconfigured;
+   needs careful setup
+3. `donna-update.timer` enable — per Codex rule, only after a real
+   restore drill
+4. Phoenix re-enable path (if they ever fix the image) documented
+   in `docker-compose.yml`; swap back is a hostname change
+
 ## [0.3.2] — 2026-04-23 — Off-droplet backups live
 
 Closes Codex's priority-#1 finding ("single-disk failure = total loss") same
