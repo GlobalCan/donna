@@ -249,6 +249,81 @@ def migrate() -> None:
     subprocess.check_call(["alembic", "upgrade", "head"])
 
 
+@app.command("forget-artifact")
+def forget_artifact(
+    artifact_id: str,
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Skip interactive confirmation",
+    ),
+) -> None:
+    """Delete an artifact row and its blob file.
+
+    Fills the gap flagged in KNOWN_ISSUES / SESSION_RESUME — the previous
+    recipe was hand-rolled SQL + `rm`.
+
+    The `artifacts.sha256` column is UNIQUE, so rows are always 1:1 with
+    blob files. We warn (but don't block) when a `knowledge_sources.source_ref`
+    points at this artifact — those references are free-form text, so a
+    dangling one is weird but not catastrophic.
+    """
+    import os
+
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id, sha256, name, mime, bytes, tainted FROM artifacts WHERE id = ?",
+            (artifact_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        console.print(f"[red]artifact {artifact_id} not found[/red]")
+        raise typer.Exit(1)
+
+    conn = connect()
+    try:
+        ks_refs = conn.execute(
+            "SELECT id, title FROM knowledge_sources WHERE source_ref = ?",
+            (artifact_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    blob_path = settings().artifacts_dir / f"{row['sha256']}.blob"
+
+    console.print(f"[bold]{artifact_id}[/bold]  sha256={row['sha256'][:12]}…  "
+                  f"bytes={row['bytes']}  mime={row['mime']}  "
+                  f"tainted={'yes' if row['tainted'] else 'no'}")
+    console.print(f"[dim]  blob at {blob_path}[/dim]")
+    if ks_refs:
+        console.print(f"[yellow]  ⚠️  referenced by {len(ks_refs)} knowledge_sources "
+                      f"row(s); those source_refs will become dangling:[/yellow]")
+        for r in ks_refs:
+            console.print(f"    - {r['id']}: {r['title']}")
+
+    if not force:
+        confirmed = typer.confirm("Delete this artifact?", default=False)
+        if not confirmed:
+            console.print("[dim]aborted[/dim]")
+            raise typer.Exit(0)
+
+    conn = connect()
+    try:
+        with transaction(conn):
+            conn.execute("DELETE FROM artifacts WHERE id = ?", (artifact_id,))
+    finally:
+        conn.close()
+
+    if blob_path.exists():
+        try:
+            os.remove(blob_path)
+        except OSError as e:
+            console.print(f"[yellow]  row deleted, but blob rm failed: {e}[/yellow]")
+
+    console.print(f"🗑️  forgot artifact {artifact_id}")
+
+
 # ---- schedule ---------------------------------------------------------------
 
 

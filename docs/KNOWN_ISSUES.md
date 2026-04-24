@@ -277,7 +277,7 @@ green.
   rule. Currently manual deploys.
 - **Phoenix re-enable path** documented; one-line swap back if their
   image is fixed
-- **`botctl forget-artifact <id>`** — currently manual SQL DELETE + `rm`
+- ~~**`botctl forget-artifact <id>`** — currently manual SQL DELETE + `rm`~~ **FIXED** on `claude/load-up-setup-7XtVU` (`src/donna/cli/botctl.py::forget_artifact` + `tests/test_botctl_forget_artifact.py`). 1:1 row/blob assumption pinned by UNIQUE-sha256 invariant test; dangling `knowledge_sources.source_ref` gets a warning, not a block.
 - **Speculative / debate modes** never smoke-tested in prod
 - **`botctl teach`** ingest pipeline validated via direct CLI; Discord-
   initiated `/teach` slash command not yet exercised

@@ -101,8 +101,11 @@ Restore recipe: `docs/OPERATIONS.md` §Restore from a tarball.
   a hostname change (`OTEL_EXPORTER_OTLP_ENDPOINT`)
 - **Speculative / debate modes** never smoke-tested in prod (grounded
   has been validated; chat extensively so)
-- **`botctl forget-artifact`** subcommand doesn't exist; manual SQL +
-  `rm` until then
+- ~~**`botctl forget-artifact`** subcommand doesn't exist; manual SQL +
+  `rm` until then~~ **— shipped on `claude/load-up-setup-7XtVU`**.
+  `botctl forget-artifact <id> [--force]` deletes the row + blob, warns
+  on dangling `knowledge_sources.source_ref` references, interactive
+  confirm by default.
 - **Quarterly restore drill** — not yet done
 
 Three Codex review passes absorbed:
