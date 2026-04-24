@@ -9,8 +9,6 @@ this is constrained transparency.
 """
 from __future__ import annotations
 
-import json
-
 from ..agent.compose import compose_system
 from ..agent.context import JobContext
 from ..agent.model_adapter import model
@@ -141,18 +139,22 @@ def _format_output(raw: str, validation, chunks) -> str:
 def _extract_prose(raw: str) -> str | None:
     """Parse `raw` as the grounded JSON schema and return its `prose` field.
 
+    Uses the same robust-parse helper as the validator, so a model that
+    wraps its JSON in a ``` code fence or adds preamble/postamble text
+    still gets its prose extracted correctly. Live bug (2026-04-24):
+    Sonnet returned ```json ... ``` despite the "no code fences"
+    instruction, which silently fell through to raw-JSON rendering +
+    noisy inline-fallback validator output.
+
     Returns None when:
-    - `raw` isn't valid JSON (model responded in inline-marker style)
-    - the JSON root isn't a dict
+    - None of the parse fallbacks produce a dict (inline-marker style,
+      or truly malformed)
     - `prose` key is missing, non-string, or blank
 
-    Caller falls back to the raw string, which still renders usefully — just
-    ugly — and the validator catches any missing citations separately.
+    Caller falls back to the raw string in those cases.
     """
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
+    from ..security.validator import try_parse_grounded_json
+    data = try_parse_grounded_json(raw)
     if not isinstance(data, dict):
         return None
     prose = data.get("prose")
