@@ -311,4 +311,161 @@ Not urgent. The current bifurcation works. The rename + core_memory-introduction
 
 ---
 
+## 7 · THINK separation review
+
+Responses to Part 5 of the Codex prompt.
+
+### 7.1 Is the Donna ↔ THINK boundary drawn correctly?
+
+**Yes. EvidencePack-in / prose-out is the right contract.** Two reasons:
+
+- It forces THINK to never own voice. Voice is where personality and consent-context live; that belongs with the agent runtime, not the corpus layer.
+- It leaves Donna free to compose the same EvidencePack differently per adapter (Discord-terse, future CLI-verbose, future API-structured) without THINK knowing about those surfaces.
+
+The one structural concern worth flagging: THINK _does_ call LLMs internally (entity extraction, canonicalization, pillar distillation). Those calls currently route through THINK's own adapter (per §5 of the brief). That means cost tracking is split across two places: Donna's `cost_ledger` + THINK's own (TBD) cost accounting. Unless you want to reconcile manually, add a shared `costs` table both write to with a `caller` column (`donna` | `think`). This is a small schema detail that will feel obvious later and painful if you wait.
+
+### 7.2 Should `recall_knowledge` move to THINK?
+
+**Yes, but keep the thin wrapper in Donna.** The tool interface (`tools/knowledge.py:46-87`) is the public contract to the agent loop — it stays. The implementation moves behind `from think import Think; t.retrieve_chunks(...)`. Migration order:
+
+1. Build THINK's retrieve_chunks with the exact same return shape as `retrieve_knowledge` today
+2. Add a feature flag (env var or config setting) `KNOWLEDGE_BACKEND=donna|think`
+3. Flip flag in dev, run existing grounded tests, verify parity
+4. Flip flag in prod after one live run
+5. Delete `modes/retrieval.py` and its tests after ~2 weeks of THINK-backed prod running clean
+
+The `tainted` propagation that `recall_knowledge` does (`tools/knowledge.py:66-87`) MUST stay in Donna's wrapper — it's checking `knowledge_sources.tainted` which is a cross-boundary concern. THINK returns chunks; Donna wraps them with taint metadata. Keep that split explicit.
+
+### 7.3 Migration story for the existing 402-chunk Huck Finn corpus
+
+**Keep the data in the same SQLite file, migrate table names to `think_*`.** Options evaluated:
+
+- **Option A: move to `think_chunks` / `think_sources`.** Cleanest long-term. Migration: `INSERT INTO think_chunks SELECT * FROM knowledge_chunks`; drop old tables after verification. Risk: existing Donna code paths reading from `knowledge_*` must flip simultaneously.
+- **Option B: leave in `knowledge_*` tables, have THINK read them under a compat layer.** Zero-migration but permanently weird (THINK "owning" Donna-named tables). Creates the exact "think never imports from Donna" violation the brief warns against.
+- **Option C: dual-write during transition.** Complex, error-prone.
+
+**Pick A.** The THINK brief already says THINK owns `think_*` and Donna owns everything else (§5 schema ownership rule). Option B violates that cleanly-stated rule. Option C adds complexity for no gain.
+
+**Execution:** one PR migrates data + flips Donna's `tools/knowledge.py` wrapper + drops old tables. The backup-verify loop catches any data-integrity issue. Do this as part of THINK Phase 1 (port Donna's knowledge layer), not as a separate data-migration PR — keeping them atomic is cleaner than a three-step dance.
+
+**One caveat:** the live 402-chunk corpus is in `/data/donna/donna.db`. The migration must be tested against a copy of the live DB, not against a freshly-alembic-upgraded test DB, because real data may have rows with edge-case values (NULL publication_date, long titles, unicode) that clean test data doesn't cover. `scripts/donna-verify-backup.sh` is the right tool — run it against the post-migration DB copy before promoting.
+
+---
+
+## 8 · Red flags
+
+Things that are wrong NOW but haven't surfaced as live bugs yet, in rough severity order. None of these were flagged by prior Codex passes.
+
+### 8.1 Two `donna-worker` containers would corrupt state
+
+The heartbeat + lease model (`agent/context.py:376-391`, `jobs_mod.renew_lease`) prevents _one_ worker from stepping on _another_ worker's job. But there's no protection against two _simultaneously-started_ workers both claiming different jobs and writing to the same SQLite file concurrently. With WAL, concurrent reads are fine, but concurrent writes to the same row would collide. In practice, `docker-compose up -d worker` with `replicas: 2` would surface this within an hour.
+
+Today this is prevented by _deployment_ (one worker in docker-compose.yml). That's not a code-level invariant. Add a process-start check: `SELECT COUNT(*) FROM jobs WHERE status='running' AND last_heartbeat > now()-60s AND owner != $my_worker_id` — if >0, log and exit. Or simpler: a `worker_leadership` row with a TTL, acquired on start. ~30 LOC.
+
+### 8.2 `JobContext.open` has a silent-return path
+
+`agent/context.py:73-76`: if `_load_job_or_none` returns None, the method logs and `return`s. But it's an async context manager — returning without yielding raises `RuntimeError` at the call site, which is caught nowhere visible. Result: the worker's `run_job` call hits an unexpected error, which _might_ be caught by the worker's supervisor loop, but the control flow is non-obvious. Fix: raise an explicit `JobNotFound` exception that the worker's main loop catches and logs as a not-bug.
+
+### 8.3 `_sanitize_hits` swallows exceptions into strings
+
+`tools/web.py:111-123`: `asyncio.gather(*tasks, return_exceptions=True)` returns exceptions as objects, which then get stringified into the snippet field (`f"[sanitize_error: {r}]"`). This is user-visible content. If the exception message contains the original snippet (possible for some httpx/anthropic errors), you've leaked unsanitized tainted content into a place marked sanitized. Small but real. Fix: on exception, return a fixed string `"[sanitization failed; raw snippet suppressed]"`, never the exception's str().
+
+### 8.4 Consent timeout defaults to 30 minutes with no user visibility
+
+`security/consent.py:50`: `_CONSENT_TIMEOUT_S = 1800.0`. If the user is away and comes back in 31 minutes, the consent prompt times out silently and the tool is rejected with reason `"timeout"`. The user sees the job status transition but no "I gave up waiting" message. For an always-on Discord bot this is a real UX problem. Fix: on timeout, post a Discord message ("⏱ Gave up waiting for approval on `<tool>` after 30 min. Job cancelled."). ~10 LOC.
+
+### 8.5 The `threads.conversation_state` slot doesn't exist (see §4 #5)
+
+Not a bug per se; an absence. But the agent is frequently amnesic in a Discord thread (not in the §4 #5 nice-to-have sense; in the "user asked to fix a follow-up on the prior answer and the bot has no idea what the prior answer was" sense). Low-severity because the user can always copy-paste the prior answer, but it will erode trust every time they have to.
+
+### 8.6 Compaction can strand artifact_refs
+
+`agent/compaction.py:121-130`: new compacted message references `all_refs[-20:]` — the last 20 artifact IDs. If the job created >20 artifacts before compaction, older artifact IDs are dropped from the injected context. `read_artifact` can still fetch them by ID, but the agent doesn't _know_ they exist anymore. For long-running jobs this is a gradual forgetting. Fix: either raise the cap (30-40 is probably fine for token budget) or write artifacts as a list to a dedicated "artifact manifest" artifact and reference _that_ one ID in the compacted context.
+
+### 8.7 No rate limit on `/validate` and other tainting commands
+
+If a malicious-or-mistaken command ingested 50 URLs rapidly, each would trigger a taint + sanitize + artifact-save cycle. Tavily has its own rate limit; Donna doesn't. Cost-limiting: per-day-per-scope budget in the cost_ledger is there but soft. Proposal: per-command cooldown on the taint-marking commands (ingest, fetch_url, validate) — 1 per 30s default, operator override. ~20 LOC in the adapter's slash-command handler.
+
+### 8.8 Jaeger traces are in-memory; production audit happens via `traces` table
+
+`observability/trace_store.py` writes audit spans to the SQLite `traces` table in addition to OTLP export. Good. But the operator is likely to instinctively reach for Jaeger UI first when debugging, and Jaeger's in-memory storage loses spans on container restart. Document in OPERATIONS.md: "for incident forensics, query the `traces` table via botctl; Jaeger is for same-session debugging only."
+
+### 8.9 Worker has no dead-letter / retry-budget for jobs that crash in tool-step
+
+If a `fetch_url` call raises at the httpx layer, `_execute_one` (`agent/context.py:233-241`) catches, returns an error block, and the loop continues. That's correct for recoverable errors. But the job's overall retry count is unbounded — a job that crashes every tool call still finishes (slowly, with all-error tool results). Not corrupt, but wasteful. Add a per-job error-count cap: if >N consecutive tool errors, fail the job hard instead of continuing.
+
+### 8.10 `model_adapter._estimate_tokens` uses 4-chars-per-token
+
+`agent/model_adapter.py:207-215`. This is correct for English prose but significantly wrong for JSON (which has ~2.5 chars/token), tool schemas (heavy punctuation), and code. The rate limiter's reservation (`:85-86`) uses this estimate. Under-estimation means occasional bursts past the real rate limit; over-estimation means wasted quota. For solo-operator usage it mostly doesn't matter. When you eventually OSS this or scale past one user, bite the bullet and use `anthropic.count_tokens()` for pre-call budgeting.
+
+---
+
+## 9 · Non-obvious wins
+
+Things Donna does better than the field that should be called out explicitly. In rough significance order.
+
+### 9.1 `quoted_span` verbatim requirement is the most principled grounded-mode validator I've seen in public code
+
+`security/validator.py:89-208`. The combination of:
+- JSON schema with `quoted_span` as a required field per claim
+- Literal substring check with ≥20-char floor
+- NFC + smart-quote/dash/ellipsis normalization on both sides
+
+...is a cleaner implementation of "constrained transparency" than I've seen in NotebookLM, Perplexity, or any of the research RAG systems. Perplexity shows you the source URL; it doesn't verify the quote. NotebookLM shows you citations; it doesn't enforce verbatim. Donna does both. **This should be the marquee feature in any public-facing pitch.**
+
+### 9.2 Overflow-to-artifact for tainted content is a novel security primitive
+
+`adapter/discord_adapter.py:374-469`. I have not seen this pattern named elsewhere. The principle — "attacker-controlled content must be compartmentalized to cold storage, not hot scrollback" — generalizes:
+
+- Slack: paste to a private snippet, not the channel
+- Email: attach a PDF, don't inline
+- API response: return a pointer, not the content
+
+It's worth writing up as a pattern doc (`docs/PATTERNS_OVERFLOW_TO_ARTIFACT.md`) and treating it as a thing the project is known for. Costs you an hour; names a capability that is genuinely novel.
+
+### 9.3 Atomic `finalize` with outbox insert in same transaction
+
+`agent/context.py:304-348`. Before P1-4, each mode wrote to the outbox and flipped DONE in separate transactions, which meant a crash between them produced either double-delivery or lost delivery. The current code does both in one transaction. This is _correct_ distributed-systems design (read: outbox pattern, correctly implemented) and rare in agent codebases. Keep it.
+
+### 9.4 Heartbeat-based lease renewal with owner-guarded writes
+
+`memory/jobs.py::save_checkpoint` + `agent/context.py::_heartbeat_loop`. The pattern "every write asserts I still own the lease" is the right answer to "what if my worker got stuck and another worker took over?". This is the kind of thing most hand-rolled systems get wrong (and most frameworks don't even try). Donna gets it right.
+
+### 9.5 Cost ledger is authoritative on resume
+
+`agent/context.py:362-373`. `_init_state` pulls cost from the DB, not from the checkpoint's in-memory state. Means: if a job was charged between checkpoint and resume, the resume doesn't double-count. Small thing; almost no one does it right.
+
+### 9.6 Pre-scan taint before parallel tool batch
+
+`agent/context.py:163-171`. Before spawning the tool batch, scan it for any `taints_job=True` tool and mark the job tainted. This means a subsequent tool _in the same batch_ sees `tainted=True` for its consent check. Without the pre-scan, parallel execution lets a clean tool slip in before the taint flag fires. Correct; subtle.
+
+### 9.7 Haiku compaction with audit artifact preservation
+
+`agent/compaction.py:60-97`. Most compaction implementations are destructive. Donna's preserves the raw tail as an artifact and records the compaction in `jobs.compaction_log`. This is both auditable and recoverable — you can `read_artifact` the pre-compaction state and see exactly what was summarized. Rare in practice.
+
+### 9.8 Dual-call sanitization on _every_ untrusted ingress path
+
+`security/sanitize.py` + `tools/web.py::_sanitize_hits` + `tools/attachments.py`. Every path where untrusted content enters the model's context goes through a quarantined Haiku call. The Haiku never sees a tool; its output is extracted text, no instructions. This is structurally strong — attacker can't bypass it by phrasing injection differently. Noted in lethal-trifecta framing but implementation is the differentiator.
+
+### 9.9 Operator CLI as a first-class product
+
+`src/donna/cli/botctl.py`. `botctl jobs / job / cost / cache-hit-rate / teach / artifacts / artifact-show / forget-artifact / heuristics / schedule / traces / migrate` is a richer surface than most agent products expose. For a solo operator, this is the primary debugging + ops surface. Most commercial personal-AI tools have no equivalent. Keep investing here — `botctl validate-dry-run` to smoke-test `/validate` without posting, `botctl taint-chain <job-id>` to visualize how taint propagated, etc.
+
+### 9.10 `JobCancelled` propagation at iteration boundaries
+
+`agent/context.py:116-128`. `/cancel` flips DB status; modes call `check_cancelled()` between steps; the context manager catches `JobCancelled` and checkpoints partial state without finalizing to DONE. Clean, symmetric, and the right shape. Most agent codebases either ignore cancellation (the v0.3.0 bug C-2 you fixed) or implement it via cooperative polling that never actually polls.
+
+---
+
+## Closing
+
+Donna v0.4.0 is in a better place than its version number suggests. The security posture is stronger than any framework would give you; the grounded-mode validator is a genuine contribution; the JobContext unification is clean. The two watch-items (`agent_scope` first-classing and per-value taint) are real but addressable before they hurt.
+
+The single most important next move is the evaluation harness (§4 #1). Without it, the next model release or prompt tweak has no number to move, and confidence becomes vibes. With it, you have a ratchet.
+
+The second most important next move is deciding whether `/validate` is actually a real user need vs. a "this sounds cool" yak-shave. Ship the URL-critique half narrowly, use it for a month, then decide on video.
+
+Everything else in §4 is ordering, not direction.
+
+
 
