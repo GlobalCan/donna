@@ -47,7 +47,7 @@ Quick reference for running Donna day-to-day.
 - `botctl cost` — today's spend
 - `botctl schedule list` — active crons
 - `/status <id>` / `/budget` / `/history` from Discord
-- Phoenix: `ssh -L 6006:localhost:6006 scout` then open `http://localhost:6006`
+- Jaeger UI: `ssh -L 16686:localhost:16686 -i <key> bot@<ip>` then open `http://localhost:16686`, filter by service=`donna`. (Phoenix was replaced after 14.x broke upstream; see `docker-compose.yml` for rationale.)
 
 ## Teaching a scope
 

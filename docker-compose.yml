@@ -51,54 +51,33 @@ services:
     cap_drop:
       - ALL
 
-  # Phoenix observability — DISABLED. Tried 14.9.0 (2026-04-23) and hit the
-  # same upstream `ModuleNotFoundError: No module named 'phoenix'` at
-  # container start — the whole 14.x line on docker hub appears to ship with
-  # a broken image. Bot/worker continue to function; OTEL exporter just logs
-  # `Failed to export traces to phoenix:4317` warnings (harmless).
+  # Observability — Jaeger all-in-one. Replaced Phoenix after the 14.x line
+  # shipped broken upstream (`ModuleNotFoundError: No module named 'phoenix'`
+  # on 14.9.0 and :latest, 2026-04-23). Same OTLP-gRPC port (4317), so the
+  # bot/worker exporter code is unchanged — only the hostname moves. UI at
+  # :16686; port-forward from your laptop via
+  #   ssh -L 16686:localhost:16686 -i <key> bot@DROPLET
+  # then open http://localhost:16686 and filter by service=donna.
   #
-  # When revisiting (any time the Phoenix folks push a fix, or you want
-  # traces enough to swap backends), pick ONE of these paths:
+  # Tradeoff vs Phoenix: Jaeger's trace UI is generic distributed-tracing,
+  # not LLM-native (no special prompt/completion views). In-memory storage
+  # by default — spans older than the Jaeger container's restart are gone.
+  # That's acceptable for Donna's single-user debugging usage; traces that
+  # matter for audit are ALSO written to the `traces` SQLite table via
+  # SqliteSpanProcessor and survive container restarts / deploys.
   #
-  #   A. Try a confirmed-working Phoenix tag. Before uncommenting:
-  #        docker run --rm arizephoenix/phoenix:<tag> --help
-  #      must exit 0 with actual help output, not a ModuleNotFoundError.
-  #      Candidates to try (newest first, all untested here):
-  #        - 13.5.0, 13.0.0, 12.9.0 (older, likely predate the breakage)
-  #      Pin whichever works.
-  #
-  #   B. Swap to Jaeger all-in-one. Pros: same OTLP-gRPC endpoint so no
-  #      code changes; known-working image. Cons: generic trace UI (no
-  #      LLM-native prompt/completion visualization Phoenix offers), and
-  #      in-memory storage by default (Cassandra/ES for persistence).
-  #      Minimal swap:
-  #        jaeger:
-  #          image: jaegertracing/all-in-one:1.60
-  #          container_name: donna-jaeger
-  #          restart: unless-stopped
-  #          environment:
-  #            COLLECTOR_OTLP_ENABLED: "true"
-  #          ports:
-  #            - "127.0.0.1:16686:16686"   # UI
-  #            - "127.0.0.1:4317:4317"     # OTLP gRPC — same port bot exports to
-  #          mem_limit: 512m
-  #      Then rename the service in code/config from "phoenix" to "jaeger".
-  #
-  #   C. Leave disabled. Current state. Traces drop on the floor; spans are
-  #      still useful via SqliteSpanProcessor writing to the `traces` table
-  #      which botctl can query.
-  # phoenix:
-  #   image: arizephoenix/phoenix:14.9.0
-  #   container_name: donna-phoenix
-  #   restart: unless-stopped
-  #   environment:
-  #     PHOENIX_WORKING_DIR: /phoenix
-  #     PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "30"
-  #     PHOENIX_GRPC_PORT: "4317"
-  #     PHOENIX_PORT: "6006"
-  #   volumes:
-  #     - /data/phoenix:/phoenix
-  #   ports:
-  #     - "127.0.0.1:6006:6006"
-  #     - "127.0.0.1:4317:4317"
-  #   mem_limit: 768m
+  # If Phoenix is fixed later and you want the LLM-native UI back, swap
+  # image/container_name/service references and set
+  # OTEL_EXPORTER_OTLP_ENDPOINT=http://phoenix:4317 in .env.
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: donna-jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:16686:16686"   # Web UI
+      - "127.0.0.1:4317:4317"     # OTLP gRPC — where bot/worker export to
+    mem_limit: 512m
+    security_opt:
+      - no-new-privileges:true

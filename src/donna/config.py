@@ -51,9 +51,12 @@ class Settings(BaseSettings):
     max_tool_calls_per_job: int = Field(default=60, alias="DONNA_MAX_TOOL_CALLS_PER_JOB")
     compact_every_n: int = Field(default=20, alias="DONNA_COMPACT_EVERY_N")
 
-    # OTel
+    # OTel — default targets the local trace backend (jaeger all-in-one,
+    # service name `jaeger` in docker-compose). Was `phoenix:4317` before
+    # the 14.x breakage forced a swap. Keeping the OTLP-gRPC port at 4317
+    # means the exporter code is unchanged; only the hostname moves.
     otel_endpoint: str = Field(
-        default="http://phoenix:4317", alias="OTEL_EXPORTER_OTLP_ENDPOINT"
+        default="http://jaeger:4317", alias="OTEL_EXPORTER_OTLP_ENDPOINT"
     )
     otel_service_name: str = Field(default="donna", alias="OTEL_SERVICE_NAME")
 
