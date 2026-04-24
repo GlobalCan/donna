@@ -1,5 +1,50 @@
 # Changelog
 
+## [unreleased] — 2026-04-24 — Unified mode delivery (closes P1-4)
+
+Closes the deferred Phase-1 follow-up flagged in commit `c623ab1`: *"Grounded/
+speculative/debate modes likely have the same orphaned-final-text hole and will
+need the same treatment."*
+
+### Fixed — mode delivery unified
+
+- **`agent/context.py::JobContext.finalize()`** now writes `final_text` to
+  `outbox_updates` atomically with the `set_status(DONE)` flip inside the
+  same transaction. Every mode (chat, grounded, speculative, debate) inherits
+  Discord delivery by setting `ctx.state.final_text` + `ctx.state.done = True`
+  and letting the context manager finalize — no per-mode enqueue needed.
+- **`agent/loop.py`** — removed the chat-only `_enqueue_final_text` helper
+  and its manual call. Chat now delivers via the same `finalize()` path as
+  every other mode.
+- **Latent chat double-delivery on finalize-retry** closed as a side effect.
+  The previous design wrote outbox in a separate transaction from the DONE
+  flip; a lease-lost retry could deliver the answer twice. The unified path
+  is single-transaction atomic.
+
+### Tests
+
+8 new tests in `tests/test_outbox.py` replacing the two removed
+`_enqueue_final_text_*` helper tests:
+
+- `test_finalize_writes_final_text_to_outbox` — unit, atomic with DONE
+- `test_finalize_skips_empty_final_text` — whitespace → no row
+- `test_finalize_truncates_long_final_text` — 1500-char Discord cap
+- `test_finalize_returns_false_on_lost_lease_and_does_not_deliver` — regression
+- `test_grounded_refusal_delivers_to_outbox` — no-corpus → refusal reaches user
+- `test_speculative_refusal_delivers_to_outbox` — speculation_disabled → refusal reaches user
+- `test_debate_delivers_final_text_to_outbox` — stubbed `_debate_core`, delivery path
+- `test_cancelled_job_does_not_deliver_to_outbox` — `JobCancelled` bypasses finalize
+
+Full suite: **115 passed** (baseline 109, net +6 after removing 2 old tests).
+
+### Still needs live Discord smoke test
+
+The refactor is validated against the SQLite outbox path. The
+`adapter/discord_adapter.py::_drain_updates` loop for grounded/speculative/
+debate outputs has still never been exercised in prod. Recommended: after
+merge, DM a grounded `/ask` against the author_twain corpus; verify the
+reply arrives.
+
 ## [0.3.3] — 2026-04-24 — Codex adversarial round 2 + Jaeger trace backend
 
 Continuation of v0.3.2 same day. A second Codex (GPT-5.4) adversarial scan,
