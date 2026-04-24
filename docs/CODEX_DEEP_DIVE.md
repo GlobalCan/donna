@@ -202,6 +202,53 @@ Examples of what I'm NOT looking for (already deferred with rationale):
 - Multi-tenant schema
 - Second LLM vendor (Donna is honestly Anthropic-shaped)
 
+### Part 3.5 — Evaluate a proposed feature: `/validate`
+
+User-requested during the v0.4.0 signoff. Pattern: user sends an
+article / reel / video / social post URL (or an attachment); Donna
+returns a structured critique with:
+
+- Claims extracted (each paired with an original quote)
+- Verifiability assessment (cross-check against authoritative web
+  sources + the user's ingested corpora)
+- Red flags: emotional framing, missing context, logical fallacies,
+  selective presentation
+- Counter-evidence from user's ingested corpora (grounded-retrieval step)
+- Source credibility signals (domain reputation, author track record)
+- Suggested follow-up questions / what the content *didn't* cover
+
+Reuses existing primitives: `fetch_url`, `ingest_discord_attachment`,
+dual-call Haiku sanitize, grounded retrieval pipeline,
+overflow-to-artifact for long critiques. New infra required: a
+video/reel transcript fetcher (yt-dlp + Whisper locally OR
+AssemblyAI/Deepgram service) and a new `validate` mode handler +
+system prompt.
+
+Evaluate:
+
+1. **Is this the right scope?** Or is it actually two features
+   (web-article critique + video transcript critique) that should
+   ship separately?
+2. **Is the architecture sound?** Should it be a new `mode` parallel
+   to grounded/speculative/debate, or a set of tools the chat agent
+   can orchestrate, or a `botctl validate` CLI command?
+3. **What's the right output shape for Discord?** A single long
+   message that triggers overflow-to-artifact? Separate messages per
+   section? A generated PDF artifact?
+4. **How does it compare to competitors?** Ground News, NewsGuard,
+   Kagi Assistant, Perplexity Verify, Full Fact, Factmata — what
+   does each do that Donna's version should match or beat for a
+   solo operator?
+5. **What's the failure mode for videos/reels?** yt-dlp gets broken
+   by platform changes every few months. AssemblyAI/Deepgram cost
+   $0.30-$1 per hour of audio. What's the right balance for a
+   $6/month droplet bot that a solo operator uses ~daily?
+6. **How does taint propagate?** The content being validated is by
+   definition untrusted (it's the object of critique). The critique
+   itself references that content. Does the overflow-to-artifact
+   tainted-content compartmentalization extend cleanly here, or do
+   we need a new pattern?
+
 ### Part 4 — Specific deep-dive questions
 
 1. **Is the `quoted_span` 20-char floor correct?** Should it be
