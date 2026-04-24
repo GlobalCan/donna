@@ -25,13 +25,32 @@ Before anything else, read these files. Everything below assumes you have.
 
 ## 1 · Where we are
 
-**Donna v0.4.0 (unreleased, all code merged to main) is live in production
-on DigitalOcean.** Bot answering DMs as `Donna#3183`. Grounded mode fully
-validated end-to-end against the 402-chunk Huck Finn corpus: clean prose
-render, multi-chunk citation, `✅ validated`, no JSON leak. Five PRs
-merged today (#28 unified mode delivery, #29 prose render + forget-artifact,
-#30 adversarial round 2 + overflow-to-artifact, #31 code-fence hotfix,
-#32 smart-quote normalization + diagnostic logging). **293 tests green**.
+**Donna v0.4.0 — all five modes live-validated in production on
+DigitalOcean (2026-04-24).** Bot answering DMs as `Donna#3183`. Grounded,
+speculative, debate, chat, and refusal paths all smoke-tested against
+the 402-chunk Huck Finn corpus + real Anthropic Sonnet 4.6 calls.
+Overflow-to-artifact security pattern fired live on the debate transcript
+(8,819 chars → artifact, fetchable via `botctl artifact-show`).
+
+Six PRs merged in this session stack (#28 → #33): unified mode delivery,
+prose render, overflow-to-artifact, code-fence parser robustness,
+smart-quote validator normalization, docs + prompt polish. **293 tests
+green** (up from 107 at v0.3.3 baseline).
+
+### For the next session
+
+Three prompt files in `docs/` — all self-contained, paste-ready:
+
+- **`docs/NEXT_SESSION_DONNA.md`** — continue Donna dev (pick a v0.5
+  track: deploy hardening / feature expansion / observability polish /
+  adversarial / Think integration)
+- **`docs/CODEX_DEEP_DIVE.md`** — feed to Codex (GPT-5.x) for an
+  architectural + comparative review. Output absorbs into fix PRs.
+- **`docs/MARKET_RESEARCH_SESSION.md`** — for a local-laptop Claude
+  Code session with browser access. Competitive landscape analysis
+  against 2026-vintage personal-AI / agent-framework / RAG products.
+  Produces a v0.5 plan synthesis when cross-compared with the Codex
+  deep-dive.
 
 - **Branch:** `main`, clean working tree
 - **Droplet:** `159.203.34.165` (Ubuntu 24.04 LTS), hardened (bot uid 1001,
