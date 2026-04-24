@@ -25,6 +25,13 @@ async def run_debate_in_context(ctx: JobContext) -> None:
 
     The task is a JSON payload: {"scope_a":..., "scope_b":..., "topic":..., "rounds":...}
     """
+    # Resume short-circuit — debate is the most expensive mode (N scopes × M
+    # rounds = N*M LLM calls + 1 summary). Redoing all that on a
+    # checkpoint-died-before-finalize recovery would be both wasteful and
+    # produce a different transcript on replay.
+    if ctx.state.done:
+        return
+
     try:
         payload = json.loads(ctx.job.task) if ctx.job.task.strip().startswith("{") else {}
     except json.JSONDecodeError:

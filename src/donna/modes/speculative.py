@@ -18,6 +18,12 @@ log = get_logger(__name__)
 
 
 async def run_speculative(ctx: JobContext) -> None:
+    # Resume short-circuit — same rationale as grounded: avoid re-running
+    # retrieval + the model call when a prior worker already produced
+    # final_text and checkpointed done=True.
+    if ctx.state.done:
+        return
+
     scope = ctx.job.agent_scope
     question = ctx.job.task
 

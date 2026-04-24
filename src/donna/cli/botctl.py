@@ -53,6 +53,35 @@ def _parse_since(s: str) -> timedelta | None:
     return timedelta(**{factor: qty})
 
 
+def _pretty_task(task: str, mode: str) -> str:
+    """Render a job's task for the `jobs` table. Debate-mode tasks are JSON
+    payloads (`{"scope_a": "...", "scope_b": "...", "topic": "..."}`) which
+    look hideous when truncated mid-quoted-key at char 60. Render them as
+    'scope_a vs scope_b: topic' instead. All other modes use the task
+    verbatim, truncated."""
+    if mode == "debate" and task.strip().startswith("{"):
+        try:
+            payload = json.loads(task)
+        except json.JSONDecodeError:
+            return task[:60]
+        if not isinstance(payload, dict):
+            return task[:60]
+        scopes = [
+            payload.get(k)
+            for k in ("scope_a", "scope_b", "scope_c", "scope_d")
+            if payload.get(k)
+        ]
+        topic = payload.get("topic", "")
+        parts = []
+        if scopes:
+            parts.append(" vs ".join(str(s) for s in scopes))
+        if topic:
+            parts.append(f": {topic}")
+        rendered = "".join(parts) or task
+        return rendered[:60]
+    return task[:60]
+
+
 @app.command()
 def jobs(
     since: str = typer.Option("1d", help="'30m' | '3h' | '1d' | '1w' | 'all'"),
@@ -71,7 +100,7 @@ def jobs(
             j.id, j.status.value, j.mode.value, j.agent_scope,
             str(j.tool_call_count), f"${j.cost_usd:.2f}",
             "⚠️ " if j.tainted else "",
-            j.task[:60],
+            _pretty_task(j.task, j.mode.value),
         )
     console.print(t)
 
