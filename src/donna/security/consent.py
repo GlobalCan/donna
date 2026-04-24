@@ -56,8 +56,15 @@ async def check(
     entry: ToolEntry,
     arguments: dict[str, Any],
     tainted: bool,
+    worker_id: str | None = None,
 ) -> ConsentResult:
-    """Evaluate whether a tool call proceeds, blocks for approval, or is auto-approved."""
+    """Evaluate whether a tool call proceeds, blocks for approval, or is auto-approved.
+
+    ``worker_id`` is optional but strongly recommended: when present, the
+    pending-row insert and jobs.status flip are both gated on the caller
+    still owning the job (Codex adversarial scan #8). A stale worker that
+    lost its lease mid-step can no longer poison state for the new owner.
+    """
     mode = effective_confirmation(entry, job_tainted=tainted)
 
     if mode == ConfirmationMode.NEVER:
@@ -74,8 +81,13 @@ async def check(
 
     # Persist pending state. The bot's drain task will pick this up and post.
     pending_id = _persist_pending(
-        job_id=job_id, tool_name=entry.name, arguments=arguments, tainted=tainted,
+        job_id=job_id, tool_name=entry.name, arguments=arguments,
+        tainted=tainted, worker_id=worker_id,
     )
+    if pending_id is None:
+        # Stale worker — lost lease between job claim and this consent check.
+        # Don't poison pending_consents / jobs.status for whoever owns now.
+        return ConsentResult(approved=False, reason="lease_lost")
 
     loop = asyncio.get_event_loop()
     deadline = loop.time() + _CONSENT_TIMEOUT_S
@@ -128,11 +140,30 @@ async def check(
 
 def _persist_pending(
     *, job_id: str, tool_name: str, arguments: dict, tainted: bool,
-) -> str:
+    worker_id: str | None = None,
+) -> str | None:
+    """Insert a pending_consents row and flip jobs.status to PAUSED_AWAITING_CONSENT.
+
+    Codex adversarial scan #8: both writes are now owner-guarded when
+    ``worker_id`` is supplied. A stale worker (one that has lost its lease
+    to another worker) that calls this would otherwise insert a spurious
+    consent row and reset jobs.status for a job it no longer owns,
+    leaving the new owner's state corrupted.
+
+    Returns the pending_id on success, or None if the caller has lost
+    ownership of this job (stale worker). Check and abort cleanly on None.
+    """
     pid = ids_mod.new_id("pend")
     conn = connect()
     try:
         with transaction(conn):
+            # Verify current ownership before any writes.
+            if worker_id is not None:
+                row = conn.execute(
+                    "SELECT owner FROM jobs WHERE id = ?", (job_id,),
+                ).fetchone()
+                if row is None or row["owner"] != worker_id:
+                    return None
             conn.execute(
                 """
                 INSERT INTO pending_consents (id, job_id, tool_name, arguments, tainted)
@@ -141,10 +172,17 @@ def _persist_pending(
                 (pid, job_id, tool_name, json.dumps(arguments, default=str),
                  1 if tainted else 0),
             )
-            conn.execute(
-                "UPDATE jobs SET status = ? WHERE id = ? AND status = 'running'",
-                (JobStatus.PAUSED_AWAITING_CONSENT.value, job_id),
-            )
+            if worker_id is not None:
+                conn.execute(
+                    "UPDATE jobs SET status = ? "
+                    "WHERE id = ? AND owner = ? AND status = 'running'",
+                    (JobStatus.PAUSED_AWAITING_CONSENT.value, job_id, worker_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE jobs SET status = ? WHERE id = ? AND status = 'running'",
+                    (JobStatus.PAUSED_AWAITING_CONSENT.value, job_id),
+                )
     finally:
         conn.close()
     return pid

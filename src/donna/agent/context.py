@@ -201,9 +201,13 @@ class JobContext:
             return _err_block(tu["id"], f"tool {name} not allowed for scope {scope}")
 
         consent_res = await consent_mod.check(
-            job_id=self.job.id, entry=entry, arguments=args, tainted=self.state.tainted,
+            job_id=self.job.id, entry=entry, arguments=args,
+            tainted=self.state.tainted, worker_id=self.worker_id,
         )
         if not consent_res.approved:
+            # "lease_lost" means we're a stale worker (Codex #8). The next
+            # guarded checkpoint will raise LeaseLost so JobContext.open
+            # unwinds cleanly; in the meantime, return an error tool_result.
             return _err_block(tu["id"], f"user declined ({consent_res.reason})")
 
         import inspect
