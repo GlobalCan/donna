@@ -51,15 +51,42 @@ services:
     cap_drop:
       - ALL
 
-  # Phoenix observability — DISABLED. Tried pinning to 14.9.0 (2026-04-23)
-  # and still hit the same upstream `ModuleNotFoundError: No module named
-  # 'phoenix'` at container start. Probably the entire 14.x line on docker
-  # hub ships with a bad image build. Bot/worker continue to function; OTEL
-  # exporter just logs unreachable-endpoint warnings (harmless).
+  # Phoenix observability — DISABLED. Tried 14.9.0 (2026-04-23) and hit the
+  # same upstream `ModuleNotFoundError: No module named 'phoenix'` at
+  # container start — the whole 14.x line on docker hub appears to ship with
+  # a broken image. Bot/worker continue to function; OTEL exporter just logs
+  # `Failed to export traces to phoenix:4317` warnings (harmless).
   #
-  # Re-enable by uncommenting, with a tag we've actually spot-checked:
-  #   docker run --rm arizephoenix/phoenix:<tag> --help
-  # should not error. Try 13.x or swap to Tempo/Jaeger if Phoenix stays broken.
+  # When revisiting (any time the Phoenix folks push a fix, or you want
+  # traces enough to swap backends), pick ONE of these paths:
+  #
+  #   A. Try a confirmed-working Phoenix tag. Before uncommenting:
+  #        docker run --rm arizephoenix/phoenix:<tag> --help
+  #      must exit 0 with actual help output, not a ModuleNotFoundError.
+  #      Candidates to try (newest first, all untested here):
+  #        - 13.5.0, 13.0.0, 12.9.0 (older, likely predate the breakage)
+  #      Pin whichever works.
+  #
+  #   B. Swap to Jaeger all-in-one. Pros: same OTLP-gRPC endpoint so no
+  #      code changes; known-working image. Cons: generic trace UI (no
+  #      LLM-native prompt/completion visualization Phoenix offers), and
+  #      in-memory storage by default (Cassandra/ES for persistence).
+  #      Minimal swap:
+  #        jaeger:
+  #          image: jaegertracing/all-in-one:1.60
+  #          container_name: donna-jaeger
+  #          restart: unless-stopped
+  #          environment:
+  #            COLLECTOR_OTLP_ENABLED: "true"
+  #          ports:
+  #            - "127.0.0.1:16686:16686"   # UI
+  #            - "127.0.0.1:4317:4317"     # OTLP gRPC — same port bot exports to
+  #          mem_limit: 512m
+  #      Then rename the service in code/config from "phoenix" to "jaeger".
+  #
+  #   C. Leave disabled. Current state. Traces drop on the floor; spans are
+  #      still useful via SqliteSpanProcessor writing to the `traces` table
+  #      which botctl can query.
   # phoenix:
   #   image: arizephoenix/phoenix:14.9.0
   #   container_name: donna-phoenix
