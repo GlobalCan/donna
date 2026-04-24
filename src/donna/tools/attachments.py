@@ -19,6 +19,15 @@ from .registry import tool
 
 log = get_logger(__name__)
 
+# Caps on untrusted attachment materialization. Codex adversarial scan #4:
+# without these, a model-chosen attachment_url pointing at a multi-hundred-MB
+# PDF would download in full, pypdf extraction would fan out across every
+# page, and the worker's 512MB container memory cap would likely be hit
+# before the ingest pipeline's chunker sees anything.
+_ATTACH_MAX_BYTES = 10 * 1024 * 1024      # 10 MB — a large novel PDF
+_ATTACH_MAX_PDF_PAGES = 500
+_ATTACH_MAX_TEXT_CHARS = 1_000_000        # ~250k tokens — above that, chunk before us
+
 
 @tool(
     scope="write_knowledge", cost="medium", confirmation="once_per_job",
@@ -43,13 +52,32 @@ async def ingest_discord_attachment(
     tmp_dir = settings().data_dir / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    async with httpx.AsyncClient(
+    async with httpx.AsyncClient(  # noqa: SIM117 (client needed before stream)
         timeout=60.0, follow_redirects=True,
         headers={"User-Agent": "DonnaBot/0.1 (+personal)"},
     ) as client:
-        r = await client.get(attachment_url)
-        r.raise_for_status()
-        data = r.content
+        # Stream so oversized attachments abort before we hold the whole
+        # payload in memory.
+        async with client.stream("GET", attachment_url) as r:
+            r.raise_for_status()
+            declared_len = r.headers.get("content-length")
+            if declared_len and declared_len.isdigit() and int(declared_len) > _ATTACH_MAX_BYTES:
+                return {
+                    "error": "content_length_exceeds_cap",
+                    "content_length": int(declared_len),
+                    "max_bytes": _ATTACH_MAX_BYTES,
+                    "url": attachment_url,
+                }
+            buf = bytearray()
+            async for chunk in r.aiter_bytes():
+                buf += chunk
+                if len(buf) > _ATTACH_MAX_BYTES:
+                    return {
+                        "error": "download_exceeded_cap",
+                        "max_bytes": _ATTACH_MAX_BYTES,
+                        "url": attachment_url,
+                    }
+            data = bytes(buf)
 
     # Infer type from URL
     ext = Path(attachment_url.split("?", 1)[0]).suffix.lower()
@@ -57,12 +85,17 @@ async def ingest_discord_attachment(
     dest.write_bytes(data)
 
     # Extract text
+    pages_read = 0
+    truncated_chars = False
     try:
         if ext == ".pdf":
             from pypdf import PdfReader
-            text = "\n\n".join(
-                (p.extract_text() or "") for p in PdfReader(str(dest)).pages
-            )
+            reader = PdfReader(str(dest))
+            parts: list[str] = []
+            for page in reader.pages[:_ATTACH_MAX_PDF_PAGES]:
+                parts.append(page.extract_text() or "")
+                pages_read += 1
+            text = "\n\n".join(parts)
         elif ext in (".md", ".txt", ".markdown", ""):
             text = data.decode("utf-8", errors="replace")
         else:
@@ -71,6 +104,9 @@ async def ingest_discord_attachment(
                 "bytes": len(data),
                 "url": attachment_url,
             }
+        if len(text) > _ATTACH_MAX_TEXT_CHARS:
+            text = text[:_ATTACH_MAX_TEXT_CHARS]
+            truncated_chars = True
     except Exception as e:
         return {"error": f"extraction_failed: {e}", "url": attachment_url}
     finally:
@@ -93,4 +129,7 @@ async def ingest_discord_attachment(
     # Propagate taint — untrusted source
     result["tainted"] = True
     result["source_url"] = attachment_url
+    if ext == ".pdf":
+        result["pages_read"] = pages_read
+    result["truncated_chars"] = truncated_chars
     return result

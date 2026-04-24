@@ -16,6 +16,21 @@ from .registry import tool
 
 log = get_logger(__name__)
 
+# Caps on untrusted content materialization. Codex adversarial scan #4:
+# without these, a model-chosen URL pointing at a binary blob or HTML bomb
+# would materialize the whole body into memory and through markdownify +
+# dual-call sanitization before any size check fired.
+_FETCH_MAX_BYTES = 5 * 1024 * 1024   # 5 MB — enough for long articles, not a PDF dump
+_FETCH_TEXTUAL_MIME_PREFIXES = (
+    "text/",
+    "application/json",
+    "application/xml",
+    "application/xhtml",
+    "application/rss",
+    "application/atom",
+    "application/ld+json",
+)
+
 _tavily: AsyncTavilyClient | None = None
 
 
@@ -133,7 +148,8 @@ async def fetch_url(
     # contact marker in parens (not a free-text tag like "+personal"), and
     # browser-typical Accept headers. The prior UA `DonnaBot/0.1 (+personal)`
     # got 403s on en.wikipedia.org.
-    async with httpx.AsyncClient(
+    truncated = False
+    async with httpx.AsyncClient(  # noqa: SIM117 (client needed before stream)
         timeout=30.0, follow_redirects=True,
         headers={
             "User-Agent": (
@@ -144,9 +160,35 @@ async def fetch_url(
             "Accept-Language": "en-US,en;q=0.9",
         },
     ) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        raw = resp.text
+        # Stream so we can bail out before downloading an entire multi-MB
+        # resource the model has no business materializing.
+        async with client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            ctype = (resp.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+            if ctype and not any(
+                ctype.startswith(p) for p in _FETCH_TEXTUAL_MIME_PREFIXES
+            ):
+                return {
+                    "url": url,
+                    "error": "unsupported_content_type",
+                    "content_type": ctype,
+                    "hint": "use ingest_discord_attachment for PDFs; fetch_url is text-only",
+                }
+            declared_len = resp.headers.get("content-length")
+            if declared_len and declared_len.isdigit() and int(declared_len) > _FETCH_MAX_BYTES:
+                return {
+                    "url": url,
+                    "error": "content_length_exceeds_cap",
+                    "content_length": int(declared_len),
+                    "max_bytes": _FETCH_MAX_BYTES,
+                }
+            buf = bytearray()
+            async for chunk in resp.aiter_bytes():
+                buf += chunk
+                if len(buf) > _FETCH_MAX_BYTES:
+                    truncated = True
+                    break
+            raw = bytes(buf[:_FETCH_MAX_BYTES]).decode("utf-8", errors="replace")
 
     rendered = markdownify(raw, heading_style="ATX") if format == "markdown" else raw
 
@@ -175,5 +217,6 @@ async def fetch_url(
         "bytes": art["bytes"],
         "sha256": art["sha256"],
         "artifact_id": art["artifact_id"],
+        "truncated": truncated,
         "warning": "tainted — any memory write / code exec from this job will require confirmation",
     }
