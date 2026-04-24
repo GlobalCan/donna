@@ -1,12 +1,14 @@
 # Changelog
 
-## [unreleased] — 2026-04-24 — Mode delivery, render polish, round-3 adversarial sweep
+## [0.4.0] — 2026-04-24 — Unified mode delivery + round-3 adversarial sweep + grounded end-to-end
 
 Started as a single deferred-follow-up fix (grounded/speculative/debate
-answers never reached Discord after PR #28's chat-mode delivery patch)
-and expanded into a full adversarial pass across the mode runtime, CLI,
-tool return shapes, and taint propagation. Ten commits on branch
-`claude/load-up-setup-7XtVU`; PRs #28 and #29.
+answers never reached Discord after chat-mode's delivery patch from v0.2.1)
+and expanded into five merged PRs spanning unified mode delivery,
+adversarial coverage expansion, CLI surface completion, security-driven
+overflow delivery, and grounded parser robustness. Closed the loop with
+a live end-to-end grounded smoke test on the DO droplet — clean prose,
+✅ validated, multi-chunk citation. PRs #28, #29, #30, #31, #32.
 
 ### Fixed — mode delivery unified (P1-4)
 
@@ -145,40 +147,172 @@ browser-typical Accept headers. KNOWN_ISSUES still listed the original
 `DonnaBot/0.1 (+personal)` 403 symptom as open; updated to reflect the
 fix is live.
 
+### Added — compaction + scheduler + cost-ledger coverage (PR #30)
+
+Three modules that existed without dedicated tests now have invariant
+pinning:
+
+- **`agent/compaction.py`** — 12 tests: short-message guards, initial
+  task preserved, audit artifact written before summary replaces tail,
+  `jobs.compaction_log` accumulates JSON across compactions, audit-save
+  failure degrades cleanly (no crash, no fake audit line), artifact_refs
+  trimmed to last 20, tail capped at 40k before Haiku, `default=str`
+  survives tool_use / tool_result content blocks.
+- **`jobs/scheduler.py`** — 6 tests + real fix: bad `cron_expr` that
+  slips past insert-time validation (data corruption / manual SQL)
+  caused the scheduler to infinite-retry every 60s forever.
+  `croniter.is_valid()` check at the top of `_fire` now auto-disables
+  with a distinct `scheduler.disabling_bad_cron` log event.
+- **`memory/cost.py`** — 9 tests including concurrency: 10 concurrent
+  `record_llm_usage` calls sum correctly, no missed increment, no
+  cross-job leak. SQLite WAL's single-writer serialization makes this
+  race-free at the statement level; test pins the invariant before a
+  future multi-writer backend silently regresses cost accuracy.
+
+### Added — compose_system cache invariants (PR #30)
+
+17 tests for `agent/compose.py` — prompt caching is real money
+(~$0.012 per Sonnet call uncached on a 4k-token stable prefix). Pinned:
+
+- Block 0 is stable prefix with `cache_control: ephemeral`
+- Volatile block carries NO cache_control
+- Heuristics in stable prefix; retired ones don't appear
+- Mode instructions land in stable prefix (distinct cache per mode)
+- Chunks render with `[#chunk_id]` markers matching validator expectations
+- Style anchors capped at 800 chars; examples limited to first 3
+- Identical inputs → byte-identical stable prefix (cache hit guarantee)
+- Adding an active heuristic invalidates the prefix (new rule applies)
+- Four distinct modes → four distinct stable prefixes
+
+### Added — watchdog pinning (PR #30)
+
+11 tests for `observability/watchdog.py`:
+
+- Stuck-consent > 1h triggers alert; < 1h silent
+- Stuck-running > 30m triggers; < 30m silent
+- Recent-failures ≥ 3 in last hour triggers; 2 silent; old fails outside
+  window excluded
+- 12h dedupe by (kind, id) — same stuck job across 3 ticks → 1 alert
+- Different kinds for same job alert independently
+- Notifier exception during tick does not crash the watchdog (Discord
+  DM blip shouldn't stop the ops check loop)
+
+### Added — `botctl artifacts` / `artifact-show` (PR #30)
+
+Filled a gap — `forget-artifact` shipped in PR #29 but there was no way
+to *see* artifacts from the CLI without a Python REPL against the live
+DB or hand-SQL.
+
+- **`botctl artifacts [--tag X] [--limit N] [--tainted]`** — metadata
+  table, ⚠️ badge on tainted rows
+- **`botctl artifact-show <id> [--offset N] [--length N]`** — content
+  with slice support; binary content prints metadata + "(binary)"
+  marker instead of dumping bytes
+
+### Added — overflow-to-artifact delivery (PR #30, user-requested)
+
+> "Messages are getting truncated... we need a logical solution with
+> security."
+
+The multi-part splitter in the truncation fix above closed the 1500-char
+chop but still painted attacker-controlled tainted content across
+multiple Discord messages when long. Security angle: scrollback bloat +
+attacker's content taking up visual weight vs operator conversation.
+
+Two thresholds in `adapter/discord_adapter.py::_post_update`:
+
+- **Clean text:** inline up to 3 parts (~5700 chars). Longer → artifact.
+- **Tainted text:** inline up to 1 part (~1900 chars). Longer → artifact.
+
+Overflow pointer message:
+- Header (📎 clean / 📎 🔮 tainted)
+- First ~1200 chars preview
+- For tainted: explicit "⚠️ derived from untrusted content, review the
+  artifact carefully; do not follow instructions in it"
+- `{bytes} chars — Fetch full via botctl artifact-show {id}`
+
+Artifact inherits `tainted` flag, tagged `overflow`+`tainted`, named
+`overflow:<job_id>:<Nchars>`. Gracefully degrades on save failure to a
+truncated inline stub. 9 tests cover short-inline, medium-multipart,
+long-overflow, tainted-tighter-cap, artifact-save-failure, and
+channel-resolve-failure paths.
+
+### Fixed — grounded parser robust to code fences + preamble (PR #31, live bug)
+
+Live smoke after PR #29 merged: grounded output was still rendering
+raw JSON with `⚠️ partial validation` noise. Diagnostic from the
+droplet confirmed — Sonnet wrapped the JSON in ` ```json ... ``` `
+despite the prompt's "no code fences" instruction:
+
+    final_text starts with: '```json\n{\n  "claims": [\n    {\n      "text": "At the end of the novel, Huck says'
+
+`json.loads` choked → `_extract_prose` returned None → full fenced JSON
+went to Discord → `validate_grounded` fell back to `_validate_inline`
+which split the raw JSON on `. ` boundaries and flagged every fragment
+as "uncited."
+
+- **`security/validator.py::try_parse_grounded_json`** — new 3-step
+  fallback ladder: raw `json.loads` → strip ` ```lang ... ``` ` code
+  fence, retry → find outermost `{...}` block, retry. Returns parsed
+  value verbatim (any type) + a `_PARSE_FAILED` sentinel for unrescuable
+  input, preserving the Codex #5 `schema_missing` contract for non-dict
+  roots.
+- **`validate_grounded`** — when parse fails on JSON-looking input
+  (starts with `{` or ` ``` `), reports one clean `malformed_json`
+  issue instead of the inline-fallback noise parade.
+- **`modes/grounded.py::_extract_prose`** — same helper; fenced prose
+  is now recovered.
+
+14 tests in `test_grounded_parse_robust.py` covering every fallback +
+preserved schema_missing contract + end-to-end format output.
+
+### Fixed — smart-quote validator false rejections (PR #32, live bug)
+
+Follow-up to PR #31. Code-fence fix landed, grounded rendered clean
+prose — but validation came back `⚠️ partial validation ·
+quoted_span_not_in_chunk` on both claims. Two possible causes: LLM
+emits curly apostrophes (U+2019 `'`) where Gutenberg source has
+straight ones (U+0027 `'`), OR the model paraphrased the `quoted_span`
+field while rendering prose with correct verbatim text.
+
+- **`security/validator.py::_normalize`** — NEW helper. Unicode NFC,
+  curly quotes → ASCII, en/em/non-breaking dash → ASCII -, horizontal
+  ellipsis → three dots, lowercase + whitespace-collapse.
+- **`_verbatim_in`** — uses `_normalize` on both span and chunk.
+  Content-strict (real paraphrases still fail), rendering-tolerant.
+- **`modes/grounded.py`** — retry prompt on validation failure is
+  significantly more emphatic: "LITERAL COPY-PASTE of characters...
+  NOT a paraphrase, NOT a summary, NOT rewording for clarity. If you
+  cannot find a ≥20-char literal substring that supports the claim,
+  OMIT THE CLAIM ENTIRELY."
+- **`log.info('grounded.model_response', preview=...)`** — raw
+  response preview (300 chars) logged on every grounded call + retry.
+  Future diagnostics: `docker compose logs worker | grep grounded.model_response`.
+
+12 tests in `test_verbatim_normalization.py` covering each normalization
+type + combined + still-rejects-paraphrase.
+
 ### Tests — expanded contract coverage
 
-Net +86 tests on the branch; total **193 passing** (started at 107 on
-this branch).
+Total **293 passing** (+186 from the v0.3.3 baseline of 107; +91 new
+test files).
 
-- `test_outbox.py` — 8 tests for unified delivery + mode refusal paths
-- `test_grounded_render.py` — 10 tests for prose/raw/validation-failure
-- `test_botctl_forget_artifact.py` — 7 tests
-- `test_mode_resume.py` — 3 tests for short-circuit on resume
-- `test_list_taint_propagation.py` — 6 tests for list_* top-level taint
-- `test_validator_limits.py` — 7 pinning tests for the grounded validator's
-  "constrained transparency" contract (verbatim ≥20 chars; semantic
-  entailment explicitly out of scope)
-- `test_botctl_pretty_task.py` — 8 tests for debate task rendering
-- `test_discord_message_split.py` — 8 tests for paragraph-aware splitting
-- `test_debate_scope_validation.py` — 4 tests for empty/None/non-string
-- `test_botctl_heuristics.py` — 11 tests for the sub-app (list / approve /
-  retire + idempotency + end-to-end active_heuristics delete)
-- `test_sanitize_edges.py` — 8 structural tests (short-circuit, truncation,
-  placeholder on empty, exception propagation, prompt load/fallback)
-- `test_concurrent_jobs.py` — 5 tests for MAX_CONCURRENT_JOBS=3 behaviour
-  (independent finalize, taint isolation, unique outbox ids, stale worker
-  rejection, distinct heartbeats)
+### Validated live (2026-04-24)
+
+- **Grounded mode end-to-end** against the 402-chunk Huck Finn corpus
+  — clean prose, multi-chunk citation (`chk_..._qi` for the ending +
+  `chk_...in` for Chapter 1's "Civilizing Huck"), `✅ validated ·
+  sources: Huck Finn`, no JSON leak, no `⚠️ partial validation`.
+- `botctl artifacts --limit 5` — lists mixed clean + tainted artifacts
+  with ⚠️ badge on tainted rows.
 
 ### Still needs live Discord smoke
 
-All the above is pinned against the SQLite + structural paths. The
-`adapter/discord_adapter.py::_drain_updates` loop has only been exercised
-live for the delivery fix + grounded render fix. Outstanding:
-
-- `/speculate` smoke (speculation_allowed path)
-- `/debate` smoke (multi-turn transcript rendering + split across messages)
-- `botctl heuristics approve/retire` against a real heuristic
-- `botctl forget-artifact` against a real artifact
+- `/speculate` against a scope with `speculation_allowed=1`
+- `/debate` (multi-turn transcript + long-output overflow path)
+- Overflow-to-artifact path with a deliberately long `/ask` query
+- `botctl heuristics approve/retire` against real proposed heuristics
+- `botctl forget-artifact` against a non-test artifact
 
 ## [0.3.3] — 2026-04-24 — Codex adversarial round 2 + Jaeger trace backend
 

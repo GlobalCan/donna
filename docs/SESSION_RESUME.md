@@ -25,10 +25,13 @@ Before anything else, read these files. Everything below assumes you have.
 
 ## 1 · Where we are
 
-**Donna v0.3.3 is live in production on DigitalOcean, fully smoke-tested.**
-Bot answering DMs as `Donna#3183`. Two Codex (GPT-5.4) adversarial reviews
-absorbed in this session-stack; **all 9 findings of the second pass fixed
-and validated live** alongside the original 3-pass review.
+**Donna v0.4.0 (unreleased, all code merged to main) is live in production
+on DigitalOcean.** Bot answering DMs as `Donna#3183`. Grounded mode fully
+validated end-to-end against the 402-chunk Huck Finn corpus: clean prose
+render, multi-chunk citation, `✅ validated`, no JSON leak. Five PRs
+merged today (#28 unified mode delivery, #29 prose render + forget-artifact,
+#30 adversarial round 2 + overflow-to-artifact, #31 code-fence hotfix,
+#32 smart-quote normalization + diagnostic logging). **293 tests green**.
 
 - **Branch:** `main`, clean working tree
 - **Droplet:** `159.203.34.165` (Ubuntu 24.04 LTS), hardened (bot uid 1001,
@@ -85,7 +88,7 @@ and validated live** alongside the original 3-pass review.
 
 Restore recipe: `docs/OPERATIONS.md` §Restore from a tarball.
 
-**Still open** (see `docs/KNOWN_ISSUES.md` §v0.3.3):
+**Still open** (see `docs/KNOWN_ISSUES.md`):
 
 - **Full quarterly restore drill** — throwaway droplet + token-juggling
   (~5 min downtime). Lightweight tarball verifier
@@ -99,14 +102,21 @@ Restore recipe: `docs/OPERATIONS.md` §Restore from a tarball.
 - **Phoenix re-enable path** — documented in `docker-compose.yml`. Jaeger
   is the current backend. If Phoenix fixes their image, swap back is
   a hostname change (`OTEL_EXPORTER_OTLP_ENDPOINT`)
-- **Speculative / debate modes** never smoke-tested in prod (grounded
-  has been validated; chat extensively so)
-- ~~**`botctl forget-artifact`** subcommand doesn't exist; manual SQL +
-  `rm` until then~~ **— shipped on `claude/load-up-setup-7XtVU`**.
-  `botctl forget-artifact <id> [--force]` deletes the row + blob, warns
-  on dangling `knowledge_sources.source_ref` references, interactive
-  confirm by default.
-- **Quarterly restore drill** — not yet done
+- **Speculative mode** — code deployed, never live-smoke-tested. Needs
+  `agent_prompts.speculation_allowed = 1` flipped for the target scope
+  first.
+- **Debate mode** — code deployed, never live-smoke-tested. Would exercise
+  multi-turn transcript rendering + overflow-to-artifact at the same time
+  (transcripts easily exceed the 5700-char clean cap).
+- **Overflow-to-artifact** — tests pass locally, never live-exercised.
+  Trigger: `/ask scope:author_twain question:Walk through Huck's moral
+  arc across the entire novel with citations for each major turning point`.
+
+Four adversarial passes absorbed:
+- Pass-1 defect review (session `019d9bbf-a2e3-7a40-8bde-9ac5f5fe163e`) — all CRITICAL + HIGH + most MEDIUM fixed
+- Pass-2 adversarial challenge (session `019d9bda-b31d-75d2-a365-985c3af87cb8`) — all 15 findings fixed or explicitly deferred with mitigation
+- Hermes comparison (session `019db01c-a788-7902-b9f3-8ee6aee32b59`) — 3 mechanisms stolen (ModelRuntime registry, compaction audit, /model command)
+- Codex adversarial round 2 (v0.3.3) + self-run round 3 (v0.4.0 session stack) — mode resume, list-taint, validator limits pinned, overflow-to-artifact, code-fence robustness, smart-quote normalization
 
 Three Codex review passes absorbed:
 - Pass-1 defect review (session `019d9bbf-a2e3-7a40-8bde-9ac5f5fe163e`) — all CRITICAL + HIGH + most MEDIUM fixed
@@ -181,17 +191,18 @@ On the droplet:
 
 ## 4 · Current repo state at a glance
 
-- **64 source files** under `src/donna/`
-- **10 test modules** (60 tests, all green)
-- **4 migrations** in `migrations/versions/`:
+- **~75 source files** under `src/donna/` (grown via the v0.4.0 batch)
+- **37 test modules** — 293 tests, all green
+- **5 migrations** in `migrations/versions/`:
   - `0001_initial_schema` — full v1 schema (15 tables)
   - `0002_chunks_fts_update_trigger` — chunks_fts UPDATE trigger Codex flagged missing
   - `0003_pending_consents` — persistent consent state
   - `0004_v1_1_hermes_inspired` — model_runtimes table + threads.model_tier_override + jobs.compaction_log
-- **7 docs files:** PLAN, KNOWN_ISSUES, OPERATIONS, MORNING_START (+ morning.html), review.html, THINK_BRIEF, and now SESSION_RESUME (this file)
+  - `0005_outbox_tables` — cross-process outbox (`outbox_updates`, `outbox_asks`) + pending_consents columns for cross-process drain
+- **9 docs files:** PLAN, KNOWN_ISSUES, OPERATIONS, MORNING_START (+ morning.html), review.html, THINK_BRIEF, SESSION_RESUME (this file), CONTINUE_HERE
 
 **Venv:** `.venv` at repo root, Python 3.14.3, all deps installed.
-**DB:** `data/donna.db`, migrations at `0004 (head)`, `model_runtimes` seeded with Anthropic haiku/sonnet/opus.
+**DB:** `data/donna.db`, migrations at `0005 (head)`, `model_runtimes` seeded with Anthropic haiku/sonnet/opus.
 
 ---
 
