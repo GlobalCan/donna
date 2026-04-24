@@ -1,49 +1,184 @@
 # Changelog
 
-## [unreleased] — 2026-04-24 — Unified mode delivery (closes P1-4)
+## [unreleased] — 2026-04-24 — Mode delivery, render polish, round-3 adversarial sweep
 
-Closes the deferred Phase-1 follow-up flagged in commit `c623ab1`: *"Grounded/
-speculative/debate modes likely have the same orphaned-final-text hole and will
-need the same treatment."*
+Started as a single deferred-follow-up fix (grounded/speculative/debate
+answers never reached Discord after PR #28's chat-mode delivery patch)
+and expanded into a full adversarial pass across the mode runtime, CLI,
+tool return shapes, and taint propagation. Ten commits on branch
+`claude/load-up-setup-7XtVU`; PRs #28 and #29.
 
-### Fixed — mode delivery unified
+### Fixed — mode delivery unified (P1-4)
 
-- **`agent/context.py::JobContext.finalize()`** now writes `final_text` to
-  `outbox_updates` atomically with the `set_status(DONE)` flip inside the
-  same transaction. Every mode (chat, grounded, speculative, debate) inherits
-  Discord delivery by setting `ctx.state.final_text` + `ctx.state.done = True`
-  and letting the context manager finalize — no per-mode enqueue needed.
-- **`agent/loop.py`** — removed the chat-only `_enqueue_final_text` helper
-  and its manual call. Chat now delivers via the same `finalize()` path as
-  every other mode.
-- **Latent chat double-delivery on finalize-retry** closed as a side effect.
-  The previous design wrote outbox in a separate transaction from the DONE
-  flip; a lease-lost retry could deliver the answer twice. The unified path
-  is single-transaction atomic.
+Commit c623ab1 had flagged this two days earlier: *"Grounded/speculative/
+debate modes likely have the same orphaned-final-text hole and will need
+the same treatment."* Confirmed live on prod via smoke test — a grounded
+`/ask` against `author_twain` produced `📌 queued` and silence; job row
+showed `status=done` with `final_text` populated, but outbox empty.
 
-### Tests
+- **`agent/context.py::JobContext.finalize()`** — outbox insert is now
+  atomic with the DONE status flip inside a single transaction. Every
+  mode (chat, grounded, speculative, debate) delivers by setting
+  `ctx.state.final_text + done = True` and letting the context manager
+  finalize. No per-mode enqueue needed.
+- **`agent/loop.py`** — removed the chat-only `_enqueue_final_text`
+  helper + its manual call. Chat rides the same path.
+- **Side benefit:** closes a latent chat double-delivery bug. Previous
+  design wrote outbox in a separate transaction from DONE; lease-lost
+  retry could deliver twice. Atomic-in-finalize prevents this.
 
-8 new tests in `tests/test_outbox.py` replacing the two removed
-`_enqueue_final_text_*` helper tests:
+### Fixed — mode resume double-execution (regression from the above)
 
-- `test_finalize_writes_final_text_to_outbox` — unit, atomic with DONE
-- `test_finalize_skips_empty_final_text` — whitespace → no row
-- `test_finalize_truncates_long_final_text` — 1500-char Discord cap
-- `test_finalize_returns_false_on_lost_lease_and_does_not_deliver` — regression
-- `test_grounded_refusal_delivers_to_outbox` — no-corpus → refusal reaches user
-- `test_speculative_refusal_delivers_to_outbox` — speculation_disabled → refusal reaches user
-- `test_debate_delivers_final_text_to_outbox` — stubbed `_debate_core`, delivery path
-- `test_cancelled_job_does_not_deliver_to_outbox` — `JobCancelled` bypasses finalize
+A subtle second-order bug from the delivery unification: if a worker
+reaches `done=True`, checkpoints, then dies before finalize runs, the
+next worker reclaims the lease and re-enters the mode handler. Chat had
+the `while not ctx.state.done` guard; grounded/speculative/debate did
+not. On resume they'd re-run retrieval + the full model call, potentially
+producing a *different* answer. Debate was the worst case (N scopes ×
+M rounds LLM calls + a summary call).
 
-Full suite: **115 passed** (baseline 109, net +6 after removing 2 old tests).
+- **Added `if ctx.state.done: return` at each mode entry** in
+  `modes/grounded.py`, `modes/speculative.py`, `modes/debate.py`.
+- Context manager still finalizes on exit, delivering the pre-existing
+  `final_text` verbatim.
 
-### Still needs live Discord smoke test
+### Fixed — 1500-char truncation on long outputs
 
-The refactor is validated against the SQLite outbox path. The
-`adapter/discord_adapter.py::_drain_updates` loop for grounded/speculative/
-debate outputs has still never been exercised in prod. Recommended: after
-merge, DM a grounded `/ask` against the author_twain corpus; verify the
-reply arrives.
+Previously every outbox row and every `_post_update` call truncated to
+1500 chars. Long grounded answers, any debate transcript, and detailed
+speculative outputs got chopped mid-sentence. Replaced with:
+
+- **`agent/context.py::JobContext.finalize`** — 20k sanity cap on the
+  outbox row (bounded storage, not bounded rendering)
+- **`adapter/discord_adapter.py::_split_for_discord`** — new helper
+  that breaks long text at paragraph, sentence, or newline boundaries
+  (in that preference order), falling back to a hard cut. Each chunk
+  ≤ 1900 chars to leave Discord-limit headroom.
+- **`_post_update`** — splits long text and posts with `(i/N)` markers,
+  250ms between parts to stay under Discord's 5-msg-per-5s rate cap.
+- `tools/communicate.py::send_update` still caps at 1500 — those are
+  progress pings per its docstring, not final answers.
+
+### Fixed — grounded render (raw JSON → prose)
+
+Live smoke after merging PR #28 surfaced the latent UX bug: the grounded
+mode returns a JSON schema (`claims[].citations`, `quoted_span`) designed
+for the validator, and the whole blob was being sent to Discord. The
+human-readable `prose` field was buried at the bottom.
+
+- **`modes/grounded.py::_format_output`** — parses the JSON and prefers
+  `prose` as the user-visible body. Falls back to raw on parse failure
+  (model used inline-marker style), non-dict root, or missing/blank prose.
+- **`modes/grounded.py::_extract_prose`** — new helper for the parse
+  logic, tested independently.
+- On validation failure, claim-by-claim issues still append to the
+  output so operators can audit — but the raw JSON stays out of the
+  user's DM.
+- **`modes/speculative.py`** — minor: phrasing-flag list was rendering
+  as a Python list repr (`['thinks that']`); joined with commas.
+
+### Fixed — taint-propagation gap in list tools
+
+Same-class audit after Codex round-2 #4 (`recall`, `recall_knowledge`):
+list_* tools returned per-row `tainted` flags but no top-level key.
+`JobContext._execute_one` only inspects top-level, so a list that
+included tainted artifacts / sources slipped through without escalating
+the job's confirmation gates.
+
+Attack shape: fetch_url → save_artifact creates a tainted artifact.
+Model calls list_artifacts — sees attacker-controlled name/tags. No
+taint propagates. Model then calls `remember` / `run_python` without
+the tainted-job gate firing.
+
+- **`tools/artifacts.py::list_artifacts`** — sets `result["tainted"] = True`
+  when any listed artifact is tainted.
+- **`tools/knowledge.py::list_knowledge`** — same for knowledge sources.
+
+### Fixed — debate payload scope validation
+
+`_debate_core`'s `len(scopes) < 2` guard counts list length, not semantic
+validity. Payload with `scope_a=""` / `scope_b=None` / `scope_c=42`
+passed the guard, and debate ran with `retrieve_knowledge(scope="")`
+returning zero chunks — low-quality failure mode that *looked* like a
+valid debate but was pure extrapolation.
+
+- **`modes/debate.py::run_debate_in_context`** — filters
+  `[s for s in raw_scopes if isinstance(s, str) and s.strip()]` at entry.
+  `_debate_core`'s existing guard then catches genuine <2-scope cases
+  and delivers the formatted error via finalize.
+
+### Added — `botctl forget-artifact <id>`
+
+Flagged in v0.3.3 open list. Wraps the manual SQL DELETE + `rm` dance in
+one command with interactive confirm + dangling-knowledge-source warning.
+
+- Tests pin the UNIQUE-sha256 schema invariant behind the 1:1 row/blob
+  assumption.
+
+### Added — `botctl heuristics` sub-app
+
+Was: top-level `heuristics <scope>` that only listed. Operators had to
+hand-SQL `UPDATE agent_heuristics SET status = 'active'` to approve a
+proposed rule.
+
+- **`botctl heuristics list|approve|retire <arg>`** as a typer sub-app.
+- `memory/prompts.py::retire_heuristic` + `get_heuristic` helpers.
+- Breaking change for `list` (was bare `botctl heuristics <scope>`).
+  No automation depended on the old form.
+
+### Added — `botctl jobs` debate task rendering
+
+Debate tasks are JSON payloads that rendered as hideous truncated JSON
+in the `jobs` table. Now rendered as `scope_a vs scope_b: topic`.
+
+### Hardened — sanitize_untrusted short-circuit
+
+Empty / whitespace-only input to the dual-call Haiku sanitizer now
+short-circuits to `[no substantive content]` without calling the model.
+Anthropic's API rejects empty user messages with a 400; this was a
+latent failure mode waiting to happen.
+
+### Wikipedia UA — docs close
+
+`tools/web.py::fetch_url` already ships `Donna/0.2 (+GitHub URL)` and
+browser-typical Accept headers. KNOWN_ISSUES still listed the original
+`DonnaBot/0.1 (+personal)` 403 symptom as open; updated to reflect the
+fix is live.
+
+### Tests — expanded contract coverage
+
+Net +86 tests on the branch; total **193 passing** (started at 107 on
+this branch).
+
+- `test_outbox.py` — 8 tests for unified delivery + mode refusal paths
+- `test_grounded_render.py` — 10 tests for prose/raw/validation-failure
+- `test_botctl_forget_artifact.py` — 7 tests
+- `test_mode_resume.py` — 3 tests for short-circuit on resume
+- `test_list_taint_propagation.py` — 6 tests for list_* top-level taint
+- `test_validator_limits.py` — 7 pinning tests for the grounded validator's
+  "constrained transparency" contract (verbatim ≥20 chars; semantic
+  entailment explicitly out of scope)
+- `test_botctl_pretty_task.py` — 8 tests for debate task rendering
+- `test_discord_message_split.py` — 8 tests for paragraph-aware splitting
+- `test_debate_scope_validation.py` — 4 tests for empty/None/non-string
+- `test_botctl_heuristics.py` — 11 tests for the sub-app (list / approve /
+  retire + idempotency + end-to-end active_heuristics delete)
+- `test_sanitize_edges.py` — 8 structural tests (short-circuit, truncation,
+  placeholder on empty, exception propagation, prompt load/fallback)
+- `test_concurrent_jobs.py` — 5 tests for MAX_CONCURRENT_JOBS=3 behaviour
+  (independent finalize, taint isolation, unique outbox ids, stale worker
+  rejection, distinct heartbeats)
+
+### Still needs live Discord smoke
+
+All the above is pinned against the SQLite + structural paths. The
+`adapter/discord_adapter.py::_drain_updates` loop has only been exercised
+live for the delivery fix + grounded render fix. Outstanding:
+
+- `/speculate` smoke (speculation_allowed path)
+- `/debate` smoke (multi-turn transcript rendering + split across messages)
+- `botctl heuristics approve/retire` against a real heuristic
+- `botctl forget-artifact` against a real artifact
 
 ## [0.3.3] — 2026-04-24 — Codex adversarial round 2 + Jaeger trace backend
 
