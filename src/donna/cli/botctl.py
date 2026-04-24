@@ -153,6 +153,78 @@ def job(job_id: str) -> None:
 
 
 @app.command()
+def artifacts(
+    tag: str = typer.Option("", "--tag", help="Filter by tag substring"),
+    limit: int = typer.Option(25, "--limit"),
+    tainted_only: bool = typer.Option(
+        False, "--tainted", help="Only rows with tainted=1",
+    ),
+) -> None:
+    """List stored artifacts (metadata only — use `botctl artifact-show <id>`
+    for content)."""
+    from ..memory import artifacts as artifacts_mod
+    conn = connect()
+    try:
+        rows = artifacts_mod.list_artifacts(conn, tag=tag or None, limit=limit)
+    finally:
+        conn.close()
+    if tainted_only:
+        rows = [r for r in rows if r.get("tainted")]
+
+    t = Table("id", "name", "mime", "bytes", "tainted", "tags", "created")
+    for r in rows:
+        t.add_row(
+            r["id"],
+            (r.get("name") or "")[:40],
+            r.get("mime", "") or "",
+            str(r.get("bytes") or 0),
+            "⚠️" if r.get("tainted") else "",
+            (r.get("tags") or "")[:30],
+            str(r.get("created_at") or "")[:19],
+        )
+    console.print(t)
+    console.print(f"[dim]{len(rows)} shown[/dim]")
+
+
+@app.command("artifact-show")
+def artifact_show(
+    artifact_id: str,
+    offset: int = typer.Option(0, "--offset"),
+    length: int = typer.Option(4000, "--length"),
+) -> None:
+    """Read the content of an artifact. Binary artifacts print metadata
+    only — use `offset`/`length` to slice large text artifacts."""
+    from ..memory import artifacts as artifacts_mod
+    conn = connect()
+    try:
+        loaded = artifacts_mod.load_artifact_bytes(conn, artifact_id)
+    finally:
+        conn.close()
+    if loaded is None:
+        console.print(f"[red]artifact {artifact_id} not found[/red]")
+        raise typer.Exit(1)
+    data, meta = loaded
+    console.print(
+        f"[bold]{artifact_id}[/bold]  "
+        f"name={meta.get('name')!r}  mime={meta.get('mime')}  "
+        f"bytes={meta.get('bytes')}  "
+        f"tainted={'yes' if meta.get('tainted') else 'no'}"
+    )
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        console.print("[yellow](binary; not printing)[/yellow]")
+        return
+    excerpt = text[offset: offset + length]
+    console.print(excerpt)
+    if len(text) > offset + length:
+        console.print(
+            f"[dim]… {len(text) - offset - length} more chars "
+            f"(use --offset {offset + length} --length {length})[/dim]"
+        )
+
+
+@app.command()
 def cost(today: bool = True) -> None:
     """Daily cost."""
     conn = connect()
