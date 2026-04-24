@@ -33,7 +33,13 @@ async def run_debate_in_context(ctx: JobContext) -> None:
     scope_a = payload.get("scope_a", ctx.job.agent_scope)
     scope_b = payload.get("scope_b", "orchestrator")
     topic = payload.get("topic", ctx.job.task)
-    rounds = int(payload.get("rounds", 3))
+    # Codex adversarial scan #6: int([]) / int("abc") crashes the mode even
+    # though json.loads succeeded. A malformed payload like {"rounds": []}
+    # shouldn't sink debate — fall back to the default.
+    try:
+        rounds = int(payload.get("rounds", 3))
+    except (TypeError, ValueError):
+        rounds = 3
     scopes = [scope_a, scope_b]
     if "scope_c" in payload:
         scopes.append(payload["scope_c"])

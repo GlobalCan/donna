@@ -39,6 +39,18 @@ def validate_grounded(response_json: str, chunks: list[Chunk]) -> ValidationResu
         # Accept pure-prose responses that use inline [#id] markers as a fallback
         return _validate_inline(response_json, chunk_by_id)
 
+    # Codex adversarial scan #5: json.loads("[]") or json.loads('"hello"')
+    # returns a non-dict and would AttributeError on data.get(...). Surface
+    # as a schema issue instead of crashing grounded mode.
+    if not isinstance(data, dict):
+        return ValidationResult(
+            ok=False,
+            issues=[ValidationIssue(
+                claim=f"(non-dict json root: {type(data).__name__})",
+                reason="schema_missing", cited=[],
+            )],
+        )
+
     issues: list[ValidationIssue] = []
     claims = data.get("claims", [])
     if not isinstance(claims, list) or not claims:
@@ -186,6 +198,14 @@ def _norm(s: str) -> str:
 
 
 def _has_substring_overlap(a: str, b: str, min_len: int = 15) -> bool:
+    # Codex adversarial scan #9: this is O(len(b) * len(a)) and runs on
+    # unbounded model text during debate-turn validation. A long prior turn
+    # plus a long current turn could block the worker loop for seconds.
+    # Cap both inputs — debate turns shouldn't need >50k chars of overlap
+    # scanning, and anything longer is almost certainly noise.
+    _MAX_SCAN = 50_000
+    a = a[:_MAX_SCAN]
+    b = b[:_MAX_SCAN]
     if len(a) < min_len or len(b) < min_len:
         return False
     for i in range(len(b) - min_len):
