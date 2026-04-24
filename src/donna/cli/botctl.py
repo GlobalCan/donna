@@ -32,8 +32,10 @@ from ..memory.db import connect, transaction
 app = typer.Typer(help="Donna ops CLI")
 schedule_app = typer.Typer(help="Schedule management")
 traces_app = typer.Typer(help="Trace / log management")
+heuristics_app = typer.Typer(help="Heuristic management: list / approve / retire")
 app.add_typer(schedule_app, name="schedule")
 app.add_typer(traces_app, name="traces")
+app.add_typer(heuristics_app, name="heuristics")
 
 console = Console()
 
@@ -51,6 +53,35 @@ def _parse_since(s: str) -> timedelta | None:
     if factor is None:
         return None
     return timedelta(**{factor: qty})
+
+
+def _pretty_task(task: str, mode: str) -> str:
+    """Render a job's task for the `jobs` table. Debate-mode tasks are JSON
+    payloads (`{"scope_a": "...", "scope_b": "...", "topic": "..."}`) which
+    look hideous when truncated mid-quoted-key at char 60. Render them as
+    'scope_a vs scope_b: topic' instead. All other modes use the task
+    verbatim, truncated."""
+    if mode == "debate" and task.strip().startswith("{"):
+        try:
+            payload = json.loads(task)
+        except json.JSONDecodeError:
+            return task[:60]
+        if not isinstance(payload, dict):
+            return task[:60]
+        scopes = [
+            payload.get(k)
+            for k in ("scope_a", "scope_b", "scope_c", "scope_d")
+            if payload.get(k)
+        ]
+        topic = payload.get("topic", "")
+        parts = []
+        if scopes:
+            parts.append(" vs ".join(str(s) for s in scopes))
+        if topic:
+            parts.append(f": {topic}")
+        rendered = "".join(parts) or task
+        return rendered[:60]
+    return task[:60]
 
 
 @app.command()
@@ -71,7 +102,7 @@ def jobs(
             j.id, j.status.value, j.mode.value, j.agent_scope,
             str(j.tool_call_count), f"${j.cost_usd:.2f}",
             "⚠️ " if j.tainted else "",
-            j.task[:60],
+            _pretty_task(j.task, j.mode.value),
         )
     console.print(t)
 
@@ -119,6 +150,78 @@ def job(job_id: str) -> None:
             "⚠️" if c["tainted"] else "",
         )
     console.print(t)
+
+
+@app.command()
+def artifacts(
+    tag: str = typer.Option("", "--tag", help="Filter by tag substring"),
+    limit: int = typer.Option(25, "--limit"),
+    tainted_only: bool = typer.Option(
+        False, "--tainted", help="Only rows with tainted=1",
+    ),
+) -> None:
+    """List stored artifacts (metadata only — use `botctl artifact-show <id>`
+    for content)."""
+    from ..memory import artifacts as artifacts_mod
+    conn = connect()
+    try:
+        rows = artifacts_mod.list_artifacts(conn, tag=tag or None, limit=limit)
+    finally:
+        conn.close()
+    if tainted_only:
+        rows = [r for r in rows if r.get("tainted")]
+
+    t = Table("id", "name", "mime", "bytes", "tainted", "tags", "created")
+    for r in rows:
+        t.add_row(
+            r["id"],
+            (r.get("name") or "")[:40],
+            r.get("mime", "") or "",
+            str(r.get("bytes") or 0),
+            "⚠️" if r.get("tainted") else "",
+            (r.get("tags") or "")[:30],
+            str(r.get("created_at") or "")[:19],
+        )
+    console.print(t)
+    console.print(f"[dim]{len(rows)} shown[/dim]")
+
+
+@app.command("artifact-show")
+def artifact_show(
+    artifact_id: str,
+    offset: int = typer.Option(0, "--offset"),
+    length: int = typer.Option(4000, "--length"),
+) -> None:
+    """Read the content of an artifact. Binary artifacts print metadata
+    only — use `offset`/`length` to slice large text artifacts."""
+    from ..memory import artifacts as artifacts_mod
+    conn = connect()
+    try:
+        loaded = artifacts_mod.load_artifact_bytes(conn, artifact_id)
+    finally:
+        conn.close()
+    if loaded is None:
+        console.print(f"[red]artifact {artifact_id} not found[/red]")
+        raise typer.Exit(1)
+    data, meta = loaded
+    console.print(
+        f"[bold]{artifact_id}[/bold]  "
+        f"name={meta.get('name')!r}  mime={meta.get('mime')}  "
+        f"bytes={meta.get('bytes')}  "
+        f"tainted={'yes' if meta.get('tainted') else 'no'}"
+    )
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        console.print("[yellow](binary; not printing)[/yellow]")
+        return
+    excerpt = text[offset: offset + length]
+    console.print(excerpt)
+    if len(text) > offset + length:
+        console.print(
+            f"[dim]… {len(text) - offset - length} more chars "
+            f"(use --offset {offset + length} --length {length})[/dim]"
+        )
 
 
 @app.command()
@@ -224,8 +327,9 @@ def teach(
     asyncio.run(go())
 
 
-@app.command()
-def heuristics(scope: str) -> None:
+@heuristics_app.command("list")
+def heuristics_list(scope: str) -> None:
+    """List all heuristics for a scope — proposed / active / retired."""
     conn = connect()
     try:
         active = prompts_mod.active_heuristics(conn, scope)
@@ -241,12 +345,138 @@ def heuristics(scope: str) -> None:
         console.print(f"  {badge} [{r['id']}] {r['heuristic']}")
 
 
+@heuristics_app.command("approve")
+def heuristics_approve(heuristic_id: str) -> None:
+    """Approve a proposed heuristic — flip status to `active`. The rule
+    starts influencing every subsequent job in its scope immediately."""
+    conn = connect()
+    try:
+        row = prompts_mod.get_heuristic(conn, heuristic_id=heuristic_id)
+    finally:
+        conn.close()
+    if row is None:
+        console.print(f"[red]heuristic {heuristic_id} not found[/red]")
+        raise typer.Exit(1)
+    if row["status"] == "active":
+        console.print(f"[yellow]{heuristic_id} is already active[/yellow]")
+        raise typer.Exit(0)
+    if row["status"] == "retired":
+        console.print(f"[yellow]{heuristic_id} was retired — "
+                      f"approving will reactivate it[/yellow]")
+    conn = connect()
+    try:
+        with transaction(conn):
+            prompts_mod.approve_heuristic(conn, heuristic_id=heuristic_id)
+    finally:
+        conn.close()
+    console.print(f"✅ approved [bold]{heuristic_id}[/bold]: {row['heuristic']}")
+
+
+@heuristics_app.command("retire")
+def heuristics_retire(heuristic_id: str) -> None:
+    """Retire an active heuristic — flip status to `retired`. The rule stops
+    influencing future jobs but the row stays for audit."""
+    conn = connect()
+    try:
+        row = prompts_mod.get_heuristic(conn, heuristic_id=heuristic_id)
+    finally:
+        conn.close()
+    if row is None:
+        console.print(f"[red]heuristic {heuristic_id} not found[/red]")
+        raise typer.Exit(1)
+    if row["status"] == "retired":
+        console.print(f"[yellow]{heuristic_id} is already retired[/yellow]")
+        raise typer.Exit(0)
+    conn = connect()
+    try:
+        with transaction(conn):
+            prompts_mod.retire_heuristic(conn, heuristic_id=heuristic_id)
+    finally:
+        conn.close()
+    console.print(f"🗑️  retired [bold]{heuristic_id}[/bold]: {row['heuristic']}")
+
+
 @app.command()
 def migrate() -> None:
     """Run alembic upgrade head."""
     import subprocess
     settings().data_dir.mkdir(parents=True, exist_ok=True)
     subprocess.check_call(["alembic", "upgrade", "head"])
+
+
+@app.command("forget-artifact")
+def forget_artifact(
+    artifact_id: str,
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Skip interactive confirmation",
+    ),
+) -> None:
+    """Delete an artifact row and its blob file.
+
+    Fills the gap flagged in KNOWN_ISSUES / SESSION_RESUME — the previous
+    recipe was hand-rolled SQL + `rm`.
+
+    The `artifacts.sha256` column is UNIQUE, so rows are always 1:1 with
+    blob files. We warn (but don't block) when a `knowledge_sources.source_ref`
+    points at this artifact — those references are free-form text, so a
+    dangling one is weird but not catastrophic.
+    """
+    import os
+
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id, sha256, name, mime, bytes, tainted FROM artifacts WHERE id = ?",
+            (artifact_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        console.print(f"[red]artifact {artifact_id} not found[/red]")
+        raise typer.Exit(1)
+
+    conn = connect()
+    try:
+        ks_refs = conn.execute(
+            "SELECT id, title FROM knowledge_sources WHERE source_ref = ?",
+            (artifact_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    blob_path = settings().artifacts_dir / f"{row['sha256']}.blob"
+
+    console.print(f"[bold]{artifact_id}[/bold]  sha256={row['sha256'][:12]}…  "
+                  f"bytes={row['bytes']}  mime={row['mime']}  "
+                  f"tainted={'yes' if row['tainted'] else 'no'}")
+    console.print(f"[dim]  blob at {blob_path}[/dim]")
+    if ks_refs:
+        console.print(f"[yellow]  ⚠️  referenced by {len(ks_refs)} knowledge_sources "
+                      f"row(s); those source_refs will become dangling:[/yellow]")
+        for r in ks_refs:
+            console.print(f"    - {r['id']}: {r['title']}")
+
+    if not force:
+        confirmed = typer.confirm("Delete this artifact?", default=False)
+        if not confirmed:
+            console.print("[dim]aborted[/dim]")
+            raise typer.Exit(0)
+
+    conn = connect()
+    try:
+        with transaction(conn):
+            conn.execute("DELETE FROM artifacts WHERE id = ?", (artifact_id,))
+    finally:
+        conn.close()
+
+    if blob_path.exists():
+        try:
+            os.remove(blob_path)
+        except OSError as e:
+            console.print(f"[yellow]  row deleted, but blob rm failed: {e}[/yellow]")
+
+    console.print(f"🗑️  forgot artifact {artifact_id}")
 
 
 # ---- schedule ---------------------------------------------------------------

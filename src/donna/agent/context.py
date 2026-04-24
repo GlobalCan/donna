@@ -325,13 +325,19 @@ class JobContext:
                     return False
                 text = (self.state.final_text or "").strip()
                 if text:
+                    # The old 1500-char cap truncated long grounded/debate
+                    # answers mid-sentence. The adapter now splits long
+                    # outbox text into multiple Discord messages at
+                    # paragraph/sentence boundaries (see _post_update).
+                    # A sanity cap is still prudent to bound DB storage
+                    # and message-split cost; 20k chars ≈ 10 Discord messages.
                     conn.execute(
                         "INSERT INTO outbox_updates (id, job_id, text, tainted) "
                         "VALUES (?, ?, ?, ?)",
                         (
                             ids_mod.new_id("upd"),
                             self.state.job_id,
-                            text[:1500],
+                            text[:20000],
                             1 if self.state.tainted else 0,
                         ),
                     )

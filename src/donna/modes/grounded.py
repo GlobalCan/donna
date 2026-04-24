@@ -48,6 +48,15 @@ Rules:
 
 async def run_grounded(ctx: JobContext) -> None:
     """Entry point invoked by agent.loop.run_job for JobMode.GROUNDED."""
+    # Resume short-circuit — if a prior worker reached done=True + checkpointed,
+    # but died before finalize, this worker inherits that state. Re-running
+    # retrieval + the model call would waste spend and potentially overwrite
+    # final_text with a different answer. Context manager will still finalize
+    # on exit (delivering the pre-existing final_text). Chat mode has the same
+    # guard via its loop condition.
+    if ctx.state.done:
+        return
+
     scope = ctx.job.agent_scope
     question = ctx.job.task
 

@@ -90,4 +90,13 @@ async def list_artifacts(tag: str = "", limit: int = 25) -> dict[str, Any]:
         items = artifacts_mod.list_artifacts(conn, tag=tag or None, limit=limit)
     finally:
         conn.close()
-    return {"count": len(items), "items": items}
+    # Top-level taint surfacing — parallels tools.memory.recall (Codex round-2
+    # #4) and tools.knowledge.recall_knowledge. Without this, a list that
+    # includes tainted artifacts (or tainted names/tags that made it through
+    # a prior fetch_url → save_artifact path) flows through to the model
+    # without escalating subsequent memory writes / run_python confirmations.
+    # JobContext._execute_one only inspects the top-level `tainted` key.
+    result: dict[str, Any] = {"count": len(items), "items": items}
+    if any(i.get("tainted") for i in items):
+        result["tainted"] = True
+    return result

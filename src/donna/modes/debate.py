@@ -25,6 +25,13 @@ async def run_debate_in_context(ctx: JobContext) -> None:
 
     The task is a JSON payload: {"scope_a":..., "scope_b":..., "topic":..., "rounds":...}
     """
+    # Resume short-circuit — debate is the most expensive mode (N scopes × M
+    # rounds = N*M LLM calls + 1 summary). Redoing all that on a
+    # checkpoint-died-before-finalize recovery would be both wasteful and
+    # produce a different transcript on replay.
+    if ctx.state.done:
+        return
+
     try:
         payload = json.loads(ctx.job.task) if ctx.job.task.strip().startswith("{") else {}
     except json.JSONDecodeError:
@@ -40,11 +47,18 @@ async def run_debate_in_context(ctx: JobContext) -> None:
         rounds = int(payload.get("rounds", 3))
     except (TypeError, ValueError):
         rounds = 3
-    scopes = [scope_a, scope_b]
+    # Empty / whitespace-only / non-string scope entries are silently dropped
+    # here. Without this, `retrieve_knowledge(scope="")` returns empty chunks
+    # and the debate runs with no corpus grounding, which looks like a valid
+    # debate but is one of the lowest-quality failure modes — the model just
+    # makes stuff up. Filter at the door so `_debate_core`'s `len(scopes) < 2`
+    # guard actually catches the bad case.
+    raw_scopes = [scope_a, scope_b]
     if "scope_c" in payload:
-        scopes.append(payload["scope_c"])
+        raw_scopes.append(payload["scope_c"])
     if "scope_d" in payload:
-        scopes.append(payload["scope_d"])
+        raw_scopes.append(payload["scope_d"])
+    scopes = [s for s in raw_scopes if isinstance(s, str) and s.strip()]
 
     result = await _debate_core(ctx=ctx, topic=topic, scopes=scopes, rounds=rounds)
     ctx.state.final_text = _format_debate(result)

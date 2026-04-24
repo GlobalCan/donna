@@ -97,7 +97,14 @@ async def list_knowledge(scope: str) -> dict[str, Any]:
         items = kn.list_sources(conn, agent_scope=scope)
     finally:
         conn.close()
-    return {"scope": scope, "sources": items, "count": len(items)}
+    # Top-level taint surfacing — same rationale as recall_knowledge and
+    # list_artifacts. A tainted knowledge_sources row (from a tainted
+    # ingest_discord_attachment path) flows its title/source_ref text into
+    # the model context; propagate taint so subsequent writes escalate.
+    result: dict[str, Any] = {"scope": scope, "sources": items, "count": len(items)}
+    if any(i.get("tainted") for i in items):
+        result["tainted"] = True
+    return result
 
 
 @tool(
