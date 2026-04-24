@@ -188,6 +188,36 @@ has articulated this?
 - **Anthropic's prompt injection papers**
 - **OpenAI structured output + function calling** — implicit defense
 
+### Content-analysis / fact-checking / media-literacy products
+
+High-priority category because Donna is adding a `/validate` feature:
+user sends an article / reel / video / post, gets back claims
+extracted, verifiability assessed, red flags (emotional framing,
+missing context, logical fallacies), counter-evidence against their
+ingested corpora, suggested follow-up questions. Research:
+
+- **Ground News** (ground.news) — media-bias comparison, blindspot
+  analysis. How do they structure their critique output?
+- **NewsGuard** (newsguardtech.com) — source credibility ratings
+- **Kagi Assistant** / **Kagi Universal Summarizer** — query+critique
+  over arbitrary URLs
+- **Perplexity "Verify"** / Fact Check — live-web verification
+- **AllSides** — bias-balanced coverage comparison
+- **Factmata** / **Logically** / **Full Fact** — automated fact-check
+  pipelines
+- **Pudding visual critiques** / **Bellingcat OSINT tools** — long-form
+  investigative analysis shape
+- **Video/reel transcript extraction**: `yt-dlp`, `whisper.cpp`,
+  AssemblyAI, Deepgram — architecture + pricing + quality trade-offs
+  for a solo operator
+- **Community notes (X/Twitter)** — the user-driven version of what
+  `/validate` automates for the operator
+
+For each: what's the claim-extraction shape? How do they handle bias
+vs fact? How do they cite counter-evidence? What's the UX when
+critique is longer than a screen? What's the pricing model for
+solo-user tier?
+
 ### Notable related projects
 
 - **Hermes Pattern A / B** — check Nous Research's MCP server exposure

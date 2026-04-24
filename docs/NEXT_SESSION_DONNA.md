@@ -68,21 +68,32 @@ Pick one with the user. Brief rationale + likely effort for each:
 
 ### Track B — Feature expansion (real new capability)
 
-1. **Scheduled morning brief** — `/schedule cron_expr="0 13 * * *"
+1. **`/validate <url|attachment>`** — user-requested, high leverage.
+   Send articles, reels, videos, social posts; Donna extracts claims,
+   flags emotional framing / missing context / logical fallacies,
+   cross-checks against the user's ingested corpora, returns a
+   structured critique. Pipeline: fetch (or `ingest_discord_attachment`
+   for uploads, or a new `fetch_video_transcript` tool for reels/videos
+   using yt-dlp + Whisper or AssemblyAI) → new `validate` mode handler
+   → structured output (claims / verifiability / red flags /
+   counter-evidence / follow-ups). Reuses overflow-to-artifact for
+   long critiques and the grounded-retrieval path for counter-evidence.
+   The one non-trivial add: transcript pipeline for video/reel URLs.
+2. **Scheduled morning brief** — `/schedule cron_expr="0 13 * * *"
    task="What's new in AI today?"` and watch it fire tomorrow. The
    scheduler works per tests; never run live.
-2. **`/teach` from Discord attachments** — the CLI path is validated
+3. **`/teach` from Discord attachments** — the CLI path is validated
    (402-chunk Huck Finn); the `ingest_discord_attachment` tool exists
    but the `/teach` slash command flow hasn't been exercised.
-3. **Second corpus** — ingest a second author (Lewis, Dalio, Taleb)
+4. **Second corpus** — ingest a second author (Lewis, Dalio, Taleb)
    via `botctl teach`. Proves the multi-corpus `agent_scope` path works
    end-to-end. Requires source material in a clean text format.
-4. **Multi-turn chat state** — today each `/ask` / DM is a fresh chat
+5. **Multi-turn chat state** — today each `/ask` / DM is a fresh chat
    job. A conversation spanning multiple messages with continuity would
    require tracking a `thread_id` → `jobs[]` chain and feeding the
    previous turn's context. The schema already has `threads.id`;
    unclear if adapter wires it.
-5. **Author debate with ingested corpora** — e.g. Twain vs Dalio
+6. **Author debate with ingested corpora** — e.g. Twain vs Dalio
    (after ingesting Dalio). The cross-corpus rendering path is where
    Think's oracle/synthesis work was meant to live. This is the edge
    of Donna's scope — Think is a separate project owning this long-term.
