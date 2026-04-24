@@ -35,7 +35,16 @@ def _prompt() -> str:
 async def sanitize_untrusted(
     content: str, *, artifact_id: str, source_url: str | None = None,
 ) -> str:
-    """Summarize untrusted text via Haiku. Returns a safe text summary."""
+    """Summarize untrusted text via Haiku. Returns a safe text summary.
+
+    Short-circuits on empty / whitespace-only input — no point paying for a
+    Haiku call over nothing, and Anthropic rejects empty user messages with
+    a 400. Truncates at 60k chars (cost bound); Haiku's context easily holds
+    that much.
+    """
+    if not content or not content.strip():
+        return "[no substantive content]"
+
     truncated = content[:60_000]  # Haiku has plenty of room; cap for cost
 
     with otel.span(

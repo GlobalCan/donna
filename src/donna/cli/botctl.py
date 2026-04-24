@@ -32,8 +32,10 @@ from ..memory.db import connect, transaction
 app = typer.Typer(help="Donna ops CLI")
 schedule_app = typer.Typer(help="Schedule management")
 traces_app = typer.Typer(help="Trace / log management")
+heuristics_app = typer.Typer(help="Heuristic management: list / approve / retire")
 app.add_typer(schedule_app, name="schedule")
 app.add_typer(traces_app, name="traces")
+app.add_typer(heuristics_app, name="heuristics")
 
 console = Console()
 
@@ -253,8 +255,9 @@ def teach(
     asyncio.run(go())
 
 
-@app.command()
-def heuristics(scope: str) -> None:
+@heuristics_app.command("list")
+def heuristics_list(scope: str) -> None:
+    """List all heuristics for a scope — proposed / active / retired."""
     conn = connect()
     try:
         active = prompts_mod.active_heuristics(conn, scope)
@@ -268,6 +271,57 @@ def heuristics(scope: str) -> None:
     for r in all_rows:
         badge = "✅" if r["status"] == "active" else ("💭" if r["status"] == "proposed" else "🗑️")
         console.print(f"  {badge} [{r['id']}] {r['heuristic']}")
+
+
+@heuristics_app.command("approve")
+def heuristics_approve(heuristic_id: str) -> None:
+    """Approve a proposed heuristic — flip status to `active`. The rule
+    starts influencing every subsequent job in its scope immediately."""
+    conn = connect()
+    try:
+        row = prompts_mod.get_heuristic(conn, heuristic_id=heuristic_id)
+    finally:
+        conn.close()
+    if row is None:
+        console.print(f"[red]heuristic {heuristic_id} not found[/red]")
+        raise typer.Exit(1)
+    if row["status"] == "active":
+        console.print(f"[yellow]{heuristic_id} is already active[/yellow]")
+        raise typer.Exit(0)
+    if row["status"] == "retired":
+        console.print(f"[yellow]{heuristic_id} was retired — "
+                      f"approving will reactivate it[/yellow]")
+    conn = connect()
+    try:
+        with transaction(conn):
+            prompts_mod.approve_heuristic(conn, heuristic_id=heuristic_id)
+    finally:
+        conn.close()
+    console.print(f"✅ approved [bold]{heuristic_id}[/bold]: {row['heuristic']}")
+
+
+@heuristics_app.command("retire")
+def heuristics_retire(heuristic_id: str) -> None:
+    """Retire an active heuristic — flip status to `retired`. The rule stops
+    influencing future jobs but the row stays for audit."""
+    conn = connect()
+    try:
+        row = prompts_mod.get_heuristic(conn, heuristic_id=heuristic_id)
+    finally:
+        conn.close()
+    if row is None:
+        console.print(f"[red]heuristic {heuristic_id} not found[/red]")
+        raise typer.Exit(1)
+    if row["status"] == "retired":
+        console.print(f"[yellow]{heuristic_id} is already retired[/yellow]")
+        raise typer.Exit(0)
+    conn = connect()
+    try:
+        with transaction(conn):
+            prompts_mod.retire_heuristic(conn, heuristic_id=heuristic_id)
+    finally:
+        conn.close()
+    console.print(f"🗑️  retired [bold]{heuristic_id}[/bold]: {row['heuristic']}")
 
 
 @app.command()

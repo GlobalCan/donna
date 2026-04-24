@@ -119,3 +119,25 @@ def approve_heuristic(conn: sqlite3.Connection, *, heuristic_id: str) -> None:
         """,
         (datetime.now(UTC), heuristic_id),
     )
+
+
+def retire_heuristic(conn: sqlite3.Connection, *, heuristic_id: str) -> None:
+    """Retire a heuristic — no longer surfaced by `recall_heuristics`, but
+    the row stays for audit (provenance, reasoning, timestamps). Retirement
+    is idempotent; retiring an already-retired row is a no-op."""
+    conn.execute(
+        "UPDATE agent_heuristics SET status = 'retired' WHERE id = ?",
+        (heuristic_id,),
+    )
+
+
+def get_heuristic(
+    conn: sqlite3.Connection, *, heuristic_id: str,
+) -> dict | None:
+    """Fetch a single heuristic row by id. Returns None if not found."""
+    row = conn.execute(
+        "SELECT id, agent_scope, status, heuristic, provenance, "
+        "created_at, approved_at FROM agent_heuristics WHERE id = ?",
+        (heuristic_id,),
+    ).fetchone()
+    return dict(row) if row else None
