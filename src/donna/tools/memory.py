@@ -60,7 +60,17 @@ async def recall(
         )
     finally:
         conn.close()
-    return {"query": query, "results": results, "count": len(results)}
+    # Codex adversarial scan #6: propagate taint at the TOP of the return dict
+    # so JobContext's post-exec taint check (context.py:_execute_one) picks it
+    # up. Without this, tainted facts pulled via recall silently bypass the
+    # "escalate confirmation on subsequent writes" guard.
+    any_tainted = any(r.get("tainted") for r in results)
+    return {
+        "query": query,
+        "results": results,
+        "count": len(results),
+        "tainted": any_tainted,
+    }
 
 
 @tool(
