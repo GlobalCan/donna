@@ -34,6 +34,50 @@ log = get_logger(__name__)
 _DRAIN_POLL_S = 1.0
 # Per-job rate limit for progress updates. Matches prior behavior.
 _UPDATE_RATE_LIMIT_S = 5.0
+# Per-Discord-message char cap. Discord's hard limit is 2000; 1900 leaves
+# headroom for prefix/marker characters ("• (1/N) " etc).
+_DISCORD_MSG_LIMIT = 1900
+
+
+def _split_for_discord(text: str, limit: int = _DISCORD_MSG_LIMIT) -> list[str]:
+    """Split `text` into Discord-safe chunks, preferring paragraph boundaries
+    (double newline), falling back to sentence terminators, and lastly to a
+    hard char cut.
+
+    Returns `[text]` if the text is already ≤ `limit`.
+
+    Why this exists: the old implementation truncated silently at 1500 chars,
+    chopping long grounded / debate answers mid-sentence. Now the outbox row
+    stores the full final_text (capped at 20k in finalize as a sanity bound)
+    and the drainer splits at send time. Each chunk is posted as its own
+    Discord message with a `(i/N)` marker so the user can see continuation.
+    """
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    min_chunk = limit // 3  # refuse to split if no boundary is past this point
+    while len(remaining) > limit:
+        # Prefer a paragraph break inside the window
+        cut = remaining.rfind("\n\n", min_chunk, limit)
+        if cut < 0:
+            # Then the LAST sentence terminator
+            for term in (". ", "! ", "? ", ".\n", "!\n", "?\n"):
+                idx = remaining.rfind(term, min_chunk, limit)
+                if idx > cut:
+                    cut = idx + len(term) - 1  # keep the terminator in the chunk
+        if cut < 0:
+            # Then a newline
+            cut = remaining.rfind("\n", min_chunk, limit)
+        if cut < 0:
+            # Give up and hard-cut at the limit
+            cut = limit
+        chunks.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
 
 
 class DonnaBot(discord.Client):
@@ -312,8 +356,14 @@ class DonnaBot(discord.Client):
         if ch is None:
             return False
         prefix = "🔮 " if tainted else "• "
+        parts = _split_for_discord(text)
+        total = len(parts)
         try:
-            await ch.send(f"{prefix}{text[:1500]}")
+            for i, part in enumerate(parts, start=1):
+                header = prefix if total == 1 else f"{prefix}({i}/{total}) "
+                await ch.send(f"{header}{part}")
+                if total > 1 and i < total:
+                    await asyncio.sleep(0.25)
             return True
         except Exception as e:  # noqa: BLE001
             log.warning("discord.update_failed", error=str(e), job_id=job_id)

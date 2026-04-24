@@ -341,12 +341,15 @@ def test_finalize_skips_empty_final_text() -> None:
 
 
 @pytest.mark.usefixtures("fresh_db")
-def test_finalize_truncates_long_final_text() -> None:
-    """Matches send_update's 1500-char cap so Discord's 2000-char limit
-    is never blown by a runaway end_turn answer."""
+def test_finalize_caps_final_text_at_20k_chars() -> None:
+    """Sanity cap — bounded enough to prevent runaway text blowing up the DB,
+    generous enough that a grounded / debate answer won't be chopped. The
+    Discord adapter splits long messages into multiple parts at paragraph /
+    sentence boundaries (see _split_for_discord), so this cap is about
+    database hygiene, not Discord's 2000-char per-message limit."""
     jid = _make_job()
     ctx = _make_ctx(jid)
-    ctx.state.final_text = "y" * 5000
+    ctx.state.final_text = "y" * 30000
     ctx.state.done = True
 
     assert ctx.finalize() is True
@@ -358,7 +361,30 @@ def test_finalize_truncates_long_final_text() -> None:
         ).fetchone()
     finally:
         conn.close()
-    assert len(row["text"]) == 1500
+    assert len(row["text"]) == 20000
+
+
+@pytest.mark.usefixtures("fresh_db")
+def test_finalize_stores_long_answer_without_per_message_truncation() -> None:
+    """Regression guard for the 1500-char chop that lived here before the
+    Discord multi-part splitter was introduced. A 3000-char answer must
+    reach the outbox intact."""
+    jid = _make_job()
+    ctx = _make_ctx(jid)
+    answer = ("This sentence is long enough. " * 100).strip()  # ~3000 chars
+    ctx.state.final_text = answer
+    ctx.state.done = True
+
+    assert ctx.finalize() is True
+
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT text FROM outbox_updates WHERE job_id = ?", (jid,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row["text"] == answer
 
 
 @pytest.mark.usefixtures("fresh_db")
