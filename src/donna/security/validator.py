@@ -17,6 +17,60 @@ from ..types import Chunk
 
 CITATION_RE = re.compile(r"#([A-Za-z0-9_]+)")
 
+# Markdown code-fence pattern — matches ```lang? ... ``` with the inner content.
+# Sonnet frequently returns JSON wrapped like that even when the prompt says
+# "no code fences"; we strip before attempting json.loads.
+_FENCE_RE = re.compile(r"^\s*```[a-zA-Z0-9_-]*\s*\n(.*?)\n?```\s*$", re.DOTALL)
+
+
+def try_parse_grounded_json(raw: str) -> object:
+    """Parse a grounded response as JSON with a series of fallbacks:
+
+    1. Raw json.loads
+    2. Strip a surrounding ```lang ... ``` markdown code fence, retry
+    3. Find the outermost {...} block by first-brace / last-brace, retry
+
+    Returns the parsed value — which may be any JSON type, not just dict.
+    Caller is responsible for the dict-type check (non-dict roots like
+    bare arrays / strings / numbers trigger a schema_missing in the
+    validator).
+
+    Returns the sentinel `_PARSE_FAILED` when none of the fallbacks
+    produced valid JSON at all. Does NOT attempt inline-marker recovery
+    — that path is for responses that intentionally use prose-with-[#id]
+    markers instead of the JSON schema.
+    """
+    # Direct parse first — preserve whatever we got, even non-dict
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Strip markdown code fence and retry. Common when Sonnet/Opus ignore
+    # the "output only JSON" system-prompt instruction and wrap the block.
+    stripped = raw.strip()
+    m = _FENCE_RE.match(stripped)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # Outermost {...} block — works for the "preamble / commentary"
+    # case where the model added narrative around the JSON.
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if 0 <= start < end:
+        try:
+            return json.loads(raw[start: end + 1])
+        except json.JSONDecodeError:
+            pass
+
+    return _PARSE_FAILED
+
+
+_PARSE_FAILED: object = object()
+
 
 @dataclass
 class ValidationIssue:
@@ -33,10 +87,25 @@ class ValidationResult:
 
 def validate_grounded(response_json: str, chunks: list[Chunk]) -> ValidationResult:
     chunk_by_id = {c.id: c for c in chunks}
-    try:
-        data = json.loads(response_json)
-    except json.JSONDecodeError:
-        # Accept pure-prose responses that use inline [#id] markers as a fallback
+
+    data = try_parse_grounded_json(response_json)
+
+    if data is _PARSE_FAILED:
+        # Parse truly failed across all fallbacks. If the model plainly
+        # tried to emit JSON (started with `{` or a code fence), surface
+        # ONE clean issue instead of the inline-fallback's noise of
+        # split-on-period fragments. Inline fallback stays for the
+        # "prose with [#id] markers" case — a minority path but valid.
+        stripped = response_json.lstrip()
+        if stripped.startswith("{") or stripped.startswith("```"):
+            return ValidationResult(
+                ok=False,
+                issues=[ValidationIssue(
+                    claim="(malformed JSON response)",
+                    reason="malformed_json",
+                    cited=[],
+                )],
+            )
         return _validate_inline(response_json, chunk_by_id)
 
     # Codex adversarial scan #5: json.loads("[]") or json.loads('"hello"')
