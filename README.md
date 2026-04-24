@@ -74,25 +74,46 @@ src/donna/
 
 ## Status
 
-**v0.3.3** · Python 3.14 · 102 tests green · **live in production on DO**, fully smoke-tested, three-layer backups live, Jaeger traces, all 9 Codex adversarial-scan findings closed.
+**v0.4.0 (unreleased)** · Python 3.14 · 293 tests green · **live in production on DO**, grounded mode end-to-end validated, unified mode delivery, overflow-to-artifact security pattern, three-layer backups live, Jaeger traces.
 
-- Foundation built and survived three Codex review passes (defect, adversarial
-  challenge, Hermes comparison)
+- Foundation built and survived four Codex review passes (defect, adversarial
+  challenge, Hermes comparison, round-2 same-class hunt) plus one self-run
+  adversarial+polish sweep
 - Unified execution graph (`JobContext`), persistent consent, taint tracking on
-  every untrusted path, quoted-span grounded validator
+  every untrusted path, quoted-span grounded validator with smart-quote +
+  Unicode NFC normalization (content-strict, rendering-tolerant)
+- **Unified mode delivery** — grounded / speculative / debate all write to
+  `outbox_updates` atomically with the DONE status flip inside
+  `JobContext.finalize()`. Mode-resume short-circuit prevents double-execution
+  on lease-loss recovery.
+- **Overflow-to-artifact** — long answers split to multi-part Discord messages
+  up to a cap; past it, full text → artifact, Discord gets a 📎 pointer + preview
+  + `botctl artifact-show <id>`. Tainted content uses a much tighter cap so
+  attacker output doesn't flood scrollback.
+- **Grounded mode robustness** — parser absorbs markdown code fences, preamble
+  text, and postamble commentary; renders `prose` field as the user-visible
+  answer (not raw JSON); validator reports single `malformed_json` on
+  unparseable input instead of split-on-period noise
 - ModelRuntime registry (vendor abstraction as data, not slogan)
 - Compaction audit trail preserves pre-compaction history as artifact
-- Stuck-job watchdog + cache-hit rate telemetry
+- Stuck-job watchdog + cache-hit rate telemetry + cost-ledger concurrency
+  invariants pinned
+- Full `botctl` surface: jobs / job / cost / cache-hit-rate / teach / artifacts
+  / artifact-show / forget-artifact / heuristics (list | approve | retire) /
+  schedule / traces / migrate
 - **Phase 1 local end-to-end pass** against real Anthropic / Discord / Tavily /
   Voyage APIs (2026-04-22)
 - **Phase 2 production deploy to DigitalOcean** (2026-04-23) — hardened Ubuntu
   droplet (`bot` user + ufw + fail2ban + unattended-upgrades), Docker compose
   bot + worker, sops+age encrypted secrets, SQLite at `/data/donna/donna.db`,
-  `ghcr.io/globalcan/donna:latest` pulled from GHCR. All four smoke tests green
-  against the live deploy.
-- **Current limitations:** Phoenix observability temporarily disabled (upstream
-  image broken 2026-04-23); auto-deploy timer not yet enabled; no off-droplet
-  backups yet.
+  `ghcr.io/globalcan/donna:latest` pulled from GHCR
+- **Phase 3 grounded-mode end-to-end** (2026-04-24) — real `/ask` query against
+  the 402-chunk Huck Finn corpus returning clean prose with `✅ validated`
+  badge and multi-chunk citation
+- **Current limitations:** Phoenix observability disabled (upstream image
+  broken); auto-deploy timer not yet enabled; no off-droplet backups yet (DO
+  snapshots + droplet cron + laptop→OneDrive are the three layers); speculative
+  and debate modes never smoke-tested in prod.
 
 **Next planned addition:** extract the knowledge / retrieval / graph-RAG layer
 into a sibling `src/think/` package inside this monorepo. The oracle mode
@@ -100,4 +121,4 @@ into a sibling `src/think/` package inside this monorepo. The oracle mode
 do Lewis and Dalio overlap?") are the target use cases. See
 `docs/THINK_BRIEF.md` for the full bootstrap brief.
 
-**History:** see `CHANGELOG.md` for the full v0.1.0 → v0.2.0 evolution.
+**History:** see `CHANGELOG.md` for the full v0.1.0 → current evolution.

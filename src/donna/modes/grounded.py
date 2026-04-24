@@ -28,19 +28,30 @@ Respond with valid JSON matching this schema exactly:
     {
       "text": "<natural-language claim>",
       "citations": ["<chunk_id>", ...],
-      "quoted_span": "<a literal substring from one of the cited chunks that supports this claim — at least 20 characters, copied verbatim including punctuation and case>"
+      "quoted_span": "<a LITERAL COPY-PASTE substring from one of the cited chunks — at least 20 characters, character-for-character verbatim including punctuation, capitalization, and spelling>"
     },
     ...
   ],
   "prose": "<stitched-together natural-language answer with [#chunk_id] markers inline>"
 }
 
-Rules:
-- Every claim MUST cite at least one chunk id from the retrieved context.
-- Every claim MUST include a `quoted_span` that is a literal verbatim substring
-  (>=20 chars) of one of its cited chunks. If no such span exists, OMIT the claim.
-- Never fabricate chunk ids.
-- Output ONLY the JSON object. No preamble, no code fences, no commentary.
+Rules — read these carefully before writing output:
+
+1. Every claim MUST cite at least one chunk id from the retrieved context.
+2. Every claim's `quoted_span` MUST be a LITERAL substring of one of its
+   cited chunks — not a paraphrase, not a summary, not a rewording for
+   clarity, not even a punctuation tweak. Think of it as copy-paste with
+   your cursor: find the exact text in the chunk, select ≥20 characters,
+   and paste into quoted_span.
+3. If you cannot find a ≥20-char literal substring in the chunk that
+   supports a given claim, OMIT THE CLAIM ENTIRELY. A missing claim is
+   strictly better than a non-verbatim quoted_span — the validator rejects
+   non-verbatim spans and the whole response goes through an expensive
+   retry cycle.
+4. Never fabricate chunk ids. Cite only ids present in the retrieved set.
+5. Output ONLY the JSON object. No preamble, no markdown code fences
+   (no ```json), no closing commentary. The first character of your
+   response should be `{` and the last should be `}`.
 """
 
 
