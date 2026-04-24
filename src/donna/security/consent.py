@@ -82,16 +82,27 @@ async def check(
     try:
         while loop.time() < deadline:
             await asyncio.sleep(_POLL_INTERVAL_S)
+            # Codex adversarial scan #7: also check whether the user cancelled
+            # the job via /cancel while we were waiting on consent. Without
+            # this, the worker polls until approval or the 30-minute timeout
+            # even after the job transitioned to CANCELLED.
             conn = connect()
             try:
                 row = conn.execute(
-                    "SELECT approved FROM pending_consents WHERE id = ?",
+                    """
+                    SELECT pc.approved, j.status AS job_status
+                    FROM pending_consents pc
+                    JOIN jobs j ON j.id = pc.job_id
+                    WHERE pc.id = ?
+                    """,
                     (pending_id,),
                 ).fetchone()
             finally:
                 conn.close()
             if row is None:
                 return ConsentResult(approved=False, reason="cleared")
+            if row["job_status"] == "cancelled":
+                return ConsentResult(approved=False, reason="job cancelled")
             if row["approved"] is not None:
                 approved = bool(row["approved"])
                 if approved and mode == ConfirmationMode.ONCE_PER_JOB:
