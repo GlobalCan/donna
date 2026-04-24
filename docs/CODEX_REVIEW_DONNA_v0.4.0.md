@@ -154,3 +154,161 @@ The bot has 402 Huck Finn chunks, 0 Lewis, 0 user-specific knowledge. As THINK o
 
 ---
 
+## 5 · `/validate` feature evaluation
+
+Answers to the six questions in Part 3.5 of the Codex prompt.
+
+### 5.1 Is this the right scope, or is it two features?
+
+**It is two features.** The URL/article critique and the video/reel transcript critique share a _conceptual_ shape (take untrusted content, extract claims, critique) but have:
+
+- Different ingest infrastructure (httpx + markdownify already exists and works vs. yt-dlp + Whisper/AssemblyAI which doesn't exist)
+- Different failure modes (HTTP timeout vs. yt-dlp-breaks-monthly, audio-model-bug, 20-minute video exceeding Whisper context)
+- Different cost profiles (fetch_url + Haiku sanitize is ~$0.002 per article; 45-min video is ~$0.30 via AssemblyAI or a Whisper self-host + a lot of RAM on a $6 droplet)
+- Different UX (article critique is sync-ish, ~30s; video critique is 2-10 minutes even on fast transcription)
+
+Ship them separately. Article version in v0.5; video version in v0.6 after you have actual usage data on the article version to know if this is a real need or a yak-shave.
+
+### 5.2 Is the architecture sound? New mode, or tools orchestrated by chat?
+
+**A new mode, not tools.** Reasoning:
+
+- The chat agent could call `fetch_url` + `search_web` + `recall_knowledge` + final synthesis on its own, but it would produce variable output shape. A mode pins the output shape (claims, verifiability, red flags, counter-evidence, follow-ups) so the user gets consistent artifacts.
+- The validator-style constraints work better as mode-level rather than tool-level. For `/validate` you want "every claim must have a literal-quote span from the source being validated" — that's exactly the `quoted_span` contract, reusable.
+- It fits the existing JobMode enum cleanly: `JobMode.VALIDATE` alongside `GROUNDED` / `SPECULATIVE` / `DEBATE`.
+
+**Architecture shape I'd propose:**
+
+```
+/validate <URL>
+  └── JobMode.VALIDATE
+      ├── fetch_url(url) → tainted artifact + sanitized_summary
+      ├── (new) extract_claims_structured(sanitized_summary) → list[Claim]
+      │     each Claim has {text, quoted_span_from_source}
+      ├── for each Claim:
+      │     ├── grounded retrieval against user's corpora (corroboration)
+      │     ├── search_web for authoritative counter-sources (tainted)
+      │     └── verdict: supported | contested | uncorroborated | contradicted
+      ├── red_flag_detection(sanitized_summary) → list of patterns
+      │     (emotional framing words, missing-context signals, etc.)
+      └── compose final critique, overflow-to-artifact if long
+```
+
+The model handling the top-level orchestration is the agent loop (chat mode doesn't quite work because you want explicit structure, not tool-call improvisation). The per-claim corroboration calls are sub-jobs or just serialized model calls inside the validate handler. Prefer the serialized path — simpler, no nesting.
+
+A `botctl validate <url>` CLI fallback is cheap to add for the operator-tools case (running a validate without posting in Discord).
+
+### 5.3 What's the right output shape for Discord?
+
+**Artifact-first, with a short summary in Discord.** The critique of a real article will be 3-8 KB of prose + claims + citations — well past the overflow threshold. So:
+
+- Save the full structured critique as a markdown artifact (`validate:<url-hash>`)
+- Post to Discord: the top 3 claims, each with a one-line verdict + the overall "verdict distribution" (e.g. "4 supported, 2 contested, 3 uncorroborated"), a taint flag (since all article content is tainted), and the `botctl artifact-show` pointer.
+- Do NOT post the full critique inline. Not because Discord can't render it (it can, paginated), but because a full critique has attacker-controlled claim text in it, and the existing `_OVERFLOW_TAINTED_MAX=1900` policy exists precisely for this reason. `/validate` output should _always_ go through the overflow path, regardless of length.
+
+A secondary `/validate-full <url>` or a `:full` flag on `/validate` that DMs the whole thing anyway is fine as an opt-out.
+
+### 5.4 Comparison vs. competitors
+
+- **Ground News** — article-bias classification by source. Shallow; Donna's quoted-span approach is structurally stricter. Ground News is a browser extension; Donna is a Discord bot. Different axis.
+- **NewsGuard** — human-rated source reputation. Could be consumed as a signal ("source X has NewsGuard rating 42/100") but Donna doesn't need to reproduce their work. Integration could be a future `search_news` enhancement.
+- **Kagi Assistant** — web search with quality signals + AI summary. Good model but commercial + proprietary. Donna's version has the advantage of corroborating against _your own corpus_ (which Kagi can't see), which is the real win.
+- **Perplexity Verify (2026)** — adversarial claim-checking. Most direct competitor. What Perplexity has: live-web grounding at scale, inline citations. What Perplexity doesn't have: your personal corpus, your past /validate runs, quoted_span verification.
+- **Full Fact / Factmata** — professional fact-checking pipelines. Not competition; reference implementations for "what red flags to detect." Crib the taxonomy: misleading framing, missing context, cherry-picked stats, conflated claims.
+
+**Donna's angle:** "claim verification against _your_ corpus + authoritative web, with structurally-verified quotes." None of the competitors check _your_ corpus. That's the differentiator.
+
+### 5.5 Failure mode for videos/reels
+
+yt-dlp breaks every 2-3 months when platforms (TikTok especially) change their API. AssemblyAI/Deepgram $0.30-$1 per hour; Whisper-self-host is free but a $6 droplet can't run large-v3 in RAM comfortably.
+
+**Right balance for a $6 droplet used daily by one operator:**
+
+- **Don't ship yt-dlp to the droplet.** Package the transcription step as a _local_ command: operator uploads the audio file via Discord attachment or `botctl validate-video <local-path>` on the laptop, where storage + CPU are not constrained. Droplet never pulls from TikTok.
+- **Haiku + AssemblyAI via API** for transcription, not self-host. ~$0.30/hour of audio is fine for a once-or-twice-a-week feature. AssemblyAI has better diarization than Whisper + less platform brittleness than yt-dlp.
+- **Cap video length at 30 minutes by default.** A 2-hour podcast episode is a different feature.
+- **Transcription is a job, not a tool.** Starts a `transcribing…` status, posts to Discord when ready. Don't block the bot loop on it.
+
+All of the above is v0.6, not v0.5. Ship article-validate first, learn whether the operator actually wants video-validate, then build.
+
+### 5.6 Taint propagation for `/validate`
+
+The existing model handles it cleanly with one small extension.
+
+- **Content under validation is tainted.** `fetch_url` already sets `taints_job=True`; any `/validate` job inherits taint on the first fetch call.
+- **The critique itself references the tainted content.** Today, the critique that says _'the article claims "foo"'_ would embed an attacker-controlled "foo" span directly into the model's context (and thus into Donna's final_text). The existing overflow-to-artifact pattern (`_OVERFLOW_TAINTED_MAX=1900`) already handles this: the full critique goes to artifact, preview + pointer to Discord.
+- **New pattern required: attributed-quote containment.** When the critique quotes the article being validated, those quotes are by definition attacker-controlled content. The overflow pattern protects Discord scrollback; it doesn't protect the model's _subsequent_ reasoning over the quotes. Today that's fine because `/validate` is one-shot. If you ever add a "follow up on validate #X" workflow, the prior critique (with embedded attacker text) would re-enter the model's context. Fix: make `/validate` artifacts always go through `sanitize_untrusted` before being re-read by a follow-up job.
+- **Corroboration against user's corpus is NOT tainted.** Chunks retrieved from knowledge_sources where `tainted=0` are trusted. The critique's "supported by [#chunk 42]" claim is verifiable + trusted. Keep that distinction visible in the output so the user sees _which_ claims were corroborated against trusted material vs. which were only matched against other untrusted web sources.
+
+**Net:** overflow-to-artifact compartmentalization extends cleanly; the one new concern (re-ingestion of prior critiques) is easy to handle with existing primitives.
+
+---
+
+## 6 · Deep-dive answers
+
+Responses to the six questions in Part 4 of the Codex prompt.
+
+### 6.1 Is the quoted_span 20-char floor correct?
+
+**Keep at 20; make configurable per-scope; don't raise globally; don't remove.** Reasoning:
+
+- Below 20 chars: generic phrases ("he said that", "in the end") pass the substring check trivially. Real data shows these as the common false-positives.
+- Above 30 chars: you start rejecting short but genuine factual statements ("The year was 1876."). This is a real failure mode in the Huck Finn corpus where many grounded claims are necessarily short.
+- 20 is the defensible middle. Per-scope override makes sense for technical corpora where claims tend to be formulaic (legal documents, APIs) vs. literary where they're varied.
+
+An NLI sidecar is the right v1.5 upgrade when you have trace data showing a hallucination class that slips past quoted_span. Until then, quoted_span + 20-char floor is the right layer.
+
+### 6.2 Is the grounded retry prompt doing the right thing?
+
+**Partially. Retry once is correct; the fixup message could be better.** `modes/grounded.py:113-141` does one retry with issue_summary appended to system_blocks. The retry succeeds in most cases (observed in the Huck Finn live run). The problem is _how_ it fails when it does:
+
+- If the retry also fails, the current code proceeds to render the partial-validation output with `⚠️ partial validation` badge (`_format_output:162-166`). That's actually good — surfacing failure to the operator beats hiding it.
+- What's missing: on the second failure, _why_ it failed. Was it "the model used curly quotes" (normalization should catch that — does it?), was it "the model paraphrased" (the 20-char floor should catch that — did it?), or was it "the retrieval didn't have the answer and the model made it up" (which is the _right_ failure — should refuse, not partial-validate).
+- Proposal: on second failure, classify the failure mode (`malformed_json` → parse error; `uncited` → model ignored schema; `quoted_span_not_in_chunk` → hallucination; `bad_citation` → made-up ID). If classification = "hallucination" → refuse rather than partial-validate. If classification = "schema ignore" → escalate to a different prompt (structured-output library instead of freeform JSON).
+- Don't add a third retry. Two strikes is correct for cost control.
+
+### 6.3 Is the overflow-to-artifact threshold for tainted content (1900 chars) correct?
+
+**Tight but correct; tunable, not wrong.** Reasoning:
+
+- A fetch_url summary (`sanitize_untrusted` output, capped at ~300 words) is usually 500-1500 chars, under cap. Good — those go inline.
+- A grounded-mode answer from a tainted corpus (theoretical; no tainted corpora exist today) would be 1500-4000 chars — just over cap. Would go to artifact. Also good — you want a tainted grounded answer to go to artifact.
+- The cap is _intentionally_ tighter than clean content because an attacker wants their text to be visually prominent in scrollback; compartmentalizing denies that. This is correct threat-modeling.
+- Tunable via a config setting would be fine for operator preference, but the default should stay at 1 Discord message for tainted.
+- Don't loosen it. Don't tighten it to zero (pure-pointer-always) either — a 500-char summary with "here's what the tainted URL says, in one message" is genuinely useful without the scrollback-flood problem.
+
+### 6.4 Is the compaction strategy sound?
+
+**Yes, with one watch-item.** Haiku-summarize every N=20 tool calls with raw tail preserved as artifact is exactly the right shape (`agent/compaction.py`). The audit artifact is what makes it safe.
+
+- Anthropic's native prompt cache could reduce the NEED for compaction — if you kept the full history and the cache served the long prefix, you'd pay cache-read instead of full-input. Math: for a 50-turn job, full history is maybe 30k tokens; cache-read at $0.30/MTok vs. full-input at $3/MTok is 10x cheaper. Compaction summarizes to ~500 tokens, so the savings are larger, but with more drift risk.
+- Trade-off: compaction risks losing load-bearing earlier context (the `compaction_log` audit is recovery, not prevention). Native caching preserves everything but costs more.
+- Watch-item: for long jobs with >3 compactions, the summary-of-summary drift compounds. Suggestion: after 3 compactions, DON'T compact further — instead fail the job with "context exhausted; restart with a narrower task." One user, they can handle that.
+- For the single `/validate` job or single grounded answer: N=20 is almost never hit. This is mostly a long-agent-loop concern.
+
+### 6.5 Should agent_scope become first-class?
+
+**Yes, and it's the highest-leverage schema change on the board.** See §4 item #4 for the full proposal. Short version: a `scopes` table with `(id, label, kind, prompt_id, speculation_allowed, retrieval_config_json)` kills three footguns at once:
+
+- `teach`-without-prompt (can't `/speculate` a scope you just taught)
+- per-scope config scattered across `agent_prompts` and validator code
+- blocks THINK's composite personas (temporal slicing: "late_lewis")
+
+Migration risk is real (existing scope strings in `facts`, `knowledge_sources`, `agent_prompts`, `jobs.agent_scope`), but the backup-verify loop that already exists mitigates it. Time: ~1 week of a solo-operator's attention.
+
+### 6.6 Facts vs knowledge_chunks — clean bifurcation?
+
+**Yes, but the boundary needs a sharper name.** Today:
+
+- `facts` = operational memory written during a job (`remember` tool), short, frequently updated, agent-authored
+- `knowledge_chunks` = curated corpus material (teach tool or ingest pipeline), long, immutable once written, user-authored
+
+The boundary is correct semantically but the current naming ("facts" vs "knowledge") understates the distinction. In Letta-terms, `facts` is archival memory and `knowledge_chunks` is... still archival memory, just with embeddings and diversity constraints. What you're missing is _core_ memory: the small, always-in-prompt, structured bit. Heuristics partially fill that role.
+
+Proposal: rename on next major version — `facts` → `agent_memory`, `knowledge_chunks` → `corpus_chunks`. Then add `core_memory` as a third thing (scope-scoped, small, always-in-system-prompt, explicitly curated, N=~20 entries max). Core memory is where "user lives in Seattle, prefers terse answers" lives. Today that would be either a manually-edited system prompt or a heuristic; core_memory is the right abstraction.
+
+Not urgent. The current bifurcation works. The rename + core_memory-introduction is a v0.7 concern.
+
+---
+
+
