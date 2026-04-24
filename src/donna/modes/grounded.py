@@ -84,6 +84,16 @@ async def run_grounded(ctx: JobContext) -> None:
             max_tokens=2048,
         )
 
+    # Log a short preview of the raw response so diagnostic runs (and the
+    # watchdog / trace store) can see what the model actually emitted without
+    # dumping it into checkpoint_state. 300 chars is enough to tell whether
+    # the model used code fences, curly quotes, or paraphrased quoted_spans.
+    log.info(
+        "grounded.model_response",
+        job_id=ctx.job.id, scope=scope,
+        preview=result.text[:300], length=len(result.text),
+    )
+
     validation = validate_grounded(result.text, chunks)
 
     ctx.check_cancelled()
@@ -94,9 +104,15 @@ async def run_grounded(ctx: JobContext) -> None:
             f"{i.reason}: {i.claim[:80]}" for i in validation.issues[:5]
         )
         fixup = (
-            f"Previous response failed citation validation. Issues: {issue_summary}. "
-            "Regenerate. Every claim must have a verbatim quoted_span from a "
-            "cited chunk. If you cannot support a claim, omit it."
+            f"Previous response failed citation validation. Issues: {issue_summary}.\n\n"
+            "Regenerate with strict verbatim quoted_spans. For each claim, the "
+            "`quoted_span` field MUST be a LITERAL COPY-PASTE of characters "
+            "from the cited chunk — NOT a paraphrase, NOT a summary, NOT "
+            "rewording for clarity. Find text in the chunk; copy it verbatim "
+            "(including punctuation); paste into quoted_span.\n\n"
+            "If you cannot find a ≥20-char literal substring that supports the "
+            "claim, OMIT THE CLAIM ENTIRELY. A missing claim is always better "
+            "than a non-verbatim one."
         )
         system_blocks[-1]["text"] += "\n\n" + fixup
         with otel.span("grounded.regenerate", **{"agent.scope": scope}):
@@ -106,6 +122,11 @@ async def run_grounded(ctx: JobContext) -> None:
                 tier=ModelTier.STRONG,
                 max_tokens=2048,
             )
+        log.info(
+            "grounded.model_response_retry",
+            job_id=ctx.job.id, scope=scope,
+            preview=result.text[:300], length=len(result.text),
+        )
         validation = validate_grounded(result.text, chunks)
 
     ctx.state.final_text = _format_output(result.text, validation, chunks)

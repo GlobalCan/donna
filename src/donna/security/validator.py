@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 
 from ..types import Chunk
@@ -165,14 +166,46 @@ def validate_grounded(response_json: str, chunks: list[Chunk]) -> ValidationResu
 
 
 def _verbatim_in(span: str, chunk_text: str, min_len: int = 20) -> bool:
-    """Is `span` a literal (whitespace-normalized, case-insensitive) substring
-    of `chunk_text`, at least `min_len` chars? Codex #11 enforcement."""
+    """Is `span` a literal substring of `chunk_text`, at least `min_len` chars?
+
+    Normalizations applied to BOTH sides before comparison:
+    - Unicode NFC (so "café" is one codepoint either way it's encoded)
+    - Curly quotes (U+2018/2019/201C/201D) straightened to ASCII ' and "
+    - En dash / em dash / non-breaking hyphen → ASCII '-'
+    - Horizontal ellipsis → '...'
+    - Lowercase
+    - Whitespace collapsed
+
+    Rationale: the "constrained transparency" principle (Codex #11) is about
+    CONTENT fidelity — the model shouldn't fabricate words. LLMs routinely
+    emit curly quotes where source material has straight apostrophes (or
+    vice versa); that's a rendering artifact, not a fabrication. Absorb it.
+
+    Real paraphrases — rewording for clarity — still fail the check.
+    """
     if len(span) < min_len:
         return False
-    s_norm = " ".join(span.lower().split())
-    c_norm = " ".join(chunk_text.lower().split())
-    return s_norm in c_norm
+    return _normalize(span) in _normalize(chunk_text)
 
+
+_QUOTE_TRANSLATION = str.maketrans({
+    "\u2018": "'",   # LEFT SINGLE QUOTATION MARK
+    "\u2019": "'",   # RIGHT SINGLE QUOTATION MARK
+    "\u201c": '"',   # LEFT DOUBLE QUOTATION MARK
+    "\u201d": '"',   # RIGHT DOUBLE QUOTATION MARK
+    "\u2013": "-",   # EN DASH
+    "\u2014": "-",   # EM DASH
+    "\u2011": "-",   # NON-BREAKING HYPHEN
+})
+
+
+def _normalize(s: str) -> str:
+    s = unicodedata.normalize("NFC", s)
+    # Replace horizontal ellipsis char with three ASCII dots BEFORE translate,
+    # because str.translate's 1:1 mapping can't expand one codepoint to many.
+    s = s.replace("\u2026", "...")
+    s = s.translate(_QUOTE_TRANSLATION)
+    return " ".join(s.lower().split())
 
 def _validate_inline(text: str, chunk_by_id: dict[str, Chunk]) -> ValidationResult:
     # Split on sentence-ish punctuation and check each sentence has >= 1 [#id]
