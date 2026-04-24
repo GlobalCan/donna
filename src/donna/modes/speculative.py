@@ -68,7 +68,7 @@ async def run_speculative(ctx: JobContext) -> None:
     label = f"🔮 SPECULATIVE — extrapolated from {scope}'s documented patterns, not their actual view"
     body = result.text
     if flags:
-        body += f"\n\n_⚠ phrasing flagged: {flags}_"
+        body += f"\n\n_⚠ phrasing flagged: {', '.join(flags)}_"
     body += f"\n\n_Calibration sources: {', '.join(sources[:10])}_"
 
     ctx.state.final_text = f"{label}\n\n{body}"

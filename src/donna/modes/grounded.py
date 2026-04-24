@@ -9,6 +9,8 @@ this is constrained transparency.
 """
 from __future__ import annotations
 
+import json
+
 from ..agent.compose import compose_system
 from ..agent.context import JobContext
 from ..agent.model_adapter import model
@@ -105,9 +107,19 @@ async def run_grounded(ctx: JobContext) -> None:
 
 
 def _format_output(raw: str, validation, chunks) -> str:
+    """Render the grounded response for Discord.
+
+    Prefers the model's `prose` field (human-readable answer with inline
+    [#chunk_id] markers) over the full JSON schema that's meant for the
+    validator, not the user. Falls back to the raw response when it doesn't
+    parse (inline-marker style) or lacks a usable `prose` key. On validation
+    failure, appends the claim-by-claim issue breakdown so the operator can
+    audit what the model did wrong.
+    """
     badge = "✅ validated" if validation.ok else "⚠️ partial validation"
     sources = sorted({c.source_title or c.source_id for c in chunks})
-    out = raw
+
+    out = _extract_prose(raw) or raw
     if not validation.ok:
         issues = "\n".join(
             f"- {i.reason}: {i.claim[:120]}" for i in validation.issues[:10]
@@ -115,6 +127,29 @@ def _format_output(raw: str, validation, chunks) -> str:
         out += f"\n\n_Validation issues:_\n{issues}"
     out += f"\n\n_{badge} · sources: {', '.join(sources[:10])}_"
     return out
+
+
+def _extract_prose(raw: str) -> str | None:
+    """Parse `raw` as the grounded JSON schema and return its `prose` field.
+
+    Returns None when:
+    - `raw` isn't valid JSON (model responded in inline-marker style)
+    - the JSON root isn't a dict
+    - `prose` key is missing, non-string, or blank
+
+    Caller falls back to the raw string, which still renders usefully — just
+    ugly — and the validator catches any missing citations separately.
+    """
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    prose = data.get("prose")
+    if isinstance(prose, str) and prose.strip():
+        return prose.strip()
+    return None
 
 
 # Kept for test compatibility; prefer run_grounded() going forward.
