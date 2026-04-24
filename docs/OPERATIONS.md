@@ -145,7 +145,69 @@ assistant; not acceptable for anything transactional. If you ever need
 sub-minute RPO, add `litestream` streaming to DO Spaces (~$5/mo). Keep the
 cron as belt-and-suspenders.
 
-### Quarterly restore drill
-Pick a random Saturday every 3 months. Provision a throwaway droplet, restore
-from your most recent backup, boot the bot, DM it "hello." If it answers, you're
-covered. If not, you have time to fix the DR story before you actually need it.
+### Weekly backup-tarball verifier (lightweight)
+
+Cheapest drill — proves the TARBALL is a valid SQLite DB with uncorrupted
+artifact blobs, without spinning a droplet or touching Discord:
+
+```bash
+# On droplet, against the latest nightly:
+scripts/donna-verify-backup.sh /home/bot/backups/donna-latest.tar.gz
+
+# On laptop, against the OneDrive copy:
+scripts/donna-verify-backup.sh \
+    "$env:USERPROFILE\OneDrive\Donna-Backups\donna-<stamp>.tar.gz"
+```
+
+The script:
+
+- Extracts the tarball to a temp dir
+- Runs `PRAGMA integrity_check` and `PRAGMA foreign_key_check` on the
+  snapshot DB
+- Counts rows in the core tables (jobs / facts / knowledge_* / artifacts)
+- Re-computes SHA-256 of every `.blob` and asserts it matches the filename
+
+Exit 0 + `OK — tarball is valid and restorable` means the data is good.
+A real full-deploy drill (below) is still needed; this just prunes out
+"the tarball itself was corrupt" from the list of things that can kill
+the restore path.
+
+Add to the droplet's crontab if you want continuous proof:
+```bash
+(crontab -l 2>/dev/null; echo "15 3 * * * /home/bot/donna/scripts/donna-verify-backup.sh >>/home/bot/backups/.verify.log 2>&1") | crontab -
+```
+(15 minutes after the nightly backup runs at 03:00 UTC.)
+
+### Quarterly full restore drill
+Pick a random Saturday every 3 months. Provision a throwaway droplet,
+restore from your most recent backup (see above), boot the bot, DM it
+"hello." If it answers, you're covered. If not, you have time to fix the
+DR story before you actually need it.
+
+**Gotcha:** the existing droplet's `DISCORD_BOT_TOKEN` is the same token
+the throwaway droplet would use; running both simultaneously makes
+Discord kick one. Easiest workflow: stop the main container, spin the
+drill droplet, DM, confirm, destroy the drill droplet, restart main.
+Total downtime: ~5 min. Cost: ~$0.01 in droplet hours.
+
+### Enabling auto-update (`donna-update.timer`)
+
+`harden-droplet.sh` installs a systemd unit + timer that does
+`git pull && docker compose pull && up -d` every 5 min. It's
+**deliberately left disabled** until the operator has confirmed backups
+work (above) — auto-deploy without a proven restore path widens blast
+radius per Codex.
+
+Once the tarball verifier has passed on a real backup AND you've done
+at least one quarterly full restore drill, enable it via the DO web
+console (bot has no sudo password):
+
+```bash
+# As root via DO recovery console:
+systemctl enable --now donna-update.timer
+systemctl status donna-update.timer
+```
+
+After that, any merge to main → GHA builds image → ~5 min → droplet pulls
++ restarts automatically. Rollback is `git revert + push`, not a manual
+image pin.
