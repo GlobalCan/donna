@@ -157,12 +157,20 @@ def _persist_pending(
     conn = connect()
     try:
         with transaction(conn):
-            # Verify current ownership before any writes.
+            # Verify both ownership AND current running-status before any writes.
+            # Codex round-2 #2: previously we checked only owner, so if the
+            # job was already PAUSED_AWAITING_CONSENT or CANCELLED the INSERT
+            # still fired and orphaned a consent row (the UPDATE silently
+            # no-op'd). Checking status here collapses the window.
             if worker_id is not None:
                 row = conn.execute(
-                    "SELECT owner FROM jobs WHERE id = ?", (job_id,),
+                    "SELECT owner, status FROM jobs WHERE id = ?", (job_id,),
                 ).fetchone()
-                if row is None or row["owner"] != worker_id:
+                if (
+                    row is None
+                    or row["owner"] != worker_id
+                    or row["status"] != "running"
+                ):
                     return None
             conn.execute(
                 """

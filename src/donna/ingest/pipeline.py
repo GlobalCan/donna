@@ -24,17 +24,26 @@ async def ingest_text(
     work_id: str | None = None,
     author_period: str | None = None,
     added_by: str = "user",
+    tainted: bool = False,
 ) -> dict[str, Any]:
-    """Ingest raw text under a scope. Returns ingestion stats."""
+    """Ingest raw text under a scope. Returns ingestion stats.
+
+    ``tainted=True`` flows through to the persisted source artifact AND the
+    knowledge_sources row, so future jobs that read this material via
+    recall_knowledge re-taint themselves (Codex round-2 #4). Without the
+    flag, untrusted content (Discord attachments, web pulls) ingested in
+    one job appears clean to any later job.
+    """
     if not content.strip():
         return {"error": "empty content"}
 
-    # Preserve the source as an artifact for provenance
+    # Preserve the source as an artifact for provenance — mirrors the
+    # tainted flag so read_artifact on the source also propagates taint.
     conn = connect()
     try:
         art = artifacts_mod.save_artifact(
             conn, content=content, name=f"source:{title}",
-            mime="text/plain", tags="knowledge,source", tainted=False,
+            mime="text/plain", tags="knowledge,source", tainted=tainted,
         )
         src_id = kn.insert_source(
             conn,
@@ -47,6 +56,7 @@ async def ingest_text(
             source_ref=str(art["artifact_id"]),
             copyright_status=copyright_status,
             added_by=added_by,
+            tainted=tainted,
         )
     finally:
         conn.close()

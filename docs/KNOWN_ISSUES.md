@@ -281,3 +281,25 @@ green.
 - **Speculative / debate modes** never smoke-tested in prod
 - **`botctl teach`** ingest pipeline validated via direct CLI; Discord-
   initiated `/teach` slash command not yet exercised
+
+### Deferred from Codex round-2 review (2026-04-24)
+
+Two of Codex's round-2 findings were real but deferred; see CHANGELOG
+[0.3.4] for the five shipped same-night.
+
+- **#3: FTS5 tokenizer drops identifier punctuation.** Queries like
+  `C++`, `BRK.B`, `node.js`, `gpt-4o` lose their punctuation through
+  `fts_sanitize` (tokenizes via `\w+`). The sanitizer's behavior is
+  *consistent* with FTS5's default `unicode61` tokenizer (both sides
+  strip the same punctuation), so searches still match documents that
+  contain the same words. But literal-punctuation queries can't be
+  expressed as exact-match — a search for `C++` matches anything with
+  `c` in it. Fix requires an FTS5 tokenizer swap (migration work),
+  not a sanitizer change. Defer until a real user query gets false
+  hits in prod.
+- **#6: `test_debate_rounds_coercion` is a tautology.** The crash-
+  guards test reimplements the coercion logic inline rather than
+  calling `run_debate_in_context`. Any future regression in
+  `debate.py` wouldn't trip the test. Rewrite as a JobContext-stub
+  test driving the real entrypoint. Non-urgent — the fix is valid,
+  only the test binding is weak.

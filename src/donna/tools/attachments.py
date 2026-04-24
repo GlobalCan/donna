@@ -125,6 +125,9 @@ async def ingest_discord_attachment(
         copyright_status=copyright_status,
         publication_date=publication_date or None,
         added_by=f"tool:ingest_discord_attachment:job:{job_id}" if job_id else "tool:ingest_discord_attachment",
+        # Codex round-2 #4: source is from Discord, which we treat as
+        # untrusted. Persist that fact so later reads re-taint.
+        tainted=True,
     )
     # Propagate taint — untrusted source
     result["tainted"] = True
