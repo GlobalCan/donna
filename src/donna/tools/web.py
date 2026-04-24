@@ -165,9 +165,17 @@ async def fetch_url(
         async with client.stream("GET", url) as resp:
             resp.raise_for_status()
             ctype = (resp.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
-            if ctype and not any(
-                ctype.startswith(p) for p in _FETCH_TEXTUAL_MIME_PREFIXES
-            ):
+            # Codex round-2 #1: was `if ctype and not ...` which fail-open on
+            # empty/missing Content-Type — a binary response without a header
+            # slipped through. Now default-deny: missing header AND unknown
+            # type both refuse.
+            if not ctype:
+                return {
+                    "url": url,
+                    "error": "missing_content_type",
+                    "hint": "origin didn't send a Content-Type header; cannot safely classify as text",
+                }
+            if not any(ctype.startswith(p) for p in _FETCH_TEXTUAL_MIME_PREFIXES):
                 return {
                     "url": url,
                     "error": "unsupported_content_type",

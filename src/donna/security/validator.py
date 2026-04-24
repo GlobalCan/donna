@@ -208,7 +208,11 @@ def _has_substring_overlap(a: str, b: str, min_len: int = 15) -> bool:
     b = b[:_MAX_SCAN]
     if len(a) < min_len or len(b) < min_len:
         return False
-    for i in range(len(b) - min_len):
+    # Codex round-2 #8: was `range(len(b) - min_len)` which skipped the
+    # last valid window at index `len(b) - min_len`. For b exactly min_len
+    # chars long that meant the loop never ran; more generally, matches on
+    # the final window slipped through. `+ 1` restores full coverage.
+    for i in range(len(b) - min_len + 1):
         sub = b[i : i + min_len]
         if sub in a:
             return True
