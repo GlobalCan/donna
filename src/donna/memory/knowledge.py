@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import re
 import sqlite3
 import struct
 from typing import Any
@@ -11,19 +10,7 @@ import numpy as np
 
 from ..types import Chunk
 from . import ids
-
-
-def _fts_sanitize(query: str) -> str:
-    """Convert an untrusted natural-language query into a safe FTS5 MATCH
-    expression. FTS5 reserves `" ( ) * ? : + ^ ~ -` plus bareword operators
-    (`AND OR NOT NEAR`), so passing user input straight through raises
-    ``sqlite3.OperationalError: fts5: syntax error``. We extract word tokens
-    and wrap each in double quotes so special characters inside are treated
-    literally; the implicit conjunction across quoted terms preserves the
-    previous AND semantics.
-    """
-    tokens = re.findall(r"\w+", query)
-    return " ".join(f'"{t}"' for t in tokens)
+from .fts import fts_sanitize as _fts_sanitize  # re-exported for existing callers/tests
 
 # ---------- sources ---------------------------------------------------------
 
