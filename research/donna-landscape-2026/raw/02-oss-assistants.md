@@ -157,3 +157,39 @@ Each entry follows the rubric defined in DONNA_CONTEXT.md: primary-source URL, w
 - Known issues: Pivot away from pure IDE assistant toward CI-policy product reportedly upset some original users; fragmentation between VSCode/JetBrains release cadences (latest tag is `v1.2.22-vscode`, 2026-03-27).
 - Scope gaps: Coding-domain only. No general personal assistant role, no document ingestion, no persistent semantic memory, no oracle/scholar distinction. Adjacent to Donna only as a model for *source-controlled, markdown-defined* agent specs — a pattern Donna could borrow.
 - Currency: v1.2.22-vscode dated 2026-03-27 — current; 822 total releases (per repo).
+
+## Cross-cutting observations
+
+- **MCP has become table stakes.** LibreChat, AnythingLLM, Open WebUI, LocalAI, Onyx, and continue.dev all advertise MCP support in 2026. Flowise has MCP nodes; Khoj is the laggard. Donna shipping MCP is now expected, not differentiating.
+- **Memory is still an afterthought almost everywhere.** Only Khoj advertises long-term memory as a feature, and its release notes show that subsystem is buggy (memory-loading bugs, leaks). Open WebUI's "Memories" is a flat note pad. LibreChat, AnythingLLM, Onyx, Flowise default to per-conversation history + RAG. Nobody documents temporal fact versioning or episodic/semantic/procedural separation. This is Donna's clearest open lane.
+- **Provenance / "oracle vs scholar" labeling: zero competitors.** None of these products surface a UI distinction between cited fact and labeled extrapolation. RAG citations exist; intent-of-claim labeling does not.
+- **Multi-user/team posture leaks into solo installs.** LibreChat, Onyx, Open WebUI, AnythingLLM-Docker all default to auth/RBAC, which adds setup friction for the solo operator. AnythingLLM-Desktop and Khoj-Obsidian are the cleanest solo flows.
+- **License risk is real.** Open WebUI's April 2025 BSD-3 → "Open WebUI License" pivot (with CLA + 50-user branding wall) showed that even a popular OSS chat UI can convert to source-available. AGPL (Khoj) constrains downstream forks. Donna should pre-commit to a license stance and avoid CLA traps.
+- **Stale: PrivateGPT.** 18+ months without a release; its company shifted to Zylon. Treat as a reference implementation, not live competition.
+- **Inference vs assistant.** LocalAI is the only entry that is *only* an inference layer; everyone else conflates LLM routing with UI/state/tools. Donna keeping these layers separable (LocalAI-style routing + Donna-the-assistant) preserves swap-out flexibility.
+
+## Patterns Donna should borrow
+
+- **continue.dev's source-controlled, markdown-defined agent specs.** Promptable, diffable, reviewable.
+- **AnythingLLM's desktop-app distribution.** Cleanest solo trust boundary in the category.
+- **LocalAI's protocol mimicry (OpenAI + Anthropic API drop-in).** Lets Donna point at any model substrate.
+- **Onyx's two-tier deploy (Lite vs Standard).** Lets a solo run a 1GB process; lets a power user run Vespa/Postgres.
+
+## Patterns Donna should avoid
+
+- **Open WebUI's CLA + restrictive license.** Will erode trust if Donna goes that route.
+- **Flowise-style visual-canvas-as-primary-UX.** Debuggability collapses past ~20 nodes.
+- **Khoj's perpetual-beta memory subsystem.** If memory is first-class, it cannot be the buggiest subsystem.
+- **LibreChat/Onyx default-multi-tenant auth.** Force-fitting team auth into solo installs is friction the solo operator pays for nothing.
+
+## Scope gaps I couldn't resolve
+
+- **Khoj's exact release date for 2.0.0-beta.28.** WebFetch summary said "March 26, 2025"; the GitHub repo card said "March 26, 2026". GitHub API and `gh` CLI were unavailable in this environment; docs.khoj.dev returned HTTP 403 from WebFetch. Most-likely 2026 given the beta cadence (.24 in Jan 2025, .25 in Feb 2025, .26-.28 in March), but cannot confirm.
+- **Khoj's exact datastore for self-host.** README does not specify; docs.khoj.dev returned 403. Pgvector is referenced in community discussions and historical commits but not confirmed from primary source in this scan.
+- **AnythingLLM's app-metadata datastore.** SQLite is widely understood from community sources but not confirmed in the README excerpt; abstracted under `prisma` per repo structure.
+- **LibreChat memory subsystem.** Whether the v0.7.x line added persistent cross-conversation memory beyond message-forking — not surfaced in README; would require browsing CHANGELOG/docs.
+- **Onyx pricing for Cloud / Enterprise.** Free tier confirmed; specific paid-tier pricing not on README.
+- **Flowise Cloud pricing.** Mentioned but not enumerated.
+- **continue.dev's current LLM provider list.** README focuses on the CI-checks pivot; provider list not enumerated in fetched content.
+- **Open WebUI's "Memories" feature internals.** Confirmed it exists; storage shape (vector? KV? scoped?) not surfaced from README; would require docs deep-dive (docs site WebFetch was 403-blocked).
+- **Hacker News and Lobsters threads on Open WebUI license.** Direct fetches returned 403; relied on BigGo Finance summary plus the search-result snippets.
