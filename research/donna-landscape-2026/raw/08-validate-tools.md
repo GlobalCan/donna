@@ -191,3 +191,61 @@ Cutoff: April 2026. Anything pre-April-2025 is flagged as potentially stale.
   - Threshold tightening (March 2025: ≥10 raters of differing past behaviour required) cuts noise but worsens latency and coverage.
 - For Donna: the bridging *algorithm* is the right inspiration, but Donna doesn't have raters — it has one operator. The translation: when Donna shows counter-evidence, prefer sources that *contradict the operator's prior reading* AND are independently credible. The "bridge" is between Donna's prior model of the operator and external counter-evidence — show what credibly contradicts what the operator already believes.
 
+## Cross-cutting findings
+
+### Claim-extraction shape — is there an emerging schema?
+
+Three distinct shapes in the wild:
+
+1. **schema.org/ClaimReview** (Google Fact Check Tools API): `Claim{ text, claimant, claimDate, claimReview[]{ publisher, textualRating, reviewDate, url } }`. Canonical for *already-fact-checked* claims. Free API, free data. **Donna should adopt this as its base schema for any claim with a known verdict.**
+2. **Full Fact's tagged-sentence model**: `Claim{ text, type ∈ {quantitative, causal, predictive, personal, …}, speaker, topic, checkworthiness ∈ [0,1] }`. The right shape for *new* claims Donna extracts itself. Schema is published; classifier weights are not.
+3. **Logically Accelerate's queue model**: adds `novelty` and `urgency` scores against prior claims. Useful concept; private code.
+
+A Donna-shaped claim object should be the union: `{ text, speaker, claim_date, type, checkworthiness, novelty_vs_memory, prior_review[] (from Google FCT), provenance (source URL + offset) }`.
+
+### Bias vs. fact: how the field separates them
+
+Almost all the bias-rating products (Ground News, AllSides, NewsGuard) operate at *publisher* grain. NewsGuard explicitly separates the two: 9 criteria are journalistic-process (do you correct errors? do you label opinion?), not political. Bias is a separate orientation label, not a quality score. **Donna should mirror this**: a claim is wrong-vs-right; a source is biased-vs-neutral; never collapse them into a single "trust score."
+
+### Counter-evidence UX — best in class
+
+Ranked best-to-worst for "show the other side without hedging":
+
+1. **Community Notes** — single concrete counter-claim, sourced, surfaced only when polarity-bridged. No hedging. The pattern to copy.
+2. **Ground News Blindspot / coverage bar** — visual, not argumentative. Lets the operator *see* the asymmetry without an argument.
+3. **AllSides Headline Roundup** — three-column same-story comparison.
+4. **Perplexity Check Sources** — claim-level highlight to verify against citations; weaker because it doesn't surface *contradictory* sources by default.
+5. NewsGuard Nutrition Label — narrative, but publisher-grain only.
+
+The pattern Donna should pick: Community-Notes-style single concrete counter-claim **plus** a Ground-News-style coverage/agreement bar visualising distribution of evidence, **plus** click-through to primary sources. Refuse the Perplexity-style hedge ("sources disagree") — pick the most credible counter and state it.
+
+### Solo-tier viability summary
+
+| Tool | API? | Solo-affordable? | Donna tool-call candidate? |
+|---|---|---|---|
+| Ground News | No public API | Sub: yes | No |
+| NewsGuard | B2B only | No | No |
+| Kagi FastGPT/Summarizer | Yes | Yes (PAYG) | Yes |
+| Kagi Search | Beta, $25/1k | Yes | Yes (when GA) |
+| Perplexity Sonar | Yes | Yes | Yes — primary grounded retrieval |
+| AllSides Bias Checker | Yes (license) | Borderline | Maybe (CC BY-NC for research) |
+| Full Fact AI | No | No | No |
+| Logically | No | No | No |
+| Google Fact Check Tools | Yes (free) | Yes | Yes — primary verdict lookup |
+| yt-dlp | CLI/Py | Free | Yes — default ingest |
+| whisper.cpp | Local | Free | Yes — default ASR |
+| AssemblyAI | Yes | Yes | Yes — diarization fallback |
+| Deepgram | Yes | Yes | Yes — streaming fallback |
+| Community Notes | Open data | Free | Maybe (X corpus) |
+
+## Scope gaps I couldn't resolve
+
+- **NewsGuard API pricing** — quote-only; I have no signal on whether a solo-tier exists. Probably not.
+- **Full Fact partner API access** — the partner programme exists but terms are private; whether a non-fact-checker can ever license is unclear.
+- **AllSides Bias Checker API pricing** — gated behind `services@allsides.com`; no public tier.
+- **Perplexity Check Sources API exposure** — as of April 2026 the consumer "highlight to verify" flow is not documented in the Sonar API; I could not confirm whether it ever gets API'd.
+- **Logically post-restructuring status** — Logically had public layoffs/restructuring in 2024–2025; whether Accelerate is still actively sold as of April 2026 is not clear from public sources.
+- **Community Notes API access** — X publishes the rating data as a daily download (`download.tsv` from communitynotes.x.com), but the rate-limit and TOS for programmatic ingest in 2026 are not fully verified here. Bridging algorithm code is open on GitHub.
+- **whisper.cpp diarization quality vs. AssemblyAI in 2026** — recent head-to-head benchmarks past Whisper large-v3-turbo with current pyannote/whisperx pipelines are limited; I have informed priors but not a definitive comparison.
+- **The Pudding's actual story-build toolchain** — they describe the 4-stage process publicly but the specific JS framework choices (Svelte vs. React vs. custom) are not in their public materials I could find.
+- **NewsGuard "Misinformation Fingerprints"** — I know it exists but couldn't locate a public schema doc; whether claim-level fingerprints are exposed via the same API as domain ratings is unclear.
