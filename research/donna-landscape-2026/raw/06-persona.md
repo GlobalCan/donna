@@ -290,3 +290,171 @@ proves users will accept "I don't have a recording for that" as a refusal
 mode. Donna can plausibly use a **3-way render**: cited / inferred-from-cited /
 refused. No persona product has shipped that 3-way render.
 
+---
+
+## Who articulates "oracle not scholar"?
+
+This is the highest-value section per the brief. The question is: **who has
+explicitly endorsed and shipped constrained extrapolation with explicit
+labelling?** Findings, ranked by directness of the precedent:
+
+### 1. Rationalist / digital-garden "epistemic status" headers — strongest cultural precedent
+- **Scott Alexander, Slate Star Codex / Astral Codex Ten.** Coined the
+  per-post "Epistemic status:" header circa 2014 — values range from
+  "Confident" through "Likely" to "Total wild speculation."
+  https://en.wikipedia.org/wiki/Slate_Star_Codex,
+  https://slatestarcodex.com/author/admin/.
+  This is the canonical writing-side template. Adopted broadly across
+  LessWrong / EA Forum.
+- **LessWrong feature proposal (community discussion):**
+  https://www.lesswrong.com/posts/Hrm59GdN2yDPWbtrd/feature-idea-epistemic-status
+- **Maggie Appleton, "Epistemic Disclosure"**:
+  https://maggieappleton.com/epistemic-disclosure — frames the epistemic
+  status header as a foundational *digital-gardening* principle: each note
+  carries metadata about how confident, how researched, how validated.
+  Appleton specifically advocates publishing imperfect / speculative ideas
+  *with their status visible* rather than hiding them or hedging into
+  uselessness. **This is the closest existing articulation of Donna's
+  stance**: "say things you only half-believe, but say so."
+- **Chris Krycho, "Epistemic Status"**:
+  https://v5.chriskrycho.com/journal/epistemic-status/ — adopts SSC's
+  pattern with explicit categories.
+- **Travis Briggs digital garden (status-tagging):**
+  https://garden.travisbriggs.com/garden/dg-status/
+
+These are *human-written* posts, not AI outputs. But they're the operative
+design pattern: a small structured marker at the top of a claim that
+tells the reader how much weight to put on it. Donna's "labeled
+extrapolation" UI should arguably *be* an inline form of these headers.
+
+### 2. OpenAI Model Spec — closest official assistant guidance
+- **OpenAI Model Spec (2025-10-27, 2025-12-18):**
+  https://model-spec.openai.com/2025-10-27.html,
+  https://model-spec.openai.com/2025-12-18.html.
+  The Spec instructs models that "when appropriate, [the assistant should]
+  proceed based on a best guess while loudly calling out the assumption
+  and uncertainty in the final answer." That phrase — *proceed on a best
+  guess while loudly calling out the assumption* — is essentially a
+  one-line statement of Donna's stance, originating from a frontier-lab
+  product spec. (Verified via direct quote in search results.)
+- **OpenAI "Teaching models to express their uncertainty in words" (Lin
+  et al., 2022; arXiv 2205.14334):**
+  https://openai.com/index/teaching-models-to-express-their-uncertainty-in-words/
+  — the foundational paper showing GPT-3 can produce calibrated
+  verbalised confidence ("90% confidence", "high confidence"). **Pre-2025,
+  flag as stale on the timeline** but still the academic anchor.
+
+### 3. Anthropic Model Spec / Constitution — adjacent
+- **Anthropic Model Spec / Constitution:**
+  https://www.anthropic.com/constitution,
+  https://www.anthropic.com/news/claude-new-constitution.
+  Claude's spec breaks honesty into "Truthful" + **"Calibrated"** —
+  "express appropriate uncertainty; don't overclaim or underclaim
+  confidence." This is closer to a refusal-when-uncertain stance than
+  Donna's "extrapolate-with-labels" stance, but it explicitly endorses
+  the *calibrated-marker* half of the design.
+
+### 4. Academic literature on epistemic markers — supportive but cautious
+- **"Revisiting Epistemic Markers in Confidence Estimation" (Liu et al.,
+  arXiv 2505.24778):** https://arxiv.org/html/2505.24778v2.
+  Finds that LLM-emitted epistemic markers ("I think", "fairly confident")
+  often **don't reliably reflect actual model uncertainty** — i.e. the
+  markers can lie. Important caveat for Donna: a marker that's wrong
+  about its own confidence is worse than no marker.
+- **"Can LLMs Express Their Uncertainty?" (Xiong et al., ICLR 2024;
+  arXiv 2306.13063):** https://arxiv.org/html/2306.13063v2 — empirical
+  evaluation of confidence elicitation, identifies the "Weak Claim"
+  prompt pattern ("I vaguely remember", "I think the answer should be")
+  as more reliable than direct "are you sure?" follow-ups.
+- **"Survey on the Honesty of LLMs" (Li et al., TMLR 2025):**
+  https://github.com/SihengLi99/LLM-Honesty-Survey — taxonomy of honesty
+  components including "self-knowledge" (recognising what one knows vs
+  doesn't).
+- **"To Believe or Not to Believe Your LLM" (Yadkori et al.):**
+  https://arxiv.org/html/2406.02543v1 — distinguishes epistemic from
+  aleatoric uncertainty, proposes iterative-prompting estimator.
+- **"Distinguishing the Knowable from the Unknowable" (Kempner Inst):**
+  https://kempnerinstitute.harvard.edu/research/deeper-learning/distinguishing-the-knowable-from-the-unknowable-with-language-models/
+
+### 5. UI / UX design pieces — conceptual but unproductised
+- **"How to design AI UIs that show confidence, uncertainty, trust"**:
+  https://wild.codes/candidate-toolkit-question/how-to-design-ai-uis-that-show-confidence-uncertainty-trust
+  — surveys visual (badges, shields, progress bars), textual ("likely",
+  "uncertain"), and interactive (hover-tooltip-with-citations) modalities.
+  No commercial assistant has shipped a polished version of this.
+- **Alhena.ai, "AI Uncertainty Thresholds for Ecommerce Chatbots":**
+  https://alhena.ai/blog/ai-uncertainty-threshold-ecommerce-chatbot/ —
+  applied design write-up on hedging language as a UX primitive.
+
+### 6. Persona products — none ship labeled extrapolation
+- Character.ai, Replika, Pi, the HF persona Spaces, and TwinLlama
+  **all generate without epistemic markers**.
+- HereAfter / StoryFile take the opposite stance (refuse to extrapolate
+  at all; play back recorded clips only).
+- The **labelled-extrapolation slot is empty** in shipped persona
+  products. This is the cleanest white space for Donna in this
+  category, even though Donna isn't a persona product.
+
+### Summary of the design-pattern landscape
+| Stance | Who | Shipped UI? |
+|---|---|---|
+| Refuse to extrapolate | HereAfter, StoryFile, classical RAG citation-only patterns | Yes |
+| Extrapolate, no markers | Character.ai, Replika, Pi, RightBack, generative deathbots | Yes |
+| Extrapolate, calibrated markers | OpenAI Model Spec mandate, Anthropic Constitution (calibrated honesty) | Partial — model behaviour, not UI |
+| Extrapolate, **structured per-claim status header** | Scott Alexander, Maggie Appleton, rationalist digital-garden tradition | Yes (for *human-written* prose) |
+| Extrapolate, structured per-claim status, **in an assistant UI** | **Nobody confirmed via primary sources** | **No — open slot** |
+
+The headline for Donna: the cultural pattern Donna wants to ship has been
+*written about* (Appleton, Alexander, Krycho), is *behaviourally mandated*
+in the OpenAI Spec, but **has not been turned into a polished assistant UI
+by any vendor**. The persona space in particular has skipped this entire
+design conversation.
+
+---
+
+## Currency flags
+
+- Inflection acqui-hire reporting: Mar 2024–Mar 2025 — older items pre-Apr-2025
+  are flagged inline.
+- Replika ERP removal: Feb 2023, **stale** but still the canonical
+  user-trust-collapse case study; lifetime-tier discontinuation (Jul 2025) is
+  current.
+- Character.ai under-18 ban: Oct 29 / Nov 25 2025 — current.
+- Setzer settlement: Jan 7 2026 — current.
+- OpenAI Model Spec quoted: 2025-10-27 and 2025-12-18 versions — current.
+- Anthropic Constitution rewrite: Jan 2026 — current
+  (https://fortune.com/2026/01/21/anthropic-claude-ai-chatbot-new-rules-safety-consciousness/).
+- Scott Alexander epistemic-status pattern: pre-2017, **historical**, but the
+  pattern itself has not been superseded.
+
+---
+
+## Scope gaps I couldn't resolve
+
+- **Character.ai DeepSqueak architecture details.** Character.ai's official
+  product blog (https://blog.character.ai/pipsqueak2-and-more/) was not
+  fetchable from this environment (403). Memory + lorebook descriptions are
+  taken from secondary search summaries — I could not confirm field-level
+  detail (memory window size, eviction policy, salience scoring algorithm).
+- **Replika 2026 internals.** Luka publishes essentially nothing about model
+  routing, memory representation, or RAG vs fine-tune. Architecture claims
+  here are necessarily generic.
+- **Pi.ai current state.** Could not load https://pi.ai (403). Reporting
+  that Pi "is still up as of January 2026" comes from secondary sources
+  (sectionai.com, eesel.ai). Cannot confirm independently.
+- **PersonaPlex / TwinLlama specifics.** Both Hugging Face pages returned
+  403 from this environment; descriptions rely on search-snippet text.
+- **Maggie Appleton "Epistemic Disclosure" full text.** Page returned 403;
+  description from search summary only. The piece is real and the URL is
+  valid; full quote not captured here.
+- **Whether any 2025–2026 commercial assistant has shipped an inline
+  inference-vs-fact UI.** I could not find a primary source confirming
+  any. The "open slot" claim is conditional on this — it is possible a
+  niche product I missed has shipped this and I haven't seen it.
+- **The Setzer settlement's specific architectural commitments.** CNN/JURIST
+  reporting describes the settlement as "mediated" but settlement terms
+  are not public; whether Character.ai committed to architectural changes
+  beyond the under-18 ban is unknown.
+- **Voice-clone-deathbot consent law.** The "informed consent of the
+  deceased" ethical objection is widely raised but I did not find a
+  jurisdiction-specific 2025–26 ruling to cite.

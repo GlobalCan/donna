@@ -56,3 +56,86 @@ Cutoff: April 2026. Anything pre-April-2025 is flagged as potentially stale.
 - Counter-evidence UX: weak — citations support the answer but Perplexity doesn't surface contradictory sources by default. UnCovered (the showcase Chrome extension) does claim-by-claim true/false scoring but is a community pattern, not a first-party API. ([UnCovered](https://docs.perplexity.ai/cookbook/showcase/uncovered))
 - Criticism: documented hallucination of citations in early Sonar; reduced but not eliminated.
 
+## AllSides
+
+- Primary sources: <https://www.allsides.com/about/media-bias-rating-methods>, <https://www.allsides.com/tools-services/bias-checker-api>, <https://www.allsides.com/tools-services/bias-ratings-license-api>
+- One-line: human-rated media bias for ~2,400 outlets/writers, distributed via licensed dataset and a Bias Checker API.
+- Bias model: 5-bin (Left / Lean Left / Center / Lean Right / Right) + numeric Media Bias Meter. Built from multi-partisan editorial review, blind bias surveys, third-party studies, and community feedback — not algorithmic. ([AllSides methods](https://www.allsides.com/about/media-bias-rating-methods))
+- API surface: Bias Checker API takes a URL or pasted text and returns a bias estimate; Bias Ratings License & API exposes the underlying source-level ratings DB. Free members get 30 article checks; commercial use requires license. Pricing not publicly listed — contact `services@allsides.com`. ([AllSides Bias Checker API](https://www.allsides.com/tools-services/bias-checker-api))
+- Solo-tier: borderline. The 30-check free tier is fine for human use but not programmatic. Ratings are CC BY-NC for research/non-commercial — Donna's solo operator could legally pull them via scraping if non-commercial. There's also a community R package `AllSideR` that mirrors the public ratings table. ([AllSideR](https://github.com/favstats/AllSideR))
+- Claim shape: source/outlet level only. AllSides does not rate individual claims; it rates publishers and authors, plus curates "balanced newsfeeds" with 33/33/33 left/center/right mixing.
+- Counter-evidence UX: the **Headline Roundup** is the relevant pattern — same story, three columns of headlines (left/center/right), with side-by-side framing analysis. Like Ground News' coverage bar but with explicit framing critique.
+- Criticism: methodology mixes expert + crowd; some outlets dispute placement. The 5-bin grain is coarse for nuanced editorial differences.
+
+## Full Fact AI
+
+- Primary sources: <https://fullfact.org/ai/>, <https://fullfact.org/about/automated/>, <https://fullfact.ai/>
+- One-line: UK fact-checking charity that builds claim-detection ML used by 40+ fact-checker orgs in 30 countries.
+- Claim model — directly relevant to Donna: claim = "the checkable part of a sentence." Their classifier (BERT-fine-tuned) tags each sentence by **claim type** (quantitative, causal, predictive, personal-experience, etc.) and assigns a **checkworthiness score**. Claims are also tagged with topic and speaker. This is the cleanest published claim-object schema in the space. ([Full Fact AI](https://fullfact.org/ai/), [Feb 2025 blog](https://fullfact.org/blog/2025/feb/how-ai-can-help-fact-checkers/))
+- API: tools are licensed to fact-checking organisations through Full Fact's partner programme — not a self-serve developer API. No public pricing. Source code partially open: claim-detection research code is on GitHub but the production stack is not. **Donna cannot call it as a tool.**
+- Counter-evidence: their **claim-matching** stack detects when a claim already fact-checked by a partner is repeated; the canonical reference is their definition paper. ([Full Fact 2021](https://fullfact.org/blog/2021/oct/towards-common-definition-claim-matching/))
+- Solo-tier: no.
+- Lesson for Donna: the schema (claim-type, checkworthiness, speaker, topic) is the right shape for a structured claim object. Borrow.
+
+## Logically (Logically Facts Accelerate)
+
+- Primary source: <https://logically.ai/announcements/logically-accelerates-fact-checking-with-launch-of-new-product>
+- One-line: UK-based misinformation-monitoring vendor; the Accelerate product does multimodal claim extraction (incl. video transcription) with urgency scoring across 57 languages.
+- Claim shape: per-clip claim with checkworthiness score, novelty score (vs. prior fact checks), recency, and relevance — assembled into a fact-checker queue.
+- API: B2B only, sold to governments and enterprise. No public developer tier.
+- Currency note: Accelerate launch was Global Fact 11 (Jun 2024), so the *announcement* is >12 months old; ongoing development since. Logically itself has had public restructuring in 2024–2025 — flagged.
+- Solo-tier: no.
+- Lesson for Donna: **novelty/recency scoring** as a claim attribute is interesting — "is this claim new, or have we seen it?" maps directly to Donna's memory of prior episodes.
+
+## Factmata (status: defunct as standalone)
+
+- Primary source: <https://techcrunch.com/2022/11/17/pr-software-giant-cision-acquires-factmata-the-fake-news-startup-that-pivoted-to-monitoring-all-kinds-of-online-narratives/>
+- One-line: AI claim/narrative classifier acquired by Cision (Nov 2022) and absorbed into Cision's PR monitoring stack. **Stale — flagged.**
+- Status as of April 2026: no longer a standalone API. Surviving tech ships inside Cision's narrative-monitoring suite for PR teams. Not solo-purchasable.
+- Lesson: the trajectory of every claim-classifier startup so far has been "absorbed by a B2B media-monitoring platform." Suggests claim-extraction is unlikely to be available as cheap commodity API any time soon, which means Donna probably has to build claim extraction in-house.
+
+## Google Fact Check Tools API (bonus — surfaced via Full Fact research)
+
+- Primary source: <https://developers.google.com/fact-check/tools/api>
+- One-line: free public search API over the global ClaimReview corpus (the schema.org markup that fact-checkers worldwide publish).
+- API: `claims.search?query=...` returns `Claim{ text, claimant, claimDate, claimReview[]{ publisher, url, title, reviewDate, textualRating, languageCode } }`. No auth beyond an API key; very generous quota.
+- Pricing: free.
+- Claim-extraction shape: this is the canonical published "claim object" in the wild — `text` + `claimant` + `claimDate` + array of reviews each with `textualRating`. Maps to schema.org/ClaimReview.
+- Coverage: only claims that some IFCN-signatory fact-checker has already reviewed and marked up. Long tail not covered.
+- For Donna: the *most useful* validation tool call available for solo-tier. Use it as the "has someone fact-checked this already?" lookup before generating any opinion. Cite by `textualRating` + `publisher`.
+
+## The Pudding (UX inspiration only)
+
+- Primary source: <https://pudding.cool/about/>
+- One-line: data-journalism studio whose visual essays are the gold standard for "long critique that doesn't bore you."
+- Process they document: 4-stage workflow — story → data → design → development. Stories are *interactive scrollytelling* with the chart and the prose interleaved; the reader can tweak parameters and see the conclusion update.
+- Why this matters for Donna: Donna's "long critique of an article" surface needs a UX that is *more* than a paragraph of objections — it should be inspectable, scrollable, and let the operator interrogate the underlying claim graph. The Pudding's "scrolly + chart + side-margin annotation" pattern is the reference. Polygraph is their consulting arm. ([Storybench profile](https://www.storybench.org/the-proof-is-in-the-pudding-how-one-online-publication-is-using-cutting-edge-data-visualizations-to-tell-meaningful-pop-culture-stories/))
+- Not a tool: nothing to call here. Pure UX reference.
+- Lesson: when Donna shows an article with bias-and-counter-evidence, render it as a *page with margin annotations and an interactive claim list*, not a chat reply. The Pudding's articles are existence proofs that long-form critique can be read voluntarily.
+
+## Bellingcat (methodology reference)
+
+- Primary sources: <https://www.bellingcat.com/category/resources/how-tos/>, <https://bellingcat.gitbook.io/toolkit>
+- One-line: OSINT collective whose published methodology is the de facto standard for "verifiable, attributable, defensible" investigation.
+- Process worth stealing for Donna's validation surface:
+  1. **Document the chain** — every assertion linked to a primary artefact (image, post, dataset).
+  2. **Geolocation/chronolocation as proof** — when claims are spatial/temporal, anchor them to satellite imagery and timestamps.
+  3. **Adversarial review** — every published investigation is reviewed for "what would the most aggressive critic say?" before publishing.
+  4. **Toolkit transparency** — the GitBook lists every tool used, version, and limitation. ([Bellingcat toolkit](https://bellingcat.gitbook.io/toolkit))
+- For Donna: the "validation surface" is ultimately Bellingcat-style: every claim links to a primary artefact, every extrapolation is flagged as inference, and the operator can replay the chain of inference. Donna's UX should make the *chain* visible, not just the conclusion.
+- Not a tool: no API. Pure methodology.
+
+## yt-dlp
+
+- Primary source: <https://github.com/yt-dlp/yt-dlp>
+- One-line: command-line audio/video downloader; for Donna, the canonical tool for fetching a YouTube/podcast/news-clip and its existing subtitles before falling back to ASR.
+- Currency: actively maintained; latest release 2025.12.08. Python ≥3.10 (Python 3.9 EOL'd Oct 2025). Not stale.
+- Relevant flags: `--write-subs --write-auto-subs --sub-langs en.* --skip-download` extracts a .vtt without downloading the video. `--cookies-from-browser` for paywalled/age-gated content.
+- API: CLI + Python module (`yt_dlp.YoutubeDL`).
+- Limitations:
+  - Auto-generated subtitles (the YouTube ASR ones) have no punctuation and no speaker labels — usable for grep/embedding but bad for citation.
+  - YouTube's anti-bot measures break yt-dlp periodically; expect a `pip install -U yt-dlp` step every few weeks.
+  - Many news sites (Bloomberg, FT) ship DRM-protected video; yt-dlp can't break DRM.
+- Solo-tier: free, self-host, runs locally. Default ingest tool for Donna.
+- Pattern for Donna: try `yt-dlp --write-auto-subs` first; if no subs or quality is too low, fall through to whisper.cpp/AssemblyAI/Deepgram.
+

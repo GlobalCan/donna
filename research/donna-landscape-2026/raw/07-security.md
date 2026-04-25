@@ -143,3 +143,157 @@ labelled.
   classes of failure.
 - **Currency:** Jan–Feb 2026. Current.
 
+## NVIDIA: NeMo Guardrails, garak, and agentic-AI red-teaming
+
+- **Primary sources:**
+  - garak repo + paper: https://github.com/NVIDIA/garak (paper PDF in
+    repo: https://github.com/NVIDIA/garak/blob/main/garak-paper.pdf).
+  - garak project site: https://garak.ai/
+  - NeMo Guardrails: https://github.com/NVIDIA-NeMo/Guardrails and
+    https://developer.nvidia.com/nemo-guardrails.
+  - Safety blueprint: https://github.com/NVIDIA-AI-Blueprints/safety-for-agentic-ai.
+  - Garak vulnerability scanning docs:
+    https://docs.nvidia.com/nemo/guardrails/latest/evaluation/llm-vulnerability-scanning.html.
+- **What it is:** garak is the de-facto open LLM vulnerability scanner
+  ("nmap for LLMs"); NeMo Guardrails is a programmable runtime guardrail
+  framework; the "safety-for-agentic-ai" blueprint stitches them with
+  red-team datasets to ship build-time + runtime defenses.
+- **Core claim:** automated red-teaming with structured probes
+  (prompt injection, tool misuse, data leakage, jailbreaks) catches
+  large classes of vulnerabilities before deployment; runtime guardrails
+  add a second layer at inference.
+- **Implication for Donna:** garak is the right pre-release smoke-test
+  harness for any tool/agent surface Donna ships. NeMo Guardrails is
+  heavier than Donna needs (it assumes a Colang-style policy DSL and a
+  centralised orchestrator), but the *probe-and-block* shape is
+  borrowable: define a finite set of forbidden tool-call patterns and
+  block them deterministically.
+- **Defensive primitives:** probe-based vuln scanning (garak); dialogue
+  rails / output rails / retrieval rails (NeMo Guardrails); Colang
+  policies; runtime classifiers between LLM and tool boundary.
+- **Limits:** scan-and-block is necessarily incomplete; programmable
+  guardrails are themselves prompt-injection targets if implemented as
+  LLM-on-LLM checks; Colang adoption cost is non-trivial.
+- **Currency:** garak and NeMo Guardrails are actively maintained
+  through 2025–2026; agent-toolkit red-teaming guidance current as of
+  2025. Current.
+
+## Anthropic — Constitutional Classifiers (++) and browser-use defenses
+
+- **Primary sources:**
+  - Constitutional Classifiers (gen 1): https://www.anthropic.com/research/constitutional-classifiers
+    and https://www.anthropic.com/news/constitutional-classifiers
+    (Feb 2025).
+  - Next-gen / Constitutional Classifiers++:
+    https://www.anthropic.com/research/next-generation-constitutional-classifiers
+    and arXiv 2601.04603 (Jan 2026).
+  - Cheap monitors / representation re-use:
+    https://alignment.anthropic.com/2025/cheap-monitors/.
+  - Browser-use / prompt-injection mitigations (Claude for Chrome):
+    https://www.anthropic.com/research/prompt-injection-defenses
+    and https://www.anthropic.com/news/claude-for-chrome (Aug 2025);
+    Opus 4.5 update Nov 2025.
+- **What it is:** a stack of classifier-based safeguards trained from a
+  natural-language "constitution"; gen-2 ("++") adds an internal-activation
+  probe that triages traffic to a heavier classifier only when needed,
+  cutting the compute overhead to ~1 % while keeping a low refusal rate.
+- **Core claim:** classifier filtering can drive jailbreak success from
+  ~86 % to ~4.4 % (gen 1); ++ ran a public bug bounty with 339
+  participants over 300 k interactions and yielded only one universal
+  jailbreak. Browser-use red-team: 23.6 % attack success without
+  mitigations vs ~1 % with the full Opus 4.5 stack.
+- **Implication for Donna:** input/output classifiers are a real,
+  measurable defense layer — but they are a *probabilistic* one and
+  remain bypassable by reconstruction attacks (split a payload across
+  benign-looking pieces). Anthropic itself frames this as defense in
+  depth, not a fix.
+- **Defensive primitives:** input filter classifier; output filter
+  classifier; cheap activation-probe triage stage; explicit
+  user-confirmation gates on high-risk actions; per-site allow/revoke
+  controls; RL training that exposes the model to injected web content.
+- **Limits:** reconstruction attacks (e.g., functions scattered through
+  a codebase) still slip through; CVE-2025-54794 demonstrated injection
+  via crafted markdown code blocks and uploaded docs; classifiers must
+  be retrained when the threat model shifts.
+- **Currency:** browser-use Aug + Nov 2025; Constitutional Classifiers++
+  Jan 2026. Current.
+
+## OpenAI — Instruction Hierarchy + Structured Outputs as injection mitigations
+
+- **Primary sources:**
+  - Instruction Hierarchy: https://openai.com/index/the-instruction-hierarchy/
+    (Apr 2024) and arXiv 2404.13208; follow-up IH-Challenge dataset
+    https://cdn.openai.com/pdf/14e541fa-7e48-4d79-9cbf-61c3cde3e263/ih-challenge-paper.pdf
+    and arXiv 2603.10521.
+  - "Reasoning Up the Instruction Ladder": arXiv 2511.04694 (Nov 2025).
+  - Structured Outputs:
+    https://openai.com/index/introducing-structured-outputs-in-the-api/
+    and https://developers.openai.com/api/docs/guides/structured-outputs.
+  - Agent Builder safety:
+    https://platform.openai.com/docs/guides/agent-builder-safety.
+  - "Understanding prompt injections": https://openai.com/index/prompt-injections/.
+- **What it is:** two complementary defenses. (1) Train models to obey a
+  *priority hierarchy* — system > developer > user > tool/web — and
+  selectively ignore lower-tier instructions when conflict is detected.
+  (2) Constrain the *output channel* with strict-mode JSON schemas so
+  the model cannot emit free-form tokens that downstream code might act
+  on.
+- **Core claim:** instruction-hierarchy training (Wallace et al. 2024)
+  meaningfully increases robustness, including to attacks unseen in
+  training, with minimal capability hit; "Reasoning Up the Instruction
+  Ladder" (Nov 2025) extends this to controllable reasoning models.
+  Structured Outputs achieve 100 % schema adherence in strict mode via
+  constrained decoding, which OpenAI's own agent-safety guide
+  positions as a prompt-injection mitigation: "By defining structured
+  outputs between nodes (enums, fixed schemas, required field names),
+  you eliminate freeform channels that attackers can exploit to smuggle
+  instructions or data."
+- **Implication for Donna:** every internal hop in Donna's agent loop
+  should go through a strict-schema bottleneck — model-to-tool, model-
+  to-memory-write, model-to-UI. Treat the trust ladder explicitly in
+  prompt construction (system / developer / user / web).
+- **Defensive primitives:** instruction hierarchy with explicit
+  privilege tags; strict-schema (constrained decoding) on every model
+  output that crosses a trust boundary; enum/whitelist outputs over
+  free text where possible.
+- **Limits:** instruction-hierarchy training is not a guarantee — IHEval
+  (NAACL 2025) shows current frontier models still fail many cases;
+  schema-constrained outputs prevent free-form smuggling but a malicious
+  field value can still be attacker-controlled if downstream code is
+  naïve.
+- **Currency:** original IH paper Apr 2024 (>12 months — flagged stale
+  but foundational); IH-Challenge and "Reasoning Up the Instruction
+  Ladder" Nov 2025. Current.
+
+## Hermes "Pattern A / Pattern B" MCP exposure work — UNVERIFIED
+
+- **Status:** I could not find any primary source — Nous Research blog,
+  Hermes Agent docs, or the hermes-agent GitHub repo — that names a
+  "Pattern A" and "Pattern B" framework for exposing MCP tools.
+  I read the closest candidate (Issue #342, "Hermes Agent as MCP
+  Server", teknium1, 4 Mar 2026, https://github.com/NousResearch/hermes-agent/issues/342)
+  in full; it discusses tool-allowlisting, terminal-exposure constraints,
+  and OAuth/rate-limit phases as *open questions*, not as a named A/B
+  pattern. The Hermes security docs
+  (https://hermes-agent.nousresearch.com/docs/user-guide/security and
+  .../features/mcp) describe defense-in-depth (env filtering, OSV malware
+  scan, error sanitisation, allowlist/denylist) but do not use the
+  Pattern A / Pattern B naming.
+- **Best-effort interpretation if the brief is referring to a folk
+  naming:** Hermes' docs effectively distinguish "Hermes-as-MCP-client"
+  (consume external MCP servers — high attack surface, must allow-list,
+  filter env, sanitise errors) from "Hermes-as-MCP-server"
+  (expose Hermes' own tools to outside MCP clients — adds auth/rate-
+  limit/scope concerns). This dual posture may be what the brief means,
+  but **it is not labelled "Pattern A / Pattern B" in any source I can
+  verify.** Marked UNVERIFIED — do not cite as a Hermes-named pattern.
+- **What is verified about Hermes' MCP security posture (useful for
+  Donna regardless of nomenclature):** filtered env (only PATH, HOME,
+  USER, LANG, LC_ALL, TERM, SHELL, TMPDIR, XDG_* — API keys/secrets
+  stripped); OSV malware scan on every npx/uvx-spawned MCP server
+  before launch; per-server tool include/exclude lists; resource/prompt
+  surface can be disabled per server; tool error messages sanitised
+  before returning to the LLM.
+- **Currency:** docs current as of v2026.4.8 (Apr 2026) per the GitHub
+  release tag. Current.
+
