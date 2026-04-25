@@ -96,3 +96,66 @@ Frame: How each compares to Donna's "oracle, not scholar" stance, memory model, 
 - Relevance to Donna: Strong precedent. The "local capture + cloud LLM + MCP server out" architecture is exactly the shape Donna wants for its transcript ingestor. The MCP server is a model for Donna's tool surface. Deletion-by-architecture matches Donna's data-ownership stance.
 
 ---
+
+## Personal.ai
+
+- Primary sources: https://www.personal.ai/ ; https://www.personal.ai/memory ; https://www.personal.ai/platform ; https://www.personal.ai/pi-ai/introducing-personal-ais-memory-platform-enabling-monetization-on-the-nvidia-ai-grid ; March 2026 Comcast/NVIDIA press https://www.globenewswire.com/news-release/2026/03/17/3257092/0/en/Personal-AI-s-Memory-Based-Small-Language-Models-Deliver-Hyper-Personalized-Experiences-on-Comcast-s-AI-Grid-Powered-by-NVIDIA.html
+- One-line: Personal-memory + per-user Small Language Model (SLM) platform; pivoted from consumer "make your own AI" toward telco/enterprise edge-AI infrastructure.
+- Architecture signals: Per-user SLM ("Personal Language Model") tuned on a private memory corpus. Memory is multi-layered and persistent (their docs distinguish "memory" = lived/episodic, "context" = static documents, "identity" = emergent). Stack disclosed as memory-first: vector + key-value layers, with extraction/dedup pipeline. Edge-deploy: a single NVIDIA RTX PRO 6000 supports 40 concurrent SLMs / 500 calls. Available on Comcast/NVIDIA AI Grid edge nodes; HPE ProLiant deployment for "AI front desk" SMB use. Closed-source.
+- Features (claimed vs. confirmed): Memory stacking; AI personas (you can spawn an AI of yourself); voice-native telephony stack. Independent confirmation thin — most coverage is press-release tier.
+- Pricing / self-host: Pricing page (https://www.personal.ai/pricing) lists business plans; consumer/individual tier exists historically but has been deprioritized as the company pivoted to NVIDIA AI Grid B2B. No self-host; edge deployment is partner-hosted.
+- Post-mortems: No shutdown, but a strategic pivot away from the "everyone gets their own AI twin" consumer thesis (~2022-2023) toward telco/SMB infrastructure.
+- Scope gaps: No labeled-extrapolation surface, no claim-level provenance, no public agent/tool spec.
+- Relevance to Donna: Useful taxonomy borrow — their memory/context/identity split matches what Donna calls episodic/semantic/procedural. Their pivot validates the thesis that consumer-personal-AI is structurally hard to monetize, which is why Donna is solo-operator-first by design rather than mass-market.
+
+---
+
+## Mem.ai (Mem 2.0)
+
+- Primary sources: https://get.mem.ai/ ; https://get.mem.ai/pricing ; App Store https://apps.apple.com/us/app/mem-2-0-your-ai-second-brain/id1578757028
+- One-line: AI-organized notes app ("second brain") with auto-linking, semantic search, voice capture, and an agentic chat layer over your notes.
+- Architecture signals: Cloud SaaS with iOS/macOS/web clients. Stack not publicly disclosed; uses semantic search (vector embeddings) over user notes. Mem 2.0 (early 2026) was a complete rebuild adding offline support, voice mode, and a "more agentic AI layer that can act on your notes" (per the App Store/Mem updates). LLM provider not disclosed. No self-host. Distinct from `mem0ai/mem0` open-source memory framework — easy to confuse, different company.
+- Features (claimed vs. confirmed): Auto-tagging, related-note surfacing, Mem Chat over notes, meeting recording. Reviews (saner.ai, fahimai.com) confirm core capture + chat, criticize a tight free-tier (25 notes / 25 chats / month after Oct 2025 plan change).
+- Pricing / self-host: Free tier (25 notes/25 chats/mo); Mem Pro $12/mo (Oct 2025+). Not self-hostable. $28.6M total funding per PitchBook; no acquisition or shutdown news.
+- Post-mortems: Significant plan-change controversy (Oct 2025) tightening the free tier; critics see it as runway pressure.
+- Scope gaps: Notes-only. No external tool execution, no public-web grounding, no labeled extrapolation, no claim-level provenance. Memory is implicit (semantic search over notes) rather than first-class temporal.
+- Relevance to Donna: Adjacent. The "auto-link semantic notes + chat over corpus" pattern is one Donna will copy in spirit, but Donna's memory is temporally-versioned and provenance-tagged where Mem's is flat semantic. Mem's tight free tier illustrates the unit economics problem Donna sidesteps by being self-hosted.
+
+---
+
+## Humane AI Pin (shut down)
+
+- Primary sources: HP acquisition press https://investor.hp.com/news-events/news/news-details/2025/HP-Accelerates-AI-Software-Investments-to-Transform-the-Future-of-Work/default.aspx ; TechCrunch shutdown https://techcrunch.com/2025/02/18/humanes-ai-pin-is-dead-as-hp-buys-startups-assets-for-116m/ ; Failure Museum analysis https://failure.museum/humane-ai-pin/
+- One-line: $700 wearable lapel pin with laser-projected display + voice-only interface; shut down Feb 28 2025 after burning ~$230M.
+- Architecture signals: Cloud-only (every query went to Humane's servers); CosmOS proprietary OS; Snapdragon-class SoC; no on-device LLM. All features (calls, messages, AI queries) were server-tethered. Hackaday June 2025 reports the community released an experimental SDK so bricked units could be repurposed.
+- Features (claimed vs. confirmed): Real-time translation, AI Q&A, photo capture, projected UI. Reviews (Marques Brownlee "the worst product I've ever reviewed") documented overheating, hallucination, broken battery, slow cloud round-trips, and a charging-case lithium-battery fire-hazard recall. Inc.com post-mortem cites "toxic positivity" inside the company suppressing critical battery warnings during design.
+- Pricing / self-host: $699 + $24/mo. Not self-hostable. Shut down.
+- Post-mortems: HP bought IP, employees, and CosmOS for $116M Feb 2025; founders folded into "HP IQ." All AI Pin units bricked Feb 28 2025.
+- Scope gaps: Single-modality (voice + projected display) — no text, no app surface, no developer extensibility until the post-shutdown community SDK.
+- Relevance to Donna: Anti-pattern reference. Humane is what happens when you build a "personal AI" with cloud-only architecture, no developer surface, no offline mode, and no fallback. When the cloud goes dark, the user owns nothing. Reinforces every Donna tenet: self-hostable, local-friendly, operator-owned data.
+
+---
+
+## NotebookLM (Google)
+
+- Primary sources: https://notebooklm.google/ ; https://notebooklm.google/plans ; https://blog.google/technology/ai/notebooklm-audio-overviews/ ; Enterprise docs https://cloud.google.com/resources/notebooklm-enterprise ; Notebooks-in-Gemini April 2026 https://blog.google/innovation-and-ai/products/gemini-app/notebooks-gemini-notebooklm/
+- One-line: Source-grounded research notebook from Google: upload documents, get citation-backed Q&A, mind-maps, "Audio Overview" podcast-style discussions, and an interactive listen-and-interrupt mode.
+- Architecture signals: Cloud-only Google product. Powered by Gemini 3 Flash (per 2026 reviews) for Audio Overviews; Gemini 2.5/3 stack for retrieval and generation. Strict source-grounded RAG: responses cite specific passages in your uploaded sources. Now bidirectionally synced with Gemini "Notebooks" surface (April 2026 launch). Enterprise variant on GCP with API for notebook CRUD (last updated Apr 23 2026). No self-host, no LLM choice.
+- Features (claimed vs. confirmed): Audio Overviews (50+ languages), Critique Mode, Debate Mode, Interactive listening. Independent reviews report ~95% citation accuracy in clinical evaluations, ~13% hallucination rate vs. ChatGPT's 40% on the same corpus; audio overviews can fabricate clauses/characters. Source-cap per notebook, no export, no cross-notebook context-sharing (per atlasworkspace.ai/blog/notebooklm-limitations).
+- Pricing / self-host: Free tier; NotebookLM Plus inside Google One AI Premium ($19.99/mo) or Workspace Standard+ ($14/user/mo); Enterprise $9/user/mo on GCP. Not self-hostable.
+- Post-mortems: None — actively expanding.
+- Scope gaps: Bounded to user-uploaded sources; no agent loop, no live web, no action execution, no first-class memory across notebooks. Each notebook is an island.
+- Relevance to Donna: Strongest "scholar" foil to Donna's "oracle." NotebookLM is the canonical hedge-everything, refuse-without-source product — and it works, demonstrably, with low hallucination. Donna's design diverges by allowing labeled extrapolation past the cited corpus; NotebookLM proves the validation surface (passage-level citations) is shippable. Donna should match NotebookLM's claim→passage drilldown UX, then add the "this part is inference" overlay.
+
+---
+
+## Scope gaps I couldn't resolve
+
+- **Personal.ai pricing for individual users in 2026.** The pricing page (https://www.personal.ai/pricing) is now business-oriented; I could not confirm whether a free or low-cost individual tier still exists post-pivot, only that the consumer "twin" thesis has been deprioritized.
+- **Day.ai exact pricing tiers and architecture stack.** TechCrunch and the company blog confirm Series A and the MCP-into-Claude integration, but the public pricing page wasn't fetchable from this run; tier-level numbers couldn't be verified to a primary source.
+- **SANA AI individual / standalone availability post-Workday acquisition.** Workday press confirms "Sana Enterprise" but I couldn't pin down whether sana.ai standalone signups still exist for solo users in April 2026 or are being sunset into Workday licensing.
+- **Mem.ai LLM provider.** Mem doesn't disclose which model powers Mem Chat or extraction; Mem 2.0 launch notes describe capabilities, not stack.
+- **Friend (necklace) current LLM.** Wikipedia and 2024 coverage cite Claude 3.5; Tom's Guide Oct 2025 review claims Gemini 2.5 via the iPhone bridge. The company has not publicly confirmed which is current as of April 2026.
+- **Poke architecture.** The docs URL (poke.com/docs) returned 403; tool list, agent loop, and provider abstraction are not publicly documented as far as I could find.
+- **Granola MCP server spec.** TechCrunch March 2026 mentions Granola shipped an MCP server in Feb 2026 and personal/enterprise APIs in March, but I couldn't reach a public schema page to verify what tools/resources are exposed.
+- **Limitless post-Meta product roadmap.** Meta has stated only "support for ≥1 year"; whether the technology folds into Ray-Ban Meta or AI Studio is implied but not confirmed.
