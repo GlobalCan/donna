@@ -139,3 +139,55 @@ Cutoff: April 2026. Anything pre-April-2025 is flagged as potentially stale.
 - Solo-tier: free, self-host, runs locally. Default ingest tool for Donna.
 - Pattern for Donna: try `yt-dlp --write-auto-subs` first; if no subs or quality is too low, fall through to whisper.cpp/AssemblyAI/Deepgram.
 
+## whisper.cpp
+
+- Primary source: <https://github.com/ggml-org/whisper.cpp>
+- One-line: ggml C/C++ port of OpenAI's Whisper; the default self-hostable ASR for solo operators in 2026.
+- Currency: v1.8.3 released Jan 2026 with 12x perf boost on integrated GPUs. Active. Not stale. ([Phoronix](https://www.phoronix.com/news/Whisper-cpp-1.8.3-12x-Perf))
+- Speed: with Apple Silicon Metal/CoreML, large-v3-turbo runs faster than realtime on M-series Macs; on a Linux box with a modest CUDA GPU, large-v3 also runs comfortably faster than realtime. ([HN](https://news.ycombinator.com/item?id=43880345))
+- Accuracy: same model weights as OpenAI Whisper — large-v3 is competitive with cloud APIs on clean speech, weaker on heavy accents and overlapping speakers vs. AssemblyAI/Deepgram.
+- Diarization: **the weak spot.** Native support is via `tinydiarize` (special tokens for speaker turns) — works on small.en, experimental, single-channel only. For real diarization, pair with `pyannote-audio` or `whisperx` post-processing. ([tinydiarize PR](https://github.com/ggml-org/whisper.cpp/pull/1058))
+- Languages: 99 (Whisper's training set).
+- Self-host: yes — it's the point. Single binary, no service required.
+- Cost: free; capex is the GPU. For a solo operator with an M-series Mac or 12GB+ NVIDIA GPU, marginal cost ≈ 0.
+- Default recommendation for Donna: yes, whisper.cpp + whisperx for diarization is the right local stack.
+
+## AssemblyAI
+
+- Primary source: <https://www.assemblyai.com/pricing>, <https://www.assemblyai.com/features/speaker-diarization>
+- One-line: cloud ASR with the strongest published diarization numbers and a developer-friendly REST API.
+- Model (April 2026): Universal-2 / Universal flat-rate tier. 99 languages, auto language detection, diarization on 95 of them. ([AssemblyAI 99 langs](https://www.assemblyai.com/blog/99-languages))
+- Speed: async (POST file → poll for transcript) or realtime streaming over WebSocket. Async finishes faster than realtime; streaming has sub-second latency.
+- Accuracy: claims 2.9% speaker-counting error rate; Universal-2 cuts speaker errors 64% on long-form audio.
+- Diarization: enable via flag; response is `utterances[]` with `speaker` labels — cleaner schema than Deepgram's segment-level approach.
+- Pricing: $0.15/hr Pay-As-You-Go base, $0.27/hr Universal flat rate (covers most features), diarization +$0.02/hr. $50 free credit. ([AssemblyAI pricing](https://www.assemblyai.com/pricing))
+- Solo-tier: yes — pay as you go, no minimum.
+- Self-host: no.
+- Lesson for Donna: best fallback for "I don't have a GPU and the audio is multi-speaker."
+
+## Deepgram
+
+- Primary source: <https://deepgram.com/pricing>, <https://deepgram.com/learn/introducing-nova-3-speech-to-text-api>
+- One-line: cloud ASR optimised for ultra-low-latency streaming.
+- Model (April 2026): Nova-3 General. 45+ languages, smart formatting, keyterm prompting.
+- Speed: median inference reportedly up to 40x faster than competing diarization-enabled APIs. Sub-1s streaming latency. ([Deepgram blog](https://deepgram.com/learn/speech-to-text-benchmarks))
+- Accuracy: competitive WER with AssemblyAI on English; weaker on long-tail languages.
+- Diarization: yes; charged separately at small additional rate.
+- Pricing: ~$0.0043/min batch / ~$0.0077/min streaming for Nova-3 ($0.26–$0.46/hr). $200 free credit. Streaming is ~79% more than batch. ([Deepgram pricing breakdown](https://brasstranscripts.com/blog/deepgram-pricing-per-minute-2025-real-time-vs-batch))
+- Solo-tier: yes — $200 free credit goes a long way for a solo operator.
+- Self-host: enterprise on-prem container available; not relevant at solo scale.
+- Lesson for Donna: best when latency matters (live meeting transcription). For batch ingest of an article's embedded video, AssemblyAI's diarization is cleaner.
+
+## Community Notes (X) — bridging-based ranking
+
+- Primary sources: ["Birdwatch to Community Notes" overview, arXiv 2510.09585](https://arxiv.org/pdf/2510.09585); [Asterisk Magazine "The Making of Community Notes"](https://asteriskmag.com/issues/08/the-making-of-community-notes); [PNAS Nexus 2024 trust study](https://academic.oup.com/pnasnexus/article/3/7/pgae217/7686087); methodology code: <https://github.com/twitter/communitynotes>.
+- One-line: open-source crowd fact-check system whose "bridging algorithm" surfaces notes only when raters who normally disagree both find a note helpful.
+- Algorithm — what Donna can borrow: matrix-factorisation model on (rater, note) helpfulness votes. The model factors out rater-polarity and surfaces notes with high helpfulness *after* polarity is removed. Notes that pass the threshold appear under the post; notes that don't pass don't appear at all. It is *not* majority vote, and it is *not* a politically-balanced jury — it's a polarity-residual model. ([Asterisk](https://asteriskmag.com/issues/08/the-making-of-community-notes))
+- Counter-evidence UX: the result is the cleanest "show the other side without hedging" UX in the wild — under a contested claim, you see one note, written by humans, signed (effectively) by people who disagree about everything else. No mealy-mouthed "some say X others say Y" — a single concrete counter-claim with sources.
+- Adoption: Meta started testing Community Notes on FB/IG/Threads March 2025; TikTok piloted similar. ([arXiv 2510.09585](https://arxiv.org/pdf/2510.09585))
+- Known issues:
+  - **Coverage gap** — De et al. (2024) report that in 91% of posts where a note was proposed, none ever reached "helpful." Most contested claims get no note at all.
+  - **Sustainability** — helpful-note throughput has been declining since May 2024; rater retention is a problem. ([arXiv 2510.00650](https://arxiv.org/html/2510.00650v1))
+  - Threshold tightening (March 2025: ≥10 raters of differing past behaviour required) cuts noise but worsens latency and coverage.
+- For Donna: the bridging *algorithm* is the right inspiration, but Donna doesn't have raters — it has one operator. The translation: when Donna shows counter-evidence, prefer sources that *contradict the operator's prior reading* AND are independently credible. The "bridge" is between Donna's prior model of the operator and external counter-evidence — show what credibly contradicts what the operator already believes.
+

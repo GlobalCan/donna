@@ -297,3 +297,93 @@ labelled.
 - **Currency:** docs current as of v2026.4.8 (Apr 2026) per the GitHub
   release tag. Current.
 
+## Synthesis — what this implies for Donna's tool-sandbox model
+
+Reading across these sources, the April-2026 consensus is clear and
+uncomfortable: prompt injection is **not** a fixable model bug (NCSC),
+training mitigations cap out at "useful but bypassable" (Anthropic
+Constitutional Classifiers++, OpenAI Instruction Hierarchy), and
+*architectural* containment is the only thing that gives provable
+guarantees (CaMeL, lethal-trifecta partitioning). The OpenClaw incident
+is the canonical demonstration that *high-privilege agent + community
+extension store + assumed trust = supply-chain malware vector* and is
+the cautionary tale Donna must avoid replicating.
+
+Concrete primitives Donna should adopt, in priority order:
+
+1. **Trifecta partitioning at the architectural level.** Any single
+   execution context must hold at most two of {private data, untrusted
+   content, exfiltration tool}. This is the highest-leverage decision.
+2. **Plan-execute split à la CaMeL.** A privileged planner sees only the
+   user query and emits a typed plan; a quarantined parser handles
+   untrusted content with no tool access; an interpreter enforces
+   capability checks at every tool boundary.
+3. **Capability tokens / data-flow tracking on every chunk.** Each
+   ingested value carries provenance + allowed-sinks; tool calls fail
+   closed when capabilities don't match.
+4. **Strict-schema outputs across every internal hop** (OpenAI
+   Structured Outputs pattern). Nothing free-form crosses a trust
+   boundary.
+5. **Instruction hierarchy in prompts** (system > developer > user >
+   tool/web), explicitly tagged so the model — and any downstream
+   classifier — can reason about provenance.
+6. **Defense-in-depth runtime filters** (Anthropic-style classifiers,
+   NeMo Guardrails-style probes, garak in CI) — useful but never the
+   last line.
+7. **Hermes-style MCP hygiene if MCP is supported at all:** filtered
+   env to subprocesses, OSV malware scan before spawn, allowlist by
+   default, denylist destructive tools (delete/refund/exec), sanitise
+   error strings.
+8. **Skill/extension marketplace = no, or very-tightly-scoped.** The
+   OpenClaw lesson is that any community plugin store with default-on
+   trust is a malware distribution channel; if Donna ships extensions,
+   default to operator-authored, signed, capability-scoped.
+9. **No 100 %-mitigation claim, ever.** UI must show users which legs
+   of the trifecta are active and which tools touched untrusted input.
+
+Threats that remain genuinely unsolved as of April 2026:
+
+- General prompt injection itself (NCSC: "may never be totally
+  mitigated"); reconstruction attacks bypass classifiers (Anthropic).
+- Indirect injection via agent memory (poisoned memory persists across
+  sessions; no formal mitigation in the literature).
+- Supply-chain attacks on agent extension stores (OpenClaw is the
+  proof; signing alone is insufficient — typosquatting + ClickFix
+  evades it).
+- Self-hosted exposure (Shodan-indexed OpenClaw instances → CVE-class
+  exposure even before any prompt is processed).
+- Multi-step exfiltration via image rendering / link previews / fetched
+  resources — the trifecta's "external communication" leg is hard to
+  fully close in a useful agent.
+
+## Scope gaps I couldn't resolve
+
+- **Hermes "Pattern A / Pattern B" naming.** Marked UNVERIFIED above.
+  No primary source uses that naming. If the brief author has a private
+  reference (e.g., a Discord post, a talk slide, an internal doc),
+  please surface it; otherwise treat the claim as folklore.
+- **A November-2025 / 300-skills OpenClaw post-mortem.** The closest
+  verified facts (ClawHavoc, Jan–Feb 2026, 341 → 1,184 malicious skills,
+  346 k stars, "hightower6eu" account >300 skills) are documented in
+  the vendor research links above. **No upstream OpenClaw post-mortem
+  document existed at the time of writing** that I could find — only
+  the founder's reactive statements quoted in vendor blogs. The
+  GitHub Security tab https://github.com/openclaw/openclaw/security
+  is the closest project-side record; it has not been published as a
+  formal post-mortem. Treat the November-2025 framing in the brief as
+  inaccurate unless the author has another incident in mind.
+- **Direct text of NCSC and Anthropic primary pages.** WebFetch returned
+  403 on simonwillison.net, anthropic.com, ncsc.gov.uk, and arxiv.org
+  during this run — content above synthesised from search-result
+  snippets that *are* drawn from those primary URLs. URLs cited remain
+  primary; quoted phrasing has been kept verbatim only where the
+  search snippet preserves it.
+- **OpenAI agent-builder structured-output guidance in full.** Same
+  WebFetch issue; the quoted "freeform channels" line is from the
+  primary `platform.openai.com/docs/guides/agent-builder-safety` page
+  via search snippet.
+- **Deeper CaMeL details** (interpreter semantics, threat-model
+  formalisation) not pulled directly from the PDF (403); the
+  architecture summary is consistent across DeepMind/MarkTechPost/SSOJet
+  /Simon Willison restatements but readers should consult the arXiv
+  paper for primary formalism.
