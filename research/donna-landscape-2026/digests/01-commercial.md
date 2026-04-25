@@ -30,10 +30,10 @@
 
 ## Cross-cutting observations
 
-- Stack opacity is the norm: nearly every product hides LLM provider, memory schema, tool list.
-- MCP is becoming the de facto interop surface (Day.ai into Claude; Granola server out).
-- Wearable consolidation Dec 2025 (Meta/Limitless, HP/Humane) collapsed the standalone consumer-AI-hardware category.
-- Enterprise gravity: Sana, Day, Personal.ai, Granola all drift toward B2B revenue despite consumer roots.
+- Stack opacity is the norm; LLM provider, memory schema, tool list usually hidden.
+- MCP is the emerging interop surface (Day.ai into Claude; Granola server out).
+- Wearable consolidation Dec 2025 (Meta/Limitless, HP/Humane) collapsed the consumer-AI-hardware category.
+- Enterprise gravity: Sana, Day, Personal.ai, Granola all drift B2B despite consumer roots.
 - Provenance UX maxes out at NotebookLM's passage-citing; nobody ships labeled extrapolation.
 
 ## Unresolved
