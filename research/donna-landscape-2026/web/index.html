@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Donna v0.5 — Personal-AI Landscape, April 2026</title>
+<meta name="description" content="Synthesis of the April-2026 personal-AI landscape: 77 products, 8 categories, 16 post-mortems. Where Donna's design center lands relative to the field." />
+<link rel="stylesheet" href="assets/styles.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Newsreader:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+<script src="assets/site.js" defer></script>
+</head>
+<body data-page="index">
+
+<nav id="site-nav" class="site-nav"></nav>
+
+<main>
+  <header class="hero">
+    <div class="eyebrow">Market scan · 8 categories · April 2026</div>
+    <h1>Where Donna sits in the personal-AI landscape.</h1>
+    <p class="lead">A 5-week scan of 77 products across 8 categories — commercial assistants, OSS chat UIs, agent frameworks, memory systems, GraphRAG, persona/digital-twin, security &amp; prompt-injection, and validation tools — read against Donna's design tenets: solo-operator self-host, oracle-not-scholar with labeled extrapolation, first-class bitemporal memory, sandboxed tool use.</p>
+
+    <div class="stat-row">
+      <div class="stat"><div class="num">77</div><div class="label">products surveyed</div></div>
+      <div class="stat"><div class="num">8</div><div class="label">categories</div></div>
+      <div class="stat"><div class="num">16</div><div class="label">post-mortems cited</div></div>
+      <div class="stat"><div class="num">4</div><div class="label">open lanes for Donna</div></div>
+    </div>
+  </header>
+
+  <section>
+    <h2>Eight categories</h2>
+    <p>Each category was researched into a <em>raw</em> file (~3-5k words), distilled into a <em>digest</em> (~800 words), and folded into the <a href="synthesis.html">synthesis</a>. Click a category to read its digest.</p>
+    <div id="category-grid" class="category-grid"></div>
+  </section>
+
+  <section>
+    <h2>At a glance</h2>
+    <p>Three views over the 77-row corpus. The license split confirms OSS is dominant in tooling but rare in shipped consumer assistants. Self-host viability tracks license closely. Products-per-category shows where the market has consolidated effort.</p>
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h4>License distribution</h4>
+        <div class="sub">OSI-permissive vs closed vs source-available, across 77 rows</div>
+        <canvas id="chart-license"></canvas>
+      </div>
+      <div class="chart-card">
+        <h4>Self-host viability</h4>
+        <div class="sub">Self-hostable today vs cloud-only vs N/A (papers/methodology)</div>
+        <canvas id="chart-selfhost"></canvas>
+      </div>
+      <div class="chart-card">
+        <h4>Products per category</h4>
+        <div class="sub">Where the surveyed effort concentrates</div>
+        <canvas id="chart-percat"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Memory persistence shape</h2>
+    <p>The memory axis is where Donna's tenets diverge most sharply from the field. Bitemporal stores (Zep / Graphiti / mnemostack) attach event-time and ingestion-time to every fact and invalidate rather than delete; agent-rewrite stores (Letta / Mem0) overwrite. Most products either default to per-conversation history or punt to RAG. <strong>Only three products in the entire scan implement bitemporal facts.</strong></p>
+    <div class="chart-card" style="max-width:680px">
+      <h4>Memory shape across the corpus</h4>
+      <div class="sub">Counts include "N/A" for security papers, methodology references, and pure inference layers</div>
+      <canvas id="chart-memory"></canvas>
+    </div>
+  </section>
+
+  <section>
+    <h2>Persona-stance taxonomy</h2>
+    <p>Five stances on "an AI that speaks beyond its sources." Four of them are populated by shipped products. The fifth — <strong>extrapolate with structured per-claim status, in an assistant UI</strong> — is empty.</p>
+    <div class="quadrant" style="aspect-ratio:5/3;max-width:840px">
+      <svg viewBox="0 0 800 480" xmlns="http://www.w3.org/2000/svg">
+        <!-- axis lines -->
+        <line x1="60" y1="40" x2="60" y2="440" stroke="#2a2a30" stroke-width="2"/>
+        <line x1="60" y1="440" x2="780" y2="440" stroke="#2a2a30" stroke-width="2"/>
+        <!-- axis labels -->
+        <text x="20" y="240" fill="#a8a6a0" font-size="13" font-family="Inter" transform="rotate(-90 20 240)" text-anchor="middle">extrapolation: refuse → mark → unmarked</text>
+        <text x="420" y="470" fill="#a8a6a0" font-size="13" font-family="Inter" text-anchor="middle">delivery surface: prose → product behaviour → assistant UI</text>
+
+        <!-- 1: refuse -->
+        <g>
+          <circle cx="160" cy="380" r="44" fill="rgba(110,231,163,0.14)" stroke="#6ee7a3" stroke-width="1.5"/>
+          <text x="160" y="382" fill="#6ee7a3" font-size="12" font-family="Inter" text-anchor="middle" font-weight="500">Refuse</text>
+          <text x="160" y="398" fill="#a8a6a0" font-size="10" font-family="Inter" text-anchor="middle">NotebookLM · HereAfter · StoryFile</text>
+        </g>
+
+        <!-- 2: extrapolate, no markers -->
+        <g>
+          <circle cx="640" cy="380" r="48" fill="rgba(239,142,142,0.14)" stroke="#ef8e8e" stroke-width="1.5"/>
+          <text x="640" y="376" fill="#ef8e8e" font-size="12" font-family="Inter" text-anchor="middle" font-weight="500">Unmarked</text>
+          <text x="640" y="392" fill="#a8a6a0" font-size="10" font-family="Inter" text-anchor="middle">Character.ai · Replika · Pi</text>
+          <text x="640" y="406" fill="#a8a6a0" font-size="10" font-family="Inter" text-anchor="middle">Friend · RightBack</text>
+        </g>
+
+        <!-- 3: per-claim status header in prose (rationalist tradition) -->
+        <g>
+          <circle cx="180" cy="200" r="50" fill="rgba(143,179,224,0.14)" stroke="#8fb3e0" stroke-width="1.5"/>
+          <text x="180" y="196" fill="#8fb3e0" font-size="12" font-family="Inter" text-anchor="middle" font-weight="500">Per-claim status</text>
+          <text x="180" y="212" fill="#a8a6a0" font-size="10" font-family="Inter" text-anchor="middle">— in prose —</text>
+          <text x="180" y="228" fill="#a8a6a0" font-size="10" font-family="Inter" text-anchor="middle">Alexander · Appleton · Krycho</text>
+        </g>
+
+        <!-- 4: calibrated markers in model behaviour (OAI Spec / Anthropic Constitution) -->
+        <g>
+          <circle cx="430" cy="160" r="54" fill="rgba(246,200,115,0.14)" stroke="#f6c873" stroke-width="1.5"/>
+          <text x="430" y="156" fill="#f6c873" font-size="12" font-family="Inter" text-anchor="middle" font-weight="500">Calibrated markers</text>
+          <text x="430" y="172" fill="#a8a6a0" font-size="10" font-family="Inter" text-anchor="middle">— in model output —</text>
+          <text x="430" y="188" fill="#a8a6a0" font-size="10" font-family="Inter" text-anchor="middle">OpenAI Model Spec · Anthropic Constitution</text>
+        </g>
+
+        <!-- 5: structured per-claim status in assistant UI -->
+        <g>
+          <circle cx="660" cy="100" r="60" fill="rgba(201,184,118,0.18)" stroke="#c9b876" stroke-width="2" stroke-dasharray="6 4"/>
+          <text x="660" y="92" fill="#c9b876" font-size="13" font-family="Newsreader" text-anchor="middle" font-weight="600">Donna</text>
+          <text x="660" y="108" fill="#c9b876" font-size="11" font-family="Inter" text-anchor="middle">labeled extrapolation</text>
+          <text x="660" y="124" fill="#a8a6a0" font-size="10" font-family="Inter" text-anchor="middle">— in assistant UI —</text>
+          <text x="660" y="138" fill="#a8a6a0" font-size="10" font-family="Inter" text-anchor="middle" font-style="italic">empty slot · open ground</text>
+        </g>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <h2>The 24 months that mattered</h2>
+    <p>Selected events from April 2024 to April 2026 — the period the synthesis treats as "current." Each event is cited from primary sources in the per-category digests.</p>
+    <div class="timeline" id="timeline"></div>
+  </section>
+
+  <section>
+    <h2>Where this lives</h2>
+    <p>This site is a static rendering of the underlying research artifacts. The source markdown is in the repo:</p>
+    <ul>
+      <li><code>research/donna-landscape-2026/raw/</code> — 8 raw research files (~3-5k words each)</li>
+      <li><code>research/donna-landscape-2026/digests/</code> — 8 distilled digests (~800-1700 words each)</li>
+      <li><code>research/donna-landscape-2026/REPORT.md</code> — the synthesis (5,893 words)</li>
+      <li><code>research/donna-landscape-2026/DONNA_CONTEXT.md</code> — the design brief used for the scan</li>
+      <li><code>research/donna-landscape-2026/web/</code> — this site</li>
+    </ul>
+  </section>
+</main>
+
+<footer class="site-footer">
+  Donna v0.5 · Personal-AI Landscape 2026-04-25 · 77 products · 8 categories · 16 post-mortems
+</footer>
+
+<script>
+window.DONNA_INIT_CHARTS = function() {
+  // ---- category cards ----
+  const catGrid = document.getElementById("category-grid");
+  if (catGrid && DONNA.categories) {
+    catGrid.innerHTML = DONNA.categories.map(c => `
+      <a href="${c.slug}.html" class="category-card cat-${c.num}">
+        <div class="num">${c.num} / 08</div>
+        <h3>${c.longTitle}</h3>
+        <div class="count">${c.count} products</div>
+        <div class="finding">${c.finding}</div>
+      </a>
+    `).join("");
+  }
+
+  // ---- timeline ----
+  const tl = document.getElementById("timeline");
+  if (tl && DONNA.timeline) {
+    tl.innerHTML = DONNA.timeline.map(ev => `
+      <div class="timeline-event ${ev.type}">
+        <div class="date">${ev.date}</div>
+        <div class="title">${ev.title}</div>
+        <div class="body">${ev.body}</div>
+      </div>
+    `).join("");
+  }
+
+  if (!window.Chart) return;
+
+  // global chart styling
+  Chart.defaults.color = "#a8a6a0";
+  Chart.defaults.font.family = "Inter, system-ui, sans-serif";
+  Chart.defaults.borderColor = "#2a2a30";
+  Chart.defaults.plugins.legend.labels.boxWidth = 12;
+  Chart.defaults.plugins.legend.labels.boxHeight = 12;
+  Chart.defaults.plugins.legend.labels.padding = 12;
+
+  const palette = ["#c9b876", "#8fb3e0", "#d49ba8", "#8eb89b", "#b89bd4", "#87a8c9", "#c98787", "#d4a574"];
+
+  // ---- license donut ----
+  const lc = document.getElementById("chart-license");
+  if (lc && DONNA.stats?.license) {
+    const labels = Object.keys(DONNA.stats.license);
+    const data = Object.values(DONNA.stats.license);
+    new Chart(lc, {
+      type: "doughnut",
+      data: {
+        labels,
+        datasets: [{
+          data,
+          backgroundColor: ["#8eb89b", "#c98787", "#f6c873", "#6c6a64"],
+          borderColor: "#0e0e10",
+          borderWidth: 2
+        }]
+      },
+      options: {
+        plugins: { legend: { position: "bottom" } },
+        cutout: "60%"
+      }
+    });
+  }
+
+  // ---- self-host donut ----
+  const sh = document.getElementById("chart-selfhost");
+  if (sh && DONNA.stats?.self_host) {
+    const labels = Object.keys(DONNA.stats.self_host);
+    const data = Object.values(DONNA.stats.self_host);
+    new Chart(sh, {
+      type: "doughnut",
+      data: {
+        labels,
+        datasets: [{
+          data,
+          backgroundColor: ["#6ee7a3", "#ef8e8e", "#6c6a64"],
+          borderColor: "#0e0e10",
+          borderWidth: 2
+        }]
+      },
+      options: {
+        plugins: { legend: { position: "bottom" } },
+        cutout: "60%"
+      }
+    });
+  }
+
+  // ---- products per category ----
+  const pc = document.getElementById("chart-percat");
+  if (pc && DONNA.stats?.products_per_category) {
+    const labels = Object.keys(DONNA.stats.products_per_category);
+    const data = Object.values(DONNA.stats.products_per_category);
+    new Chart(pc, {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [{
+          data,
+          backgroundColor: palette,
+          borderRadius: 4
+        }]
+      },
+      options: {
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { display: false } },
+          y: { grid: { color: "#1f1f24" }, beginAtZero: true }
+        }
+      }
+    });
+  }
+
+  // ---- memory shape horizontal bar ----
+  const mem = document.getElementById("chart-memory");
+  if (mem && DONNA.stats?.memory_shape) {
+    const labels = Object.keys(DONNA.stats.memory_shape);
+    const data = Object.values(DONNA.stats.memory_shape);
+    new Chart(mem, {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [{
+          data,
+          backgroundColor: ["#c9b876", "#f6c873", "#87a8c9", "#8eb89b", "#b89bd4", "#6c6a64"],
+          borderRadius: 4
+        }]
+      },
+      options: {
+        indexAxis: "y",
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { color: "#1f1f24" }, beginAtZero: true },
+          y: { grid: { display: false } }
+        }
+      }
+    });
+  }
+};
+</script>
+
+</body>
+</html>

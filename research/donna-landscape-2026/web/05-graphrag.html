@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Graph-augmented RAG · Donna v0.5 Landscape</title>
+<meta name="description" content="6 products" />
+<link rel="stylesheet" href="assets/styles.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Newsreader:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/marked@13.0.2/marked.min.js" defer></script>
+<script src="assets/site.js" defer></script>
+<style>
+  body { --cat-accent: #87a8c9; }
+  .hero h1 { color: var(--cat-accent); }
+  .hero .eyebrow { color: var(--cat-accent); }
+  .markdown-body h2 { border-bottom-color: rgba(255,255,255,0.06); }
+  .markdown-body h2:first-of-type { color: var(--cat-accent); }
+  .markdown-body table tbody tr:hover { background: rgba(255,255,255,0.02); }
+  .nav-related {
+    display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 1.5rem 0 2rem;
+    font-size: 0.85rem;
+  }
+  .nav-related a {
+    background: var(--bg-card); border:1px solid var(--border); border-radius:999px;
+    padding: 0.35rem 0.9rem; color: var(--fg-muted); border-bottom: 1px solid var(--border);
+  }
+  .nav-related a:hover { border-color: var(--cat-accent); color: var(--fg); }
+</style>
+</head>
+<body data-page="05-graphrag">
+
+<nav id="site-nav" class="site-nav"></nav>
+
+<main>
+  <header class="hero">
+    <div class="eyebrow">05 / 08 · digest</div>
+    <h1>Graph-augmented RAG.</h1>
+    <p class="lead">6 products. Cost vs incrementality is the dominant trade. None implement true bitemporal facts. Cognee's temporal_cognify is the closest; Cognee themselves shipped a Graphiti integration acknowledging Graphiti's bitemporal model is more rigorous.</p>
+  </header>
+
+  <div class="nav-related">
+    <a href="index.html">← Overview</a>
+    <a href="synthesis.html">Synthesis</a>
+    <a href="04-memory.html">← Agent memory systems</a>
+    <a href="06-persona.html">Persona / digital-twin →</a>
+  </div>
+
+  <div id="digest-md" data-render-markdown># Graph-Augmented RAG Systems — digest
+
+## Per-product table
+
+| product | one-line | arch (lang/store/llm/tool/state) | pricing | self-host | notable | source |
+|---|---|---|---|---|---|---|
+| Microsoft GraphRAG | KG + hierarchical community summaries pipeline for global/local/drift search | Python; parquet on disk + optional vector store; OpenAI-compatible LLM; `graphrag index`/`update` CLI; Leiden communities | OSS MIT; LLM cost is the spend | Yes (local) | LazyGraphRAG claims ~1/700 query cost; full mode cost trap; incremental from v0.5.0 | https://github.com/microsoft/graphrag |
+| LightRAG (HKU) | Lighter dual-level (entity + graph) graph RAG | Python; Neo4j/Postgres/Mongo/OpenSearch/JSON-KV; recommends 32B+ LLM; iterative indexing; delete + auto-regen | OSS MIT | Yes | RAG-Anything multimodal add-on; HippoRAG 2 contests its benchmarks | https://github.com/HKUDS/LightRAG |
+| HippoRAG 2 | Neuro-inspired retrieval with OpenIE + Personalized PageRank | Python; in-process graph (bespoke); LLM/vLLM OpenIE; configurable embedder; explicit incremental + delete | OSS MIT | Yes | ICML 2025 paper; beats GraphRAG/LightRAG/RAPTOR on multi-hop benchmarks | https://github.com/OSU-NLP-Group/HippoRAG |
+| Cognee | "AI memory engine": graph+vector hybrid with add/cognify/memify/forget | Python; Kùzu embedded default (also Neo4j/FalkorDB/Memgraph/Neptune); LanceDB/Qdrant/Weaviate/pgvector/Redis vectors; Pydantic ontology; Ollama-friendly | OSS Apache-2.0; managed cloud optional | Yes | `temporal_cognify` event graphs; published Graphiti integration acknowledging Graphiti's better bitemporal model | https://github.com/topoteretes/cognee |
+| Neo4j GraphRAG (Python) | Neo4j's first-party GraphRAG toolkit | Python; Neo4j only graph store; Neo4j/Weaviate/Pinecone/Qdrant vectors; SimpleKGPipeline + retriever family (Vector, Hybrid, Text2Cypher); upserts | OSS Apache-2.0; Neo4j CE free, AuraDB managed | Yes (Neo4j req'd) | No built-in community detection; ms-graphrag-neo4j sister project fills that | https://github.com/neo4j/neo4j-graphrag-python |
+| LlamaIndex PropertyGraphIndex | Modular labelled-property-graph index w/ pluggable extractors+retrievers | Python; SimplePropertyGraphStore/Neo4j/Memgraph/Nebula/Kùzu/FalkorDB; multiple LLM extractors (Simple/Schema/Dynamic); upsert by doc_id; `refresh()` re-extracts changed | OSS MIT | Yes | Framework not algorithm; quality depends on extractor+retriever combo | https://developers.llamaindex.ai/python/framework/module_guides/indexing/lpg_index_guide/ |
+
+## Three patterns to steal
+
+1. (a) Embedded graph store as default backend so the operator doesn't run a DB process. (b) Cognee (Kùzu embedded), LightRAG (JSON-KV/in-memory), LlamaIndex (SimplePropertyGraphStore), HippoRAG 2 (in-process). (c) Matches Donna's "operator owns the data store" tenet and solo-operator ergonomics — no Neo4j ops surface to babysit. (d) https://github.com/topoteretes/cognee
+2. (a) First-class incremental updates via upsert-by-doc-id with re-extract-only-changed semantics (`refresh()` / `incremental_loading=True`). (b) LlamaIndex PropertyGraphIndex, Cognee, LightRAG, HippoRAG 2. (c) Donna's memory is mutating personal corpora; one-shot indexing (Microsoft GraphRAG full mode) is a non-starter. Donna needs the upsert-and-prune model. (d) https://www.llamaindex.ai/blog/introducing-the-property-graph-index-a-powerful-new-way-to-build-knowledge-graphs-with-llms
+3. (a) Event-tagged temporal graph with time-aware query parsing ("last week", "in 2023") that filters graph events. (b) Cognee's `temporal_cognify`. (c) Donna's temporal-versioning tenet needs at minimum this; Cognee's own Graphiti blog flags the next step (true bitemporal). Steal the event-edge shape now, plan the bitemporal upgrade. (d) https://docs.cognee.ai/guides/time-awareness
+
+## Three patterns to avoid
+
+1. (a) One-shot whole-corpus community summarization where every incremental add re-touches communities. (b) Microsoft GraphRAG full mode. (c) Documented as the canonical cost blowup; LazyGraphRAG was created specifically to fix it but isn't the OSS default. (d) https://www.microsoft.com/en-us/research/blog/lazygraphrag-setting-a-new-standard-for-quality-and-cost/
+
+(Two further candidate anti-patterns — heuristic entity dedup in Cognee (Issue #1831) and LightRAG's 32B+ extraction-model floor — are noted in the raw file but lack a dedicated post-mortem URL, so per the rule they are dropped.)
+
+## Cross-cutting observations
+
+- None of the six implements true bitemporal fact storage (valid-time × transaction-time, invalidation not overwrite); Cognee is closest and explicitly defers to Graphiti.
+- HippoRAG 2 has the most rigorous third-party-style eval (MuSiQue/2Wiki/HotpotQA/LV-Eval/NQ/PopQA/NarrativeQA); LightRAG's earlier benchmarks are now contested.
+- Cheapest laptop runs: LightRAG, Cognee (embedded Kùzu), HippoRAG 2. Microsoft GraphRAG full is the cost trap.
+- Provenance is uniformly chunk-level; no system surfaces claim-level confidence/bias/retraction — Donna's validation-surface tenet is unmet category-wide.
+- Neo4j GraphRAG and LlamaIndex are libraries, not memory products; they need composition for community summaries and temporal facts.
+
+## Unresolved
+
+- Microsoft GraphRAG cost-per-million-tokens on a 1k-doc personal corpus — no controlled 2026 benchmark located; matters for Donna's budget model.
+- Whether LazyGraphRAG is exposed in OSS `microsoft/graphrag` v3.0.x CLI vs. Azure-only — determines if Donna can use the cheap path without Azure.
+- Neo4j Inc. official support status of community detection (only via `neo4j-contrib/ms-graphrag-neo4j`) — affects production reliance.
+- HippoRAG 2 graph-store internals (dict vs. NetworkX vs. custom) undocumented; matters for concurrent-write productionization.
+- Claim-level provenance (confidence, source bias, retraction flags) absent across all six — directly blocks Donna's validation surface.
+- Cognee third-party benchmarks unavailable; only vendor-run comparisons exist.
+</div>
+
+</main>
+
+<footer class="site-footer">
+  Donna v0.5 · Graph-augmented RAG · digest · 2026-04-25 ·
+  <a href="https://github.com/globalcan/donna/blob/claude/donna-market-research-7Drtc/research/donna-landscape-2026/digests/05-graphrag.md">view markdown source</a> ·
+  <a href="https://github.com/globalcan/donna/blob/claude/donna-market-research-7Drtc/research/donna-landscape-2026/raw/05-graphrag.md">view raw research</a>
+</footer>
+
+</body>
+</html>

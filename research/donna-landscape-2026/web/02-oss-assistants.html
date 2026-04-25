@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>OSS self-hosted assistants · Donna v0.5 Landscape</title>
+<meta name="description" content="9 products" />
+<link rel="stylesheet" href="assets/styles.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Newsreader:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/marked@13.0.2/marked.min.js" defer></script>
+<script src="assets/site.js" defer></script>
+<style>
+  body { --cat-accent: #8eb89b; }
+  .hero h1 { color: var(--cat-accent); }
+  .hero .eyebrow { color: var(--cat-accent); }
+  .markdown-body h2 { border-bottom-color: rgba(255,255,255,0.06); }
+  .markdown-body h2:first-of-type { color: var(--cat-accent); }
+  .markdown-body table tbody tr:hover { background: rgba(255,255,255,0.02); }
+  .nav-related {
+    display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 1.5rem 0 2rem;
+    font-size: 0.85rem;
+  }
+  .nav-related a {
+    background: var(--bg-card); border:1px solid var(--border); border-radius:999px;
+    padding: 0.35rem 0.9rem; color: var(--fg-muted); border-bottom: 1px solid var(--border);
+  }
+  .nav-related a:hover { border-color: var(--cat-accent); color: var(--fg); }
+</style>
+</head>
+<body data-page="02-oss-assistants">
+
+<nav id="site-nav" class="site-nav"></nav>
+
+<main>
+  <header class="hero">
+    <div class="eyebrow">02 / 08 · digest</div>
+    <h1>OSS self-hosted assistants.</h1>
+    <p class="lead">9 products. Donna's most direct architectural neighbours. MCP is universal; memory is an afterthought everywhere except Khoj (whose memory subsystem is the buggiest); Open WebUI's April 2025 license pivot is a category-wide trust event.</p>
+  </header>
+
+  <div class="nav-related">
+    <a href="index.html">← Overview</a>
+    <a href="synthesis.html">Synthesis</a>
+    <a href="01-commercial.html">← Commercial personal-AI assistants</a>
+    <a href="03-agent-frameworks.html">Agent frameworks →</a>
+  </div>
+
+  <div id="digest-md" data-render-markdown># OSS Self-Hosted AI Assistants / Chat UIs / RAG Stacks — digest
+
+## Per-product table
+
+| product | one-line | arch (lang/store/llm/tool/state) | pricing | self-host | notable | source |
+|---|---|---|---|---|---|---|
+| LibreChat | Multi-user ChatGPT-style UI, agents+MCP+RAG | TS / Mongo+Redis+Meili / multi-provider+OAI-compat / MCP+Agents Marketplace / per-conv, no semantic memory | MIT; paid Code Interpreter add-on | Docker/compose | Multi-tenant default; 4,059 commits | https://github.com/danny-avila/LibreChat |
+| AnythingLLM | Desktop+Docker doc workspaces, no-code agents | JS / LanceDB+8 swappable+SQLite / 30+ providers / no-code agents+MCP / workspace RAG, no operator memory | MIT; hosted Cloud | Desktop (solo) + Docker | "Skill Selection" claims 80% token cut; v1.12.1 2026-04-22 | https://github.com/Mintplex-Labs/anything-llm |
+| Open WebUI | Polished Ollama/OAI-compat chat UI, pipelines+RAG | Py+Svelte / SQLite/PG+9 vector / Ollama+OAI-compat / Pipelines+funcs+MCP+artifact KV / per-conv + opt-in flat "Memories" | Custom "Open WebUI License" (NOT OSI) Apr 2025; CLA; 50-user branding wall | Docker/pip/Helm | License pivot drew HN backlash; v0.9.2 | https://github.com/open-webui/open-webui |
+| LocalAI | Self-host OAI/Anthropic-compat inference substrate | Go / none (PG+NATS distributed) / 36+ backends (llama.cpp/vLLM/MLX) / OAI tools+MCP / none | MIT | Single binary, Docker, P2P | Drop-in API; v4.1.3 2026-04-06 | https://github.com/mudler/LocalAI |
+| Khoj | Self-host "AI second brain" over notes/Notion/Obsidian | Py+TS / Postgres+pgvector / Llama/Qwen/OAI/Claude/Gemini / agents+web+deep research; MCP unconfirmed / long-term memory beta (buggy) | AGPL-3.0; cloud sub | Docker, desktop, Obsidian/Emacs | Only entry with long-term memory; perpetual beta; AGPL | https://github.com/khoj-ai/khoj |
+| Flowise | Drag-drop visual builder for LangChain agents+RAG | TS / SQLite+swap+user vector / LangChain / visual nodes incl. Tool/Func/MCP / per-flow memory | Apache-2.0; Cloud | npm/Docker | Visual paradigm hits wall ~20 nodes; v3.1.2 | https://github.com/FlowiseAI/Flowise |
+| Onyx (ex-Danswer) | OSS enterprise search+assistant, 50+ connectors | Py+TS / PG+Vespa+Redis+MinIO (Lite <1GB) / Anthropic/OAI/Gemini+Ollama/LiteLLM/vLLM / Custom Agents+MCP / per-user chat | MIT Community + Enterprise + Cloud free tier | Docker one-line; k8s/Helm | YC-backed $10M Mar 2025; team-first; v3.2.11 | https://github.com/onyx-dot-app/onyx |
+| PrivateGPT | LlamaIndex offline RAG-over-docs reference | Py / Qdrant+SQLite / LlamaCPP/Ollama/OAI/Azure/Gemini/SageMaker/vLLM / none / chat history only | Apache-2.0; successor Zylon | Docker, Gradio, local Py | STALE: v0.6.2 2024-08-08, 18mo old | https://github.com/zylon-ai/private-gpt |
+| continue.dev | OSS IDE coding assistant pivoting to CLI+CI agents | TS+Kotlin+Rust+Py / local `.continue/`+workspace indices / pluggable / MCP Registry+markdown agents / per-repo | Apache-2.0; Continue Hub | VS Code+JetBrains+CLI | Source-controlled markdown agent specs; v1.2.22 | https://github.com/continuedev/continue |
+
+## Three patterns to steal
+
+1. **Source-controlled, markdown-defined agent specs.** (a) Agents/policies stored as markdown in repo, diffable and reviewable via PR. (b) continue.dev (`.continue/checks/`). (c) Donna's tenets call for legible operator-controlled behavior; markdown specs match the solo-coder design center and let operators version Donna's procedural memory in git. (d) https://github.com/continuedev/continue
+2. **Desktop-app distribution for clean solo trust boundary.** (a) Ship a single-user desktop binary that skips multi-tenant auth scaffolding entirely. (b) AnythingLLM Desktop, Khoj-Obsidian. (c) Donna is solo-operator first / single trust boundary; default-auth installs (LibreChat/Onyx/OWUI) impose team friction Donna's user pays for nothing. (d) https://github.com/Mintplex-Labs/anything-llm
+3. **Protocol-mimicry inference layer (OpenAI + Anthropic API drop-in).** (a) Expose stable upstream APIs so the assistant can swap model substrates without UI changes. (b) LocalAI. (c) Donna's "self-host / local-friendly + cloud LLM allowed" tenet needs swap-out flexibility; layering Donna over a LocalAI-style routing tier preserves it. (d) https://github.com/mudler/LocalAI
+
+## Three patterns to avoid
+
+1. **CLA + restrictive license pivot on a popular OSS chat UI.** (a) BSD/MIT → source-available with branding wall + mandatory CLA. (b) Open WebUI (Apr 2025). (c) Erodes contributor trust; Donna should pre-commit a license stance. (d) https://github.com/open-webui/open-webui
+
+(Flowise visual-canvas debuggability, Khoj perpetual-beta memory, LibreChat/Onyx multi-tenant friction are flagged in raw but lack a specific post-mortem URL, so dropped per rules.)
+
+## Cross-cutting observations
+
+- MCP is table stakes (LibreChat, AnythingLLM, OWUI, LocalAI, Onyx, continue.dev, Flowise); not differentiating.
+- Memory is an afterthought everywhere except Khoj (whose subsystem is buggy); nobody documents temporal versioning or episodic/semantic/procedural separation.
+- Zero competitors surface intent-of-claim ("oracle vs scholar") labeling.
+- Multi-user posture leaks into solo installs (LibreChat, Onyx, OWUI, AnythingLLM-Docker).
+- LocalAI is the only pure inference substrate; others conflate routing+UI+state+tools.
+
+## Unresolved
+
+- Khoj 2.0.0-beta.28 date (2025 vs 2026) — cadence implies 2026; matters for staleness.
+- Khoj self-host datastore unconfirmed (docs 403); pgvector inferred.
+- AnythingLLM app-metadata datastore (SQLite) inferred from prisma layout.
+- LibreChat persistent cross-conversation memory in v0.7.x not surfaced in README.
+- Onyx Cloud/Enterprise and Flowise Cloud pricing not on README.
+- continue.dev current LLM provider list not enumerated in fetched content.
+- OWUI "Memories" storage shape (vector/KV/scoped) — docs 403-blocked.
+- HN/Lobsters OWUI license threads — fetches returned 403; weakens that post-mortem citation.
+</div>
+
+</main>
+
+<footer class="site-footer">
+  Donna v0.5 · OSS self-hosted assistants · digest · 2026-04-25 ·
+  <a href="https://github.com/globalcan/donna/blob/claude/donna-market-research-7Drtc/research/donna-landscape-2026/digests/02-oss-assistants.md">view markdown source</a> ·
+  <a href="https://github.com/globalcan/donna/blob/claude/donna-market-research-7Drtc/research/donna-landscape-2026/raw/02-oss-assistants.md">view raw research</a>
+</footer>
+
+</body>
+</html>
