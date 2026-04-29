@@ -1,13 +1,42 @@
 # Claude Deep Dive — Donna v0.4.0
 
-> Reviewer: Claude (Opus 4.7, 2026-04-24), operating as the adversarial reviewer
-> described in `docs/CODEX_DEEP_DIVE.md`. This is the "my review" leg of the
-> user's planned two-reviewer pass; a parallel Codex pass will be run in a
-> separate session and added alongside or merged into this document.
+> **Authorship note:** The filename `CODEX_REVIEW_DONNA_v0.4.0.md` is misleading.
+> This document was written by **Claude (Opus 4.7, 2026-04-24)** acting as the
+> adversarial reviewer described in `docs/CODEX_DEEP_DIVE.md`. The genuine
+> Codex (GPT-5.4) cross-vendor review is at
+> [`docs/CODEX_REVIEW_DONNA_v0.4.0_GPT5.md`](CODEX_REVIEW_DONNA_v0.4.0_GPT5.md);
+> the synthesis comparing both is at
+> [`docs/REVIEW_SYNTHESIS_v0.4.0.md`](REVIEW_SYNTHESIS_v0.4.0.md).
 >
 > Reviewer posture: skeptical of decisions, not just bugs. KNOWN_ISSUES.md
 > was read end-to-end before writing; prior-Codex findings are not re-flagged
 > here unless I think the fix is wrong.
+
+## Corrections after Codex (GPT-5.4) cross-vendor audit (2026-04-29)
+
+Two load-bearing claims below are factually wrong against HEAD `0149002`,
+verified independently by both a prior session and the genuine Codex pass:
+
+- **§4 #2 "Subprocess-isolated `run_python`" is OBSOLETE.** Already shipped.
+  `src/donna/tools/exec_py.py:39-73` uses
+  `asyncio.create_subprocess_exec(sys.executable, "-I", "-B", ...)` with
+  scrubbed env (`PATH` + 2 Python flags), `stdin=DEVNULL`, 30s timeout, and
+  64KB output cap. Ignore this recommendation; it is a finished item.
+- **§1 #8 / §4 #1 "no evaluation harness" is OVERSTATED.** A harness
+  scaffold exists at `evals/runner.py` + 3 golden YAMLs + README. The
+  correct framing is "scaffold exists but not yet a real ratchet" —
+  `_run_one()` returns `True` for non-`live` grounded/speculative cases
+  without exercising assertions (`evals/runner.py:41-49`). Expansion
+  remains highest-leverage; "missing" is wrong.
+
+Codex's pass also identified seven significant red flags this review
+**missed entirely** — the most important of which is **internal retrieval
+bypassing taint policy**. See the GPT-5 review's §8 and the synthesis doc
+for the merged actionable list.
+
+The remainder of this document is preserved verbatim as the Claude leg of
+the cross-vendor pass; the architecture-scorecard and red-flag findings
+were independently validated against current code.
 
 ---
 
