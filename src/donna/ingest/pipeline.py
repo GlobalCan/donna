@@ -45,11 +45,20 @@ async def ingest_text(
             conn, content=content, name=f"source:{title}",
             mime="text/plain", tags="knowledge,source", tainted=tainted,
         )
+        # Resolve work_id once, use the resolved value for BOTH the source
+        # row and every chunk row. Cross-vendor review #6 (Codex GPT-5):
+        # previously the source got `work_id or art["artifact_id"]` (a
+        # surrogate when caller didn't supply one) but chunks below got
+        # the raw `work_id` (None). Result: chunks across unrelated default
+        # ingests all share work_id=NULL, and `_apply_diversity` in
+        # `modes/retrieval.py` groups them under a single "__none__" bucket
+        # — silently collapsing diversity across mixed corpora.
+        resolved_work_id = work_id or art["artifact_id"]
         src_id = kn.insert_source(
             conn,
             agent_scope=scope,
             source_type=source_type,
-            work_id=work_id or art["artifact_id"],
+            work_id=resolved_work_id,
             title=title,
             publication_date=publication_date,
             author_period=author_period,
@@ -113,7 +122,7 @@ async def ingest_text(
                     chunk_index=idx,
                     fingerprint=fp,
                     embedding=emb,
-                    work_id=work_id,
+                    work_id=resolved_work_id,
                     publication_date=publication_date,
                     source_type=source_type,
                     token_count=tokens,
