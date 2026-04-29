@@ -1,0 +1,17 @@
+id: taint_propagation_clean_corpus
+description: |
+  Counterpart to 04: a clean knowledge_source must NOT taint retrieval.
+  Otherwise downstream consent escalation fires on every job, not just
+  the ones that actually saw untrusted content. Empty taint = correct
+  default.
+capability: taint_propagation
+setup:
+  scope: eval_taint_clean
+  source_tainted: false
+  chunks:
+    - {content: "kilo lima mike content payload one"}
+    - {content: "november oscar papa content payload two"}
+input:
+  query: "content payload"
+expect:
+  tainted: false
