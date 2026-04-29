@@ -306,3 +306,127 @@ Two of Codex's round-2 findings were real but deferred; see CHANGELOG
   `debate.py` wouldn't trip the test. Rewrite as a JobContext-stub
   test driving the real entrypoint. Non-urgent — the fix is valid,
   only the test binding is weak.
+
+## v0.4.0 — Cross-vendor review pass (2026-04-29)
+
+Three reviewer passes + one market research synthesis against HEAD
+`0149002`. Full triangulation in
+[`REVIEW_SYNTHESIS_v0.4.0.md`](REVIEW_SYNTHESIS_v0.4.0.md). Individual
+reviews:
+
+- [`CODEX_REVIEW_DONNA_v0.4.0.md`](CODEX_REVIEW_DONNA_v0.4.0.md) — Claude Opus 4.7 leg
+- [`CODEX_REVIEW_DONNA_v0.4.0_GPT5.md`](CODEX_REVIEW_DONNA_v0.4.0_GPT5.md) — GPT-5 leg (default, ChatGPT auth)
+- [`CODEX_REVIEW_DONNA_v0.4.0_GPT53CODEX.md`](CODEX_REVIEW_DONNA_v0.4.0_GPT53CODEX.md) — GPT-5.3-codex leg (API mode); surfaced 2 net-new findings
+- [`CODEX_REVIEW_DONNA_v0.4.0_GPT55PRO.md`](CODEX_REVIEW_DONNA_v0.4.0_GPT55PRO.md) — GPT-5.5-pro attempt (TRUNCATED, OpenAI quota hit at 296K tokens)
+- [`REVIEW_COMPARISON_GPT5_VARIANTS.md`](REVIEW_COMPARISON_GPT5_VARIANTS.md) — three-model side-by-side
+
+### Codex (GPT-5) cross-vendor red flags — NEW
+
+GPT-5 (default, ChatGPT auth) independently surfaced seven red flags
+Claude missed. All spot-checked against current code in the synthesis
+pass.
+
+| # | Severity | Finding | Where |
+|---|---|---|---|
+| C-RF-1 | **CRITICAL** | Internal retrieval bypasses taint propagation. `recall_knowledge` checks `knowledge_sources.tainted`; internal `retrieve_knowledge` calls in every mode don't | `agent/loop.py:55-62`, `modes/grounded.py:73`, `modes/speculative.py:45-55`, `modes/debate.py:104-111`, `tools/knowledge.py:54-87` |
+| C-RF-2 | **HIGH** | Debate mode lacks per-turn checkpoint. Worker crash mid-debate loses every prior turn | `modes/debate.py:98-176` |
+| C-RF-3 | **HIGH** | `work_id` not propagated from source to chunk rows. Retrieval diversity collapses unrelated NULL-`work_id` sources into one bucket | `ingest/pipeline.py:48-60,107-120`, `modes/retrieval.py:156-171` |
+| C-RF-4 | MED | Plan/implementation drift on tainted `send_update`. PLAN says tainted updates need confirmation; tool has no escalation flag | `docs/PLAN.md:94,159`, `tools/communicate.py:27-52`, `security/taint.py:19-27` |
+| C-RF-5 | MED | Attachment ingest temp-file race. Fixed `attach{ext}` path; concurrent ingests with same extension collide | `tools/attachments.py:82-85` |
+| C-RF-6 | MED | Stale-worker exception path writes `FAILED` without owner guard. Symmetric to v0.3.3 #23 fix that was missed here | `jobs/runner.py:60-67`, `memory/jobs.py:141-176` |
+| C-RF-7 | MED | Sanitizer model spend not attributed to jobs. Per-job cost in `botctl cost` undercounts by `sanitize_untrusted` calls | `security/sanitize.py:35-68`, `memory/cost.py:38-72` |
+
+Plus one architectural call Claude's scorecard missed:
+
+- **`checkpoint_state` opaque JSON blob, not first-class step state**.
+  `types.py:60-104` + `memory/jobs.py:84-138`. Why replay/fork/eval
+  drift and mid-debate recovery are all awkward. ⚠️ reconsider when the
+  step-state work in C-RF-2 lands.
+
+### Codex (GPT-5.3-codex) cross-vendor red flags — NET-NEW vs GPT-5
+
+GPT-5.3-codex on a second pass against the same prompt independently
+surfaced two findings that neither Claude nor GPT-5 caught:
+
+| # | Severity | Finding | Where |
+|---|---|---|---|
+| C53-RF-1 | **HIGH** | **Scheduler duplicate-fire across multiple workers.** Each worker process starts its own scheduler thread with no leadership lock; two workers fire same cron tick twice. Sharper concrete bug behind Claude §8.1 generic worker-leadership concern | `worker.py:46`, `jobs/scheduler.py:35`, `memory/schedules.py:40` |
+| C53-RF-2 | MED | **Denied / unknown / disallowed tool calls not audited.** When tool call rejected (consent denied, unknown tool, not allowlisted), error block returns to model but no row inserted in `tool_calls`. Operator can't audit attempted bypasses | `agent/context.py:200,208,253` |
+
+GPT-5.3-codex also raised the severity on three findings GPT-5 had
+softer reads on:
+
+- Mode dispatch (`if/elif` in `loop.py`): ⚠️ reconsider (vs GPT-5's ✅)
+- Cache-aware composition: ⚠️ "incomplete" (vs GPT-5's ✅ keep with concern)
+- `agent_scope` flat string: ❌ change (vs Claude's ⚠️; GPT-5 also said ❌)
+
+### Claude (Opus 4.7) red flags — verified by Codex spot-check
+
+10 red flags from Claude's review. All confirmed real against current
+code. Index of the file:line citations is the table in
+[`REVIEW_SYNTHESIS_v0.4.0.md`](REVIEW_SYNTHESIS_v0.4.0.md) §1.3.
+
+### Claude claims that were factually wrong
+
+| Claim | Reality |
+|---|---|
+| §4 #2 "build subprocess-isolated `run_python`" | Already shipped at `tools/exec_py.py:39-73` (`asyncio.create_subprocess_exec(sys.executable, "-I", "-B", ...)` + scrubbed env + 30s timeout + 64KB cap). DROP. |
+| §4 #1 / §1.8 "no evaluation harness" | Scaffold exists at `evals/runner.py` + 3 golden YAMLs. Correct framing: "scaffold exists, isn't a ratchet" — `_run_one()` returns `True` for non-`live` cases without exercising assertions (`evals/runner.py:41-49`). |
+
+### Verification-pass fresh findings (2026-04-28, prior to Codex pass)
+
+- **F1: `_execute_one` exception leakage.** Same shape as Claude §8.3.
+  Tools with `taints_job=True` can have attacker-controlled bytes in
+  their exception strings; `agent/context.py:237-241` substitutes
+  `str(e)` into both audit row and tool_result. Fix: fixed-string
+  error messages on tainting tools.
+- **F2: Eval harness scaffold reports PASS without assertions.**
+  `_run_one` returns `True` when `cap in ("grounded","speculative")`
+  and not `live`. Mark as SKIP not PASS, or add structural checks.
+- **F3: Volatile-block tokenization affects all retrieval, not just
+  retry.** `compose.py` puts chunks in volatile block for all modes;
+  fix at compose layer once.
+- **F4: Taint pre-scan is registry-driven, not input-driven.**
+  `context.py:163-171` works because all current taint is static.
+  Future dynamic-taint tools would slip past pre-scan in same parallel
+  batch.
+
+### Action queue — ranked merge of all sources
+
+Top 19 items in the merged queue live in
+[`REVIEW_SYNTHESIS_v0.4.0.md`](REVIEW_SYNTHESIS_v0.4.0.md) §5. The v0.5
+recommended menu is items 1-10; v0.6+ is 11-19. Headlines:
+
+1. **Internal retrieval taint propagation** (C-RF-1) — top priority
+2. **Eval scaffold → ratchet** — F2 + Claude §4 #1
+3. **`agent_scope` first-class** — Claude §B.2.5 + Codex stronger ❌
+4. **Scheduler leadership lock** (C53-RF-1) — net-new from GPT-5.3-codex
+5. **Step-level checkpoint/replay/fork** — C-RF-2 + checkpoint_state
+6. **`/validate` URL critique only** — Claude + Codex unanimous
+7. **`work_id` propagation fix** — C-RF-3
+8. **Session memory across Discord threads** — Claude §B.4 #5
+9. **Sanitizer cost attribution** — C-RF-7
+10. **Claim objects + span drilldown for grounded UI**
+
+Items 11-19: bitemporal facts, stale-worker guard, **denied-tool audit
+gap (C53-RF-2)**, `send_update` policy fix, attachment temp-file race,
+tainted-fact quarantine, streaming, Jaeger custom view, proactive
+surfacing.
+
+### Market-research factual corrections
+
+Two items in the original brief that drove the market research pass
+were wrong; downstream docs should correct:
+
+- "OpenClaw / Nov-2025 / 300+ skills" → **ClawHavoc / Jan-Feb 2026 /
+  341→1184 skills / 346k stars / CVE-2026-22708**
+- Hermes "Pattern A/B" terminology → **UNVERIFIED**, no primary source.
+  Treat as folklore; adopt Hermes MCP-hygiene primitives directly.
+
+### Newly closed by this pass
+
+- **PR #36 framing:** Claude review under misleading filename. File
+  retained as historical record; corrections block added at top
+  pointing to genuine Codex review and synthesis.
+- **§4 #2 subprocess `run_python` recommendation:** marked OBSOLETE;
+  not work to do.
