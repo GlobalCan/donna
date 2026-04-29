@@ -1,5 +1,44 @@
 # Changelog
 
+## [Unreleased] — 2026-04-29 — Internal retrieval taint propagation (cross-vendor review #1)
+
+### Fixed — internal retrieval bypassed taint policy (CRITICAL security gap)
+
+Cross-vendor adversarial pass (Claude Opus 4.7 + Codex GPT-5 + Codex
+GPT-5.3-codex, all three independently) flagged the highest-priority
+finding from PR #36's synthesis. `tools.knowledge.recall_knowledge`
+(the agent-callable wrapper) propagated `tainted=True` to the job when
+any returned chunk's `knowledge_sources.tainted=1`, but every mode
+handler (`agent/loop.py::_load_scoped_context` for chat,
+`modes/grounded.py:73`, `modes/speculative.py:46-49`,
+`modes/debate.py:104`) called `modes.retrieval.retrieve_knowledge`
+directly — bypassing the wrapper. A future tainted corpus chunk would
+shape grounded answers without firing consent gates on downstream
+`remember` / `run_python` / write tools.
+
+- **`modes/retrieval.py::retrieve_knowledge`** — taint check moved
+  in-core. Single SELECT against `knowledge_sources.tainted` for the
+  chosen chunks' source_ids, on the same connection, returns
+  `tainted: bool` on the result dict. Single source of truth.
+- **`tools/knowledge.py::recall_knowledge`** — simplified to delegate.
+  Manual taint check removed (now redundant). Same wire shape; same
+  `JobContext._execute_one` taint propagation semantics.
+- **`agent/loop.py::_load_scoped_context`** — return shape extended to
+  `(chunks, examples, anchors, tainted)`. Chat-mode loop body
+  propagates `retrieval_tainted` onto `ctx.state.tainted` at the
+  iteration boundary.
+- **`modes/{grounded,speculative,debate}.py`** — each mode handler
+  inspects `retrieval.get("tainted")` after the call and flips
+  `ctx.state.tainted = True` (with `otel.set_attr` for trace audit).
+
+10 new tests (`tests/test_internal_retrieval_taint.py`) pin the fix:
+unit tests for `retrieve_knowledge`'s `tainted` flag (true / false /
+empty corpus); integration tests confirming each of the four direct-call
+paths (chat, grounded, speculative, debate) propagates the flag onto
+`JobContext.state.tainted`.
+
+303 tests green (293 baseline + 10 new). No regressions.
+
 ## [0.4.0] — 2026-04-24 — Unified mode delivery + round-3 adversarial sweep + grounded end-to-end
 
 Started as a single deferred-follow-up fix (grounded/speculative/debate

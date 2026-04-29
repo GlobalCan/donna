@@ -23,7 +23,16 @@ async def retrieve_knowledge(
     max_tokens: int = 4000,
 ) -> dict[str, Any]:
     """Return top-K chunks under constraints. Returns:
-       {"chunks": [Chunk...], "refusal": str | None}
+       {"chunks": [Chunk...], "refusal": str | None, "tainted": bool}
+
+    The `tainted` flag is True when any returned chunk's source row has
+    ``knowledge_sources.tainted = 1``. Mode handlers (grounded, speculative,
+    debate, chat) call this directly without going through
+    `tools.knowledge.recall_knowledge`, so the flag must be propagated by
+    every caller into ``JobContext.state.tainted`` — otherwise an
+    attacker-controlled corpus shapes answers without firing the consent
+    escalation that downstream write tools rely on. (Cross-vendor review
+    finding §3.1 / Codex GPT-5.3-codex RF1.)
     """
     conn = connect()
     try:
@@ -39,44 +48,59 @@ async def retrieve_knowledge(
                 conn, agent_scope=scope, query_embedding=q_emb, limit=40,
             )
         keyword = kn.keyword_search(conn, agent_scope=scope, query=query, limit=40)
+
+        # Merge via reciprocal rank fusion
+        pool = _rrf_merge(semantic, keyword)
+        if not pool:
+            return {
+                "chunks": [],
+                "refusal": f"no relevant chunks for scope '{scope}'",
+                "tainted": False,
+            }
+
+        # Style-anchor filtering
+        if style_anchors_only:
+            pool = [(c, s) for c, s in pool if c.is_style_anchor]
+
+        # Temporal intent
+        intent = _infer_temporal_intent(query)
+        pool = _apply_temporal_prior(pool, intent)
+
+        # Diversity: cap by work_id (2) and source_type (3)
+        diverse = _apply_diversity(pool, max_per_work=2, max_per_source_type=3)
+
+        # Token budget cap
+        chosen: list[Chunk] = []
+        total_chars = 0
+        for c, _ in diverse:
+            if total_chars + len(c.content) > max_tokens * 4:
+                break
+            chosen.append(c)
+            total_chars += len(c.content)
+            if len(chosen) >= top_k:
+                break
+
+        refusal = None
+        if not chosen:
+            refusal = f"no relevant chunks for scope '{scope}' after filtering"
+
+        # Taint propagation: any chosen chunk from a tainted source taints
+        # the whole retrieval. Use the same connection — single SELECT,
+        # indexed lookup on knowledge_sources.id.
+        tainted = False
+        source_ids = list({c.source_id for c in chosen if getattr(c, "source_id", None)})
+        if source_ids:
+            placeholders = ",".join("?" * len(source_ids))
+            row = conn.execute(
+                f"SELECT 1 FROM knowledge_sources "
+                f"WHERE id IN ({placeholders}) AND tainted = 1 LIMIT 1",
+                source_ids,
+            ).fetchone()
+            tainted = row is not None
+
+        return {"chunks": chosen, "refusal": refusal, "intent": intent, "tainted": tainted}
     finally:
         conn.close()
-
-    # Merge via reciprocal rank fusion
-    pool = _rrf_merge(semantic, keyword)
-    if not pool:
-        return {
-            "chunks": [],
-            "refusal": f"no relevant chunks for scope '{scope}'",
-        }
-
-    # Style-anchor filtering
-    if style_anchors_only:
-        pool = [(c, s) for c, s in pool if c.is_style_anchor]
-
-    # Temporal intent
-    intent = _infer_temporal_intent(query)
-    pool = _apply_temporal_prior(pool, intent)
-
-    # Diversity: cap by work_id (2) and source_type (3)
-    diverse = _apply_diversity(pool, max_per_work=2, max_per_source_type=3)
-
-    # Token budget cap
-    chosen: list[Chunk] = []
-    total_chars = 0
-    for c, _ in diverse:
-        if total_chars + len(c.content) > max_tokens * 4:
-            break
-        chosen.append(c)
-        total_chars += len(c.content)
-        if len(chosen) >= top_k:
-            break
-
-    refusal = None
-    if not chosen:
-        refusal = f"no relevant chunks for scope '{scope}' after filtering"
-
-    return {"chunks": chosen, "refusal": refusal, "intent": intent}
 
 
 # ---------- helpers --------------------------------------------------------

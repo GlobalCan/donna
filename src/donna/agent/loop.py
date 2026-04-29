@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from ..config import settings
 from ..logging import get_logger
+from ..observability import otel
 from ..tools.registry import anthropic_tool_defs
 from ..types import JobMode, ModelTier
 from .compose import compose_system
@@ -53,7 +54,10 @@ async def _run_chat(ctx: JobContext) -> None:
         await ctx.maybe_compact()
 
         # Shared primitive: retrieval (if scope has a corpus)
-        chunks, examples, anchors = await _load_scoped_context(scope, task)
+        chunks, examples, anchors, retrieval_tainted = await _load_scoped_context(scope, task)
+        if retrieval_tainted and not ctx.state.tainted:
+            ctx.state.tainted = True
+            otel.set_attr("agent.job.tainted", True)
 
         # Shared primitive: compose
         system_blocks = compose_system(
@@ -93,12 +97,20 @@ async def _run_chat(ctx: JobContext) -> None:
 
 
 async def _load_scoped_context(scope: str, task: str):
+    """Returns (chunks, examples, anchors, tainted).
+
+    `tainted` is True when either retrieval surfaced a chunk from a tainted
+    knowledge source. Caller (chat mode) is responsible for propagating to
+    `JobContext.state.tainted` — the wrapper tool path goes through
+    `_execute_one` taint detection, but this internal path does not.
+    """
     if scope == "orchestrator":
-        return [], [], []
+        return [], [], [], False
     from ..modes.retrieval import retrieve_knowledge
     chunks_res = await retrieve_knowledge(scope=scope, query=task, top_k=8)
     anchors_res = await retrieve_knowledge(scope=scope, query=task, top_k=4, style_anchors_only=True)
-    return chunks_res.get("chunks", []), [], anchors_res.get("chunks", [])
+    tainted = bool(chunks_res.get("tainted") or anchors_res.get("tainted"))
+    return chunks_res.get("chunks", []), [], anchors_res.get("chunks", []), tainted
 
 
 def _pick_tier(ctx: JobContext) -> ModelTier:

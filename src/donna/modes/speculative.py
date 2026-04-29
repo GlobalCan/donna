@@ -47,6 +47,9 @@ async def run_speculative(ctx: JobContext) -> None:
         scope=scope, query=question, top_k=5, style_anchors_only=True,
     )
     ctx_res = await retrieve_knowledge(scope=scope, query=question, top_k=8)
+    if (anchors_res.get("tainted") or ctx_res.get("tainted")) and not ctx.state.tainted:
+        ctx.state.tainted = True
+        otel.set_attr("agent.job.tainted", True)
 
     system_blocks = compose_system(
         scope=scope, task=question, mode=JobMode.SPECULATIVE,

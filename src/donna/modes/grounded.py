@@ -72,6 +72,9 @@ async def run_grounded(ctx: JobContext) -> None:
     ctx.check_cancelled()
     retrieval = await retrieve_knowledge(scope=scope, query=question, top_k=8)
     chunks = retrieval.get("chunks", [])
+    if retrieval.get("tainted") and not ctx.state.tainted:
+        ctx.state.tainted = True
+        otel.set_attr("agent.job.tainted", True)
 
     if not chunks:
         ctx.state.final_text = (
