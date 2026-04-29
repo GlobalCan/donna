@@ -50,10 +50,12 @@ def _tv() -> AsyncTavilyClient:
         "Tainted — downstream memory writes require confirmation."
     ),
 )
-async def search_web(query: str, max_results: int = 8) -> dict[str, Any]:
+async def search_web(
+    query: str, max_results: int = 8, job_id: str | None = None,
+) -> dict[str, Any]:
     res = await _tv().search(query=query, max_results=max_results, search_depth="basic")
     hits = res.get("results", [])
-    sanitized_hits = await _sanitize_hits(hits, "search_web")
+    sanitized_hits = await _sanitize_hits(hits, "search_web", job_id=job_id)
     return {
         "query": query,
         "hits": sanitized_hits,
@@ -69,12 +71,15 @@ async def search_web(query: str, max_results: int = 8) -> dict[str, Any]:
         "search_web. Tainted."
     ),
 )
-async def search_news(query: str, max_results: int = 8, days: int = 7) -> dict[str, Any]:
+async def search_news(
+    query: str, max_results: int = 8, days: int = 7,
+    job_id: str | None = None,
+) -> dict[str, Any]:
     res = await _tv().search(
         query=query, max_results=max_results, topic="news", days=days, search_depth="basic",
     )
     hits = res.get("results", [])
-    sanitized_hits = await _sanitize_hits(hits, "search_news")
+    sanitized_hits = await _sanitize_hits(hits, "search_news", job_id=job_id)
     # Preserve the published_date field in news results
     for h, raw in zip(sanitized_hits, hits, strict=False):
         if raw.get("published_date"):
@@ -87,10 +92,15 @@ async def search_news(query: str, max_results: int = 8, days: int = 7) -> dict[s
     }
 
 
-async def _sanitize_hits(hits: list, source_tool: str) -> list[dict[str, Any]]:
+async def _sanitize_hits(
+    hits: list, source_tool: str, *, job_id: str | None = None,
+) -> list[dict[str, Any]]:
     """Codex review #4 fix — dual-call sanitize every search snippet before
     returning to the privileged model context. Fetch_url was the only sanitized
-    path before; this closes the gap."""
+    path before; this closes the gap.
+
+    `job_id` threaded through so the Haiku-sanitize spend attributes
+    correctly in `cost_ledger` (cross-vendor review #8)."""
     from ..security.sanitize import sanitize_untrusted
 
     out: list[dict[str, Any]] = []
@@ -106,6 +116,7 @@ async def _sanitize_hits(hits: list, source_tool: str) -> list[dict[str, Any]]:
                     raw_snippet,
                     artifact_id=f"search:{source_tool}:{h.get('url','')}",
                     source_url=h.get("url"),
+                    job_id=job_id,
                 )
             )
     results = await asyncio.gather(
@@ -217,7 +228,9 @@ async def fetch_url(
 
     # Dual-call sanitization (deferred to security.sanitize to avoid circular import)
     from ..security.sanitize import sanitize_untrusted
-    summary = await sanitize_untrusted(rendered, artifact_id=art["artifact_id"], source_url=url)
+    summary = await sanitize_untrusted(
+        rendered, artifact_id=art["artifact_id"], source_url=url, job_id=job_id,
+    )
 
     return {
         "url": url,
