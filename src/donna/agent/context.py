@@ -197,8 +197,17 @@ class JobContext:
         scope = self.job.agent_scope
         entry = REGISTRY.get(name)
         if entry is None:
+            # Audit the attempted bypass (Codex GPT-5.3-codex finding RF5):
+            # the model tried to call a tool that doesn't exist. Operators
+            # need this in `tool_calls` so `botctl traces` and the watchdog
+            # can see adversarial probing. Pre-fix this returned an error
+            # to the model and wrote nothing to the audit table.
+            self._audit_rejection(name, args, "unknown_tool",
+                                  f"tool {name} not registered")
             return _err_block(tu["id"], f"tool {name} not registered")
         if "*" not in entry.agents and scope not in entry.agents:
+            self._audit_rejection(name, args, "not_allowlisted",
+                                  f"tool {name} not allowed for scope {scope}")
             return _err_block(tu["id"], f"tool {name} not allowed for scope {scope}")
 
         consent_res = await consent_mod.check(
@@ -209,6 +218,8 @@ class JobContext:
             # "lease_lost" means we're a stale worker (Codex #8). The next
             # guarded checkpoint will raise LeaseLost so JobContext.open
             # unwinds cleanly; in the meantime, return an error tool_result.
+            self._audit_rejection(name, args, f"denied:{consent_res.reason}",
+                                  f"user declined ({consent_res.reason})")
             return _err_block(tu["id"], f"user declined ({consent_res.reason})")
 
         import inspect
@@ -268,6 +279,47 @@ class JobContext:
             "content": json.dumps(result, default=str) if not isinstance(result, str) else result,
             "is_error": status == "error",
         }
+
+    def _audit_rejection(
+        self, tool_name: str, arguments: dict[str, Any],
+        status: str, reason: str,
+    ) -> None:
+        """Persist a rejected tool-call attempt into `tool_calls` so
+        operators can audit attempted bypasses via `botctl traces` and
+        the watchdog. Used for unknown-tool, not-allowlisted, and
+        consent-denied paths in `_execute_one` (Codex GPT-5.3-codex
+        RF5 — net-new finding from cross-vendor review).
+
+        Status values:
+          - "unknown_tool"      — model called a tool that isn't registered
+          - "not_allowlisted"   — tool exists but isn't in this scope's set
+          - "denied:<reason>"   — consent gate rejected (timeout / "no" / lease_lost)
+
+        Best-effort: a logging failure here must not break the agent
+        loop. Swallow exceptions and log them.
+        """
+        try:
+            conn = connect()
+            try:
+                tool_calls_mod.insert_tool_call(
+                    conn,
+                    job_id=self.job.id,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    result={"rejected": True, "reason": reason},
+                    duration_ms=0,
+                    idempotent=True,
+                    tainted=self.state.tainted,
+                    status=status,
+                    error=reason,
+                )
+            finally:
+                conn.close()
+        except Exception as e:  # noqa: BLE001
+            log.exception(
+                "agent.tool.audit_failed",
+                tool=tool_name, status=status, error=str(e),
+            )
 
     # -- compaction -----------------------------------------------------------
     async def maybe_compact(self) -> None:
