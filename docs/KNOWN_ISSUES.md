@@ -309,16 +309,22 @@ Two of Codex's round-2 findings were real but deferred; see CHANGELOG
 
 ## v0.4.0 — Cross-vendor review pass (2026-04-29)
 
-Two reviews + one market-research pass against HEAD `0149002`. Full
-synthesis in [`REVIEW_SYNTHESIS_v0.4.0.md`](REVIEW_SYNTHESIS_v0.4.0.md);
-individual reviews in [`CODEX_REVIEW_DONNA_v0.4.0.md`](CODEX_REVIEW_DONNA_v0.4.0.md)
-(Claude leg) and [`CODEX_REVIEW_DONNA_v0.4.0_GPT5.md`](CODEX_REVIEW_DONNA_v0.4.0_GPT5.md)
-(GPT-5.4 leg).
+Three reviewer passes + one market research synthesis against HEAD
+`0149002`. Full triangulation in
+[`REVIEW_SYNTHESIS_v0.4.0.md`](REVIEW_SYNTHESIS_v0.4.0.md). Individual
+reviews:
 
-### Codex (GPT-5.4) cross-vendor red flags — NEW
+- [`CODEX_REVIEW_DONNA_v0.4.0.md`](CODEX_REVIEW_DONNA_v0.4.0.md) — Claude Opus 4.7 leg
+- [`CODEX_REVIEW_DONNA_v0.4.0_GPT5.md`](CODEX_REVIEW_DONNA_v0.4.0_GPT5.md) — GPT-5 leg (default, ChatGPT auth)
+- [`CODEX_REVIEW_DONNA_v0.4.0_GPT53CODEX.md`](CODEX_REVIEW_DONNA_v0.4.0_GPT53CODEX.md) — GPT-5.3-codex leg (API mode); surfaced 2 net-new findings
+- [`CODEX_REVIEW_DONNA_v0.4.0_GPT55PRO.md`](CODEX_REVIEW_DONNA_v0.4.0_GPT55PRO.md) — GPT-5.5-pro attempt (TRUNCATED, OpenAI quota hit at 296K tokens)
+- [`REVIEW_COMPARISON_GPT5_VARIANTS.md`](REVIEW_COMPARISON_GPT5_VARIANTS.md) — three-model side-by-side
 
-Codex independently surfaced seven red flags Claude missed. All
-spot-checked against current code in the synthesis pass.
+### Codex (GPT-5) cross-vendor red flags — NEW
+
+GPT-5 (default, ChatGPT auth) independently surfaced seven red flags
+Claude missed. All spot-checked against current code in the synthesis
+pass.
 
 | # | Severity | Finding | Where |
 |---|---|---|---|
@@ -336,6 +342,23 @@ Plus one architectural call Claude's scorecard missed:
   `types.py:60-104` + `memory/jobs.py:84-138`. Why replay/fork/eval
   drift and mid-debate recovery are all awkward. ⚠️ reconsider when the
   step-state work in C-RF-2 lands.
+
+### Codex (GPT-5.3-codex) cross-vendor red flags — NET-NEW vs GPT-5
+
+GPT-5.3-codex on a second pass against the same prompt independently
+surfaced two findings that neither Claude nor GPT-5 caught:
+
+| # | Severity | Finding | Where |
+|---|---|---|---|
+| C53-RF-1 | **HIGH** | **Scheduler duplicate-fire across multiple workers.** Each worker process starts its own scheduler thread with no leadership lock; two workers fire same cron tick twice. Sharper concrete bug behind Claude §8.1 generic worker-leadership concern | `worker.py:46`, `jobs/scheduler.py:35`, `memory/schedules.py:40` |
+| C53-RF-2 | MED | **Denied / unknown / disallowed tool calls not audited.** When tool call rejected (consent denied, unknown tool, not allowlisted), error block returns to model but no row inserted in `tool_calls`. Operator can't audit attempted bypasses | `agent/context.py:200,208,253` |
+
+GPT-5.3-codex also raised the severity on three findings GPT-5 had
+softer reads on:
+
+- Mode dispatch (`if/elif` in `loop.py`): ⚠️ reconsider (vs GPT-5's ✅)
+- Cache-aware composition: ⚠️ "incomplete" (vs GPT-5's ✅ keep with concern)
+- `agent_scope` flat string: ❌ change (vs Claude's ⚠️; GPT-5 also said ❌)
 
 ### Claude (Opus 4.7) red flags — verified by Codex spot-check
 
@@ -370,23 +393,25 @@ code. Index of the file:line citations is the table in
 
 ### Action queue — ranked merge of all sources
 
-Top 17 items in the merged queue live in
+Top 19 items in the merged queue live in
 [`REVIEW_SYNTHESIS_v0.4.0.md`](REVIEW_SYNTHESIS_v0.4.0.md) §5. The v0.5
-recommended menu is items 1-9; v0.6+ is 10-17. Headlines:
+recommended menu is items 1-10; v0.6+ is 11-19. Headlines:
 
 1. **Internal retrieval taint propagation** (C-RF-1) — top priority
 2. **Eval scaffold → ratchet** — F2 + Claude §4 #1
 3. **`agent_scope` first-class** — Claude §B.2.5 + Codex stronger ❌
-4. **Step-level checkpoint/replay/fork** — C-RF-2 + checkpoint_state
-5. **`/validate` URL critique only** — Claude + Codex unanimous
-6. **`work_id` propagation fix** — C-RF-3
-7. **Session memory across Discord threads** — Claude §B.4 #5
-8. **Sanitizer cost attribution** — C-RF-7
-9. **Claim objects + span drilldown for grounded UI**
+4. **Scheduler leadership lock** (C53-RF-1) — net-new from GPT-5.3-codex
+5. **Step-level checkpoint/replay/fork** — C-RF-2 + checkpoint_state
+6. **`/validate` URL critique only** — Claude + Codex unanimous
+7. **`work_id` propagation fix** — C-RF-3
+8. **Session memory across Discord threads** — Claude §B.4 #5
+9. **Sanitizer cost attribution** — C-RF-7
+10. **Claim objects + span drilldown for grounded UI**
 
-Items 10-17 cover bitemporal facts, stale-worker guard, `send_update`
-policy fix, attachment temp-file race, tainted-fact quarantine,
-streaming, Jaeger custom view, proactive surfacing.
+Items 11-19: bitemporal facts, stale-worker guard, **denied-tool audit
+gap (C53-RF-2)**, `send_update` policy fix, attachment temp-file race,
+tainted-fact quarantine, streaming, Jaeger custom view, proactive
+surfacing.
 
 ### Market-research factual corrections
 

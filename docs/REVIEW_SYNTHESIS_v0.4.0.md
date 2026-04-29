@@ -1,16 +1,29 @@
 # Review Synthesis — Donna v0.4.0
 
-> Synthesis of three independent passes against HEAD `0149002`:
+> Synthesis of three independent reviewers + a market research pass
+> against HEAD `0149002`. Updated 2026-04-29 to incorporate a second
+> Codex pass with `gpt-5.3-codex` after the operator unlocked API mode
+> with a real `OPENAI_API_KEY`.
 >
 > 1. **Claude (Opus 4.7, 2026-04-24)** — full architectural review against
 >    `docs/CODEX_DEEP_DIVE.md`. Captured in
 >    [`docs/CODEX_REVIEW_DONNA_v0.4.0.md`](CODEX_REVIEW_DONNA_v0.4.0.md)
 >    (filename misleading; corrections inline).
-> 2. **Codex (GPT-5.4, 2026-04-29)** — cross-vendor adversarial pass with
->    Claude's findings, the market research synthesis, and the prior
->    verification table fed in as context. Captured in
+> 2. **Codex GPT-5 (default, ChatGPT auth, 2026-04-29 morning)** —
+>    cross-vendor adversarial pass with Claude's findings, market research,
+>    and the prior verification table fed in as context. Captured in
 >    [`docs/CODEX_REVIEW_DONNA_v0.4.0_GPT5.md`](CODEX_REVIEW_DONNA_v0.4.0_GPT5.md).
-> 3. **Market research synthesis (2026-04-25)** — landscape report covering
+> 3. **Codex GPT-5.3-codex (API mode, 2026-04-29 afternoon)** — second
+>    pass on the same prompt; surfaced two findings nobody else caught
+>    (scheduler duplicate-fire + denied-tool audit gap). Captured in
+>    [`docs/CODEX_REVIEW_DONNA_v0.4.0_GPT53CODEX.md`](CODEX_REVIEW_DONNA_v0.4.0_GPT53CODEX.md).
+>    Side-by-side comparison with the GPT-5 leg in
+>    [`docs/REVIEW_COMPARISON_GPT5_VARIANTS.md`](REVIEW_COMPARISON_GPT5_VARIANTS.md).
+> 4. **Codex GPT-5.5-pro (API mode, 2026-04-29)** — TRUNCATED. Burned
+>    296K tokens reasoning + reading code, hit OpenAI quota mid-stream,
+>    no final review. Notes at
+>    [`docs/CODEX_REVIEW_DONNA_v0.4.0_GPT55PRO.md`](CODEX_REVIEW_DONNA_v0.4.0_GPT55PRO.md).
+> 5. **Market research synthesis (2026-04-25)** — landscape report covering
 >    60+ products across commercial / OSS / agent frameworks / memory /
 >    GraphRAG / persona / security / validation. Branch
 >    `claude/donna-market-research-7Drtc` at
@@ -225,6 +238,36 @@ That's why replay/fork/eval drift and mid-debate recovery are all
 awkward. Promotion to a first-class step log unblocks each of those
 independently.
 
+### 3.9 Scheduler duplicate-fire across multiple workers (HIGH; net-new from GPT-5.3-codex)
+
+`worker.py:46`, `jobs/scheduler.py:35`, `memory/schedules.py:40`. Each
+worker process starts its own scheduler thread with no leadership lock.
+With two workers running simultaneously, both will fire the same
+scheduled job at the same cron tick. Today this is prevented by
+deployment discipline (single worker container in `docker-compose.yml`),
+but it is not a code-level invariant — exactly the same shape as
+Claude's §8.1 worker-leadership concern but specifically about the
+*scheduler*, which fires regularly and would surface duplicate-job
+symptoms much sooner than the §8.1 generic case.
+
+This is the sharper concrete bug behind §8.1 and should be the version
+that gets fixed first; the broader worker-leadership concern is partly
+addressed once the scheduler is single-elected.
+
+### 3.10 Denied/unknown/disallowed tool calls not audited (MEDIUM; net-new from GPT-5.3-codex)
+
+`agent/context.py:200`, `:208`, `:253`. When a tool call is rejected
+(consent denied, tool not found, tool not in allowlist), the rejection
+path returns an error block to the model but does not insert a row into
+`tool_calls`. Result: the operator can't audit what tools the model
+*tried* to call but was denied.
+
+For a security-conscious bot this is a visible gap — adversarial
+probing where the model attempts to bypass consent gates is invisible
+in `botctl traces`. Closes by inserting a `tool_calls` row at each
+rejection path, with `status='denied'` / `status='unknown_tool'` /
+`status='not_allowlisted'` distinguishing the cases. ~XS effort.
+
 ---
 
 ## 4 · Where market research adds context both reviewers underweight
@@ -294,25 +337,27 @@ recommended priority for v0.5+.
 
 | # | Action | Source(s) | Effort | Leverage | Risk | Lands |
 |---|---|---|---|---|---|---|
-| 1 | **Internal retrieval taint propagation** — taint jobs when retrieved chunk sources are tainted; bring `retrieve_knowledge` to parity with `recall_knowledge` | Codex | M | Very high | Medium | `modes/retrieval.py`, `agent/loop.py:55-62`, `modes/{grounded,speculative,debate}.py` |
-| 2 | **Eval scaffold → ratchet** — distinguish SKIP vs PASS for non-`live` cases; add structural assertions (chunk-id validity, schema lint); pin grounded + taint cases | Claude + verification + Codex | S-M | Very high | Low | `evals/runner.py:24-49`, `evals/golden/*` |
-| 3 | **`agent_scope` first-class** — replace flat string with `corpora` + `profiles` + prompt/policy attachment (skip minimal `scopes` table per Codex if THINK is imminent) | Claude + market + Codex | M-L | High | Medium | `memory/prompts.py:13-79`, `memory/knowledge.py:18-52`, migrations |
-| 4 | **Step-level checkpoint/replay/fork for long modes** — debate especially; promote `checkpoint_state` from JSON blob to first-class step log | Codex | M | High | Medium | `modes/debate.py:98-176`, `types.py:60-104`, `memory/jobs.py:84-138` |
-| 5 | **`/validate` URL/article critique only** — new `JobMode.VALIDATE`; reuse `fetch_url` + `sanitize_untrusted` + grounded-retrieval; artifact-first Discord output; defer video to v0.6+ | Claude + market + Codex | M | High | Medium | new mode + `tools/web.py` + adapter + maybe `claims` storage |
-| 6 | **`work_id` propagation fix** — populate chunk rows' `work_id` from source row; fix retrieval diversity grouping | Codex | S | High | Low | `ingest/pipeline.py:48-60,107-120`, `modes/retrieval.py:156-171` |
-| 7 | **Session memory across Discord threads** — `threads.conversation_state` JSON column with last 4 jobs' final_text + task; inject into volatile prompt block | Claude + Codex | S-M | Medium-high | Low | `threads` schema, `adapter/discord_adapter.py`, `agent/compose.py` |
-| 8 | **Sanitizer cost attribution** — pass `job_id` through `sanitize_untrusted` → `model().generate` → `cost_ledger` | Codex | S | Medium | Low | `security/sanitize.py:35-68`, `memory/cost.py:38-72` |
-| 9 | **Claim objects + span drilldown for grounded output** — start of the labeled-extrapolation UI; adopt `schema.org/ClaimReview` as wire format | Claude + market + Codex | M | Medium | Medium | `modes/grounded.py:148-168`, new `claims` table, render layer |
-| 10 | **Bitemporal facts** — `valid_from` / `valid_until` / `recorded_at` / `invalidated_by` columns; queries gain point-in-time selector | market | M-L | Medium | Medium | `memory/facts.py`, migration `0006_bitemporal_facts.py` |
-| 11 | **Stale-worker failure-write owner guard** — symmetric to v0.3.3 #23 | Codex | XS-S | Medium | Low | `jobs/runner.py:60-67`, `memory/jobs.py:141-176` |
-| 12 | **Tainted `send_update` policy fix** — either match PLAN's escalation or update PLAN to reflect "tainted=just-a-flag" | Codex + PLAN | XS | Medium | Low | `tools/communicate.py:27-52`, `security/taint.py:19-27` |
-| 13 | **Attachment temp-file concurrency** — switch fixed `attach{ext}` to `NamedTemporaryFile` or UUID-suffixed path | Codex | XS | Medium | Low | `tools/attachments.py:82-85` |
-| 14 | **Tainted-fact quarantine** — mirror overflow-to-artifact for `remember` of tainted facts; `quarantined_facts` table; `botctl quarantine list/promote` | Claude | XS | Low (defensive) | Low | `tools/memory.py`, new table, `botctl` command |
-| 15 | **Streaming response delivery** — Anthropic streaming + Discord edit-in-place; gate to `tainted=False` | Claude | S | Medium (perceived) | Low | `agent/model_adapter.py`, `adapter/discord_adapter.py` |
-| 16 | **Jaeger LLM-span custom view** — static HTML over `traces` SQLite; per-job cost, taint propagation chain, retry cycles | Claude | S | Medium | Low | new `docs/observability.html` + `botctl traces` enhancement |
-| 17 | **Proactive knowledge surfacing** — weekly cron picks random `knowledge_source`, posts synthesis to Discord | Claude | S | Variable | Low | `jobs/scheduler.py` + new mode hook |
+| 1 | **Internal retrieval taint propagation** — taint jobs when retrieved chunk sources are tainted; bring `retrieve_knowledge` to parity with `recall_knowledge` | Codex GPT-5 + GPT-5.3-codex | M | Very high | Medium | `modes/retrieval.py`, `agent/loop.py:55-62`, `modes/{grounded,speculative,debate}.py` |
+| 2 | **Eval scaffold → ratchet** — distinguish SKIP vs PASS for non-`live` cases; add structural assertions (chunk-id validity, schema lint); pin grounded + taint cases | Claude + verification + Codex GPT-5 + GPT-5.3-codex | S-M | Very high | Low | `evals/runner.py:24-49`, `evals/golden/*` |
+| 3 | **`agent_scope` first-class** — replace flat string with `corpora` + `profiles` + prompt/policy attachment (skip minimal `scopes` table per Codex if THINK is imminent) | Claude + market + Codex GPT-5 + GPT-5.3-codex | M-L | High | Medium | `memory/prompts.py:13-79`, `memory/knowledge.py:18-52`, migrations |
+| 4 | **Scheduler leadership lock** — each worker process starts its own scheduler; two workers fire same cron tick twice. Pin scheduler to a single elected worker process or add a leader-election row | GPT-5.3-codex | M | High | Medium | `worker.py:46`, `jobs/scheduler.py:35`, `memory/schedules.py:40` |
+| 5 | **Step-level checkpoint/replay/fork for long modes** — debate especially; promote `checkpoint_state` from JSON blob to first-class step log | Codex GPT-5 + GPT-5.3-codex | M | High | Medium | `modes/debate.py:98-176`, `types.py:60-104`, `memory/jobs.py:84-138` |
+| 6 | **`/validate` URL/article critique only** — new `JobMode.VALIDATE`; reuse `fetch_url` + `sanitize_untrusted` + grounded-retrieval; artifact-first Discord output; defer video to v0.6+ | Claude + market + Codex | M | High | Medium | new mode + `tools/web.py` + adapter + maybe `claims` storage |
+| 7 | **`work_id` propagation fix** — populate chunk rows' `work_id` from source row; fix retrieval diversity grouping | Codex GPT-5 | S | High | Low | `ingest/pipeline.py:48-60,107-120`, `modes/retrieval.py:156-171` |
+| 8 | **Session memory across Discord threads** — `threads.conversation_state` JSON column with last 4 jobs' final_text + task; inject into volatile prompt block | Claude + Codex | S-M | Medium-high | Low | `threads` schema, `adapter/discord_adapter.py`, `agent/compose.py` |
+| 9 | **Sanitizer cost attribution** — pass `job_id` through `sanitize_untrusted` → `model().generate` → `cost_ledger` | Codex GPT-5 | S | Medium | Low | `security/sanitize.py:35-68`, `memory/cost.py:38-72` |
+| 10 | **Claim objects + span drilldown for grounded output** — start of the labeled-extrapolation UI; adopt `schema.org/ClaimReview` as wire format | Claude + market + Codex | M | Medium | Medium | `modes/grounded.py:148-168`, new `claims` table, render layer |
+| 11 | **Bitemporal facts** — `valid_from` / `valid_until` / `recorded_at` / `invalidated_by` columns; queries gain point-in-time selector | market | M-L | Medium | Medium | `memory/facts.py`, migration `0006_bitemporal_facts.py` |
+| 12 | **Stale-worker failure-write owner guard** — symmetric to v0.3.3 #23 | Codex GPT-5 + GPT-5.3-codex | XS-S | Medium | Low | `jobs/runner.py:60-67`, `memory/jobs.py:141-176` |
+| 13 | **Audit denied / unknown / disallowed tool calls** — when a tool is rejected (consent denied, tool not found, not in allowlist), error block returns to model but no row inserted into `tool_calls`. Operator can't audit attempted bypasses | GPT-5.3-codex | XS-S | Medium | Low | `agent/context.py:200,208,253`, `memory/tool_calls.py` |
+| 14 | **Tainted `send_update` policy fix** — either match PLAN's escalation or update PLAN to reflect "tainted=just-a-flag" | Codex GPT-5 + PLAN | XS | Medium | Low | `tools/communicate.py:27-52`, `security/taint.py:19-27` |
+| 15 | **Attachment temp-file concurrency** — switch fixed `attach{ext}` to `NamedTemporaryFile` or UUID-suffixed path | Codex GPT-5 | XS | Medium | Low | `tools/attachments.py:82-85` |
+| 16 | **Tainted-fact quarantine** — mirror overflow-to-artifact for `remember` of tainted facts; `quarantined_facts` table; `botctl quarantine list/promote` | Claude | XS | Low (defensive) | Low | `tools/memory.py`, new table, `botctl` command |
+| 17 | **Streaming response delivery** — Anthropic streaming + Discord edit-in-place; gate to `tainted=False` | Claude | S | Medium (perceived) | Low | `agent/model_adapter.py`, `adapter/discord_adapter.py` |
+| 18 | **Jaeger LLM-span custom view** — static HTML over `traces` SQLite; per-job cost, taint propagation chain, retry cycles | Claude | S | Medium | Low | new `docs/observability.html` + `botctl traces` enhancement |
+| 19 | **Proactive knowledge surfacing** — weekly cron picks random `knowledge_source`, posts synthesis to Discord | Claude | S | Variable | Low | `jobs/scheduler.py` + new mode hook |
 
-Items 1-9 are the v0.5 recommended menu; 10-17 are v0.6+. The user's
+Items 1-10 are the v0.5 recommended menu; 11-19 are v0.6+. The user's
 original v0.5 backlog from `docs/NEXT_SESSION_DONNA.md` already had
 `/validate` (here #5), session memory (#7), and `donna-update.timer`
 (deploy hardening, not on this list because it's an ops decision not a
