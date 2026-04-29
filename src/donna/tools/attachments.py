@@ -79,9 +79,16 @@ async def ingest_discord_attachment(
                     }
             data = bytes(buf)
 
-    # Infer type from URL
+    # Infer type from URL. Fixed-name path was a concurrency footgun
+    # (cross-vendor review #15 / Codex GPT-5 RF): two simultaneous ingests
+    # with the same extension would overwrite each other's bytes mid-read.
+    # Solo-bot rarely hits this today, but `/teach` flows that fan out into
+    # multiple attachments will. UUID suffix makes each call's tempfile
+    # unique without reaching for NamedTemporaryFile (which complicates
+    # the cleanup-on-error story).
+    import uuid
     ext = Path(attachment_url.split("?", 1)[0]).suffix.lower()
-    dest = tmp_dir / f"attach{ext or '.bin'}"
+    dest = tmp_dir / f"attach_{uuid.uuid4().hex[:12]}{ext or '.bin'}"
     dest.write_bytes(data)
 
     # Extract text

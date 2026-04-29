@@ -63,7 +63,22 @@ class Worker:
             try:
                 from ..memory import jobs as jobs_mod_
                 from ..types import JobStatus
-                jobs_mod_.set_status(conn, job_id, JobStatus.FAILED, error=str(e))
+                # Owner-guarded FAILED write (cross-vendor review #11 / Codex
+                # GPT-5 RF). Before this fix, a stale worker whose lease was
+                # already reclaimed would still write FAILED on its way out,
+                # potentially clobbering a recovered/completed job's status.
+                # Symmetric to the v0.3.3 #23 owner guard on
+                # consent._persist_pending. set_status returns False when the
+                # owner mismatches; we just log and move on.
+                ok = jobs_mod_.set_status(
+                    conn, job_id, JobStatus.FAILED,
+                    error=str(e), worker_id=self.worker_id,
+                )
+                if not ok:
+                    log.info(
+                        "worker.failed_write_skipped_lease_lost",
+                        job_id=job_id, worker_id=self.worker_id,
+                    )
             finally:
                 conn.close()
         finally:
