@@ -59,32 +59,16 @@ async def recall_knowledge(
 ) -> dict[str, Any]:
     from ..modes.retrieval import retrieve_knowledge
 
-    out = await retrieve_knowledge(
-        scope=scope, query=query, top_k=top_k, style_anchors_only=style_anchors_only
+    # `retrieve_knowledge` now sets `tainted` on its return when any chosen
+    # chunk's source row has knowledge_sources.tainted = 1. The check moved
+    # in-core after the cross-vendor review found that mode-internal callers
+    # (grounded/speculative/debate/chat) bypassed the wrapper-only check.
+    # `JobContext._execute_one` reads `tainted` off the tool result dict and
+    # propagates to `state.tainted`, so this remains the audited entry point
+    # for the agent.
+    return await retrieve_knowledge(
+        scope=scope, query=query, top_k=top_k, style_anchors_only=style_anchors_only,
     )
-    # Codex round-2 #4: surface top-level `tainted=True` when any returned
-    # chunk's source was ingested from an untrusted origin. Mirrors the
-    # same mechanism `tools.memory.recall` uses for facts. Without this,
-    # taint doesn't flow through the recall_knowledge boundary into
-    # JobContext._execute_one's taint-propagation check, and future
-    # memory writes / code exec skip escalated confirmation.
-    chunks = out.get("chunks") or []
-    if chunks:
-        source_ids = list({c.source_id for c in chunks if getattr(c, "source_id", None)})
-        if source_ids:
-            conn = connect()
-            try:
-                placeholders = ",".join("?" * len(source_ids))
-                rows = conn.execute(
-                    f"SELECT 1 FROM knowledge_sources "
-                    f"WHERE id IN ({placeholders}) AND tainted = 1 LIMIT 1",
-                    source_ids,
-                ).fetchone()
-            finally:
-                conn.close()
-            if rows is not None:
-                out = {**out, "tainted": True}
-    return out
 
 
 @tool(

@@ -103,6 +103,9 @@ async def _debate_core(
             )
             retr = await retrieve_knowledge(scope=scope, query=topic, top_k=6)
             chunks = retr.get("chunks", [])
+            if ctx is not None and retr.get("tainted") and not ctx.state.tainted:
+                ctx.state.tainted = True
+                otel.set_attr("agent.job.tainted", True)
 
             system_blocks = compose_system(
                 scope=scope, task=topic, mode=JobMode.DEBATE,
