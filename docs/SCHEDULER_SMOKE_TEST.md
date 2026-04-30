@@ -1,10 +1,22 @@
 # Scheduler smoke-test runbook
 
+> **Status: ✅ Validated live in production 2026-04-30 (v0.4.3).**
+> First end-to-end fire returned `• SCHED_OK` to the operator's DM after
+> deploying the [PR #47 fix](https://github.com/GlobalCan/donna/pull/47).
+> Pre-fix every Donna release since v0.2.0 had a non-functional
+> scheduler — jobs ran successfully but `Scheduler._fire` created jobs
+> with `thread_id=NULL`, so the adapter couldn't resolve a Discord
+> destination and replies sat undeliverable in `outbox_updates`. The
+> fix: migration `0006_schedules_thread_id` + `/schedule` capturing the
+> originating channel + `Scheduler._fire` propagating to the job. This
+> runbook is retained for future re-validation (e.g. after major
+> scheduler refactors or new mode integrations).
+
 Donna has had a working cron scheduler since v0.2.0 (`src/donna/jobs/scheduler.py`,
-slash commands `/schedule` + `/schedules`, CLI `botctl schedule add|list|disable`),
-but it's never been live-smoke-tested in production. The operator reported in
-2026-04-30 that they thought scheduled tasks didn't exist — a discoverability
-gap that this runbook closes by walking the first end-to-end fire.
+slash commands `/schedule` + `/schedules`, CLI `botctl schedule add|list|disable`).
+v0.4.2 added `/schedule` discoverability rendering and this runbook to
+walk the first end-to-end fire; v0.4.3 closed the delivery bug surfaced
+by that first run.
 
 ## Goal
 
@@ -63,9 +75,9 @@ Within ~30s of the next-fire time, Donna should DM you:
 
 (The `•` prefix is the standard outbox marker for non-tainted updates.)
 
-If you see SCHED_OK: **the scheduler is fully working.** Update PR #36's
-KNOWN_ISSUES table to flip "Scheduler — never smoke-tested in prod" from
-OPEN to ✅ FIXED.
+If you see SCHED_OK: **the scheduler is fully working.** Update
+KNOWN_ISSUES.md to flip "Scheduler — never smoke-tested in prod" from
+OPEN to ✅ FIXED. (Already done in v0.4.3.)
 
 If you don't see anything within 2 minutes:
 
@@ -75,29 +87,51 @@ If you don't see anything within 2 minutes:
   `docker compose logs -f worker | grep scheduler`. There should be a
   `scheduler.start` log line and one `scheduler.tick` (or
   `scheduler.fired`) log line per minute.
-- **Check the `jobs` table** — `botctl jobs --since 5m` (run from the
-  droplet via `docker compose exec bot botctl jobs --since 5m`).
+- **Check the `jobs` table** — `docker compose exec bot botctl jobs --since 5m`.
   If a job exists with status `done` but you didn't see the message,
-  the scheduler fired but delivery is broken. Check the
-  `outbox_updates` table.
+  the scheduler fired but delivery is broken. Pre-v0.4.3 this was the
+  failure mode for every scheduled job — `thread_id=NULL` made the
+  reply undeliverable. Post-v0.4.3 if you hit this again, query the
+  job's `thread_id` directly:
+
+  ```bash
+  docker compose exec bot sqlite3 /data/donna.db \
+      "SELECT id, status, thread_id FROM jobs WHERE created_at > datetime('now', '-10 minutes') ORDER BY created_at DESC"
+  ```
+
+  If `thread_id` is NULL the regression came back; if it's set, the
+  bug is in the adapter's outbox drain loop.
+
+> **Path note:** inside the bot container the database is at
+> `/data/donna.db` (the host's `/data/donna` directory is mounted at
+> `/data` inside the container). From a host shell on the droplet
+> use the host path `/data/donna/donna.db`. The `docker compose exec
+> bot ...` form always uses the container-side path.
 
 ### Step 4 — clean up the every-minute schedule
 
-If you leave the `* * * * *` schedule active you'll keep getting hourly
-SCHED_OK pings forever. Disable it:
+If you leave the `* * * * *` schedule active you'll keep getting
+SCHED_OK pings every minute forever. Disable it:
 
 ```text
-/schedules           # find the schedule id
+/schedules           # find the schedule id (from Discord)
 ```
 
-Then on the laptop or droplet:
+Then either via the slash UI not yet shipped, or via the droplet:
 
 ```bash
-botctl schedule disable sched_<id>
+# Either: target by id (replace sched_xxx with the actual id)
+docker compose exec bot _botctl.real schedule disable sched_xxx
+
+# Or: target by cron pattern (no id needed)
+docker compose exec bot sqlite3 /data/donna.db \
+    "UPDATE schedules SET enabled = 0 WHERE cron_expr = '* * * * *'"
 ```
 
-(There's no Discord slash command to disable schedules yet — that's a
-follow-up if it becomes annoying. For now CLI-only.)
+(`_botctl.real` skips the entrypoint wrapper; bare `botctl` also works
+but goes through sops decryption + alembic upgrade. Direct sqlite3 is
+faster for one-off ops admin.) A Discord slash command to disable
+schedules is a follow-up.
 
 ## Suggested second smoke test — daily morning brief
 

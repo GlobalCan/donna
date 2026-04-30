@@ -25,19 +25,30 @@ Before anything else, read these files. Everything below assumes you have.
 
 ## 1 · Where we are
 
-**Donna v0.4.2 — cross-vendor review absorbed + "feels like she works"
-bundle shipped (2026-04-30).** Bot answering DMs as `Donna#3183` on the
-DigitalOcean droplet. All five modes (chat / grounded / speculative /
-debate / refusal) live-validated. 359 tests green. Recent shipped
-changes:
+**Donna v0.4.3 — first live scheduler smoke test passed; latent
+shipping bugs cleaned up (2026-04-30).** Bot answering DMs as
+`Donna#3183` on the DigitalOcean droplet. All five modes (chat /
+grounded / speculative / debate / refusal) live-validated. 366 tests
+green. Recent shipped changes:
 
+- **v0.4.3 (2026-04-30, post-smoke-test cleanup):** scheduler
+  delivery fix (PR #47 — `thread_id` propagation through migration
+  0006 + `/schedule` capture + `Scheduler._fire`); plain-DM session
+  memory dedup (drop adapter intake user-message write; finalize is
+  sole writer for all modes); entrypoint auto-runs `alembic upgrade
+  head` for bot/worker roles so deployments don't silently no-op
+  schema migrations; cron-spaceless mistype hint in `/schedule`
+  error path; doc cleanup (host `/data/donna/donna.db` vs container
+  `/data/donna.db` distinction). **First live scheduler smoke test
+  passed end-to-end** — `• SCHED_OK` arrived in DM after
+  `/schedule * * * * *`, closing a v0.2.0+ shipping bug.
 - **v0.4.2 (2026-04-30, Bundle 1):** mobile-friendly Discord rendering
   (1400-char chunks + `_normalize_for_mobile`), session memory across
   DM threads (chat mode injects last-8 messages from same Discord
   thread; tainted-job stripping preserves trust boundary), scheduler
   discoverability (`/schedule` next-fire-time + `/schedules` last-fired
-  + `docs/SCHEDULER_SMOKE_TEST.md` runbook), `send_update` PLAN drift
-  resolved.
+  + `docs/SCHEDULER_SMOKE_TEST.md` runbook — *the runbook itself
+  surfaced the v0.4.3 fixes above*), `send_update` PLAN drift resolved.
 - **v0.4.1 (2026-04-30, cross-vendor review fixes):** internal retrieval
   taint propagation (CRITICAL), eval scaffold → ratchet, `work_id`
   propagation, stale-worker FAILED-write owner guard, attachment
@@ -86,9 +97,12 @@ Three prompt files in `docs/` — all self-contained, paste-ready:
 - **Secrets:** sops-encrypted `secrets/prod.enc.yaml` in repo, 2 age recipients
   (primary on laptop+droplet, backup paper); age private key at
   `/etc/bot/age.key` on droplet, mode 600 owned by bot
-- **DB:** `/data/donna/donna.db` on droplet (bind-mounted into containers,
-  files chowned to 1001:1001 to match new container uid), migrations
-  0001 → 0005 all applied, ~30 tables
+- **DB:** `/data/donna/donna.db` on the droplet host (bind-mounted into
+  containers as `/data/donna.db` — note the path differs container-side
+  because host `/data/donna` mounts at container `/data`). Files chowned
+  to 1001:1001 to match new container uid; migrations 0001 → 0006
+  applied; ~30 tables. **From within the container** always use
+  `/data/donna.db` (e.g. `docker compose exec bot sqlite3 /data/donna.db ...`).
 - **Tests:** 102 passing on Python 3.14.3 (was 60 start of v0.3.x)
 - **Remote HEAD = local HEAD**
 

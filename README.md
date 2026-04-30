@@ -74,13 +74,16 @@ src/donna/
 
 ## Status
 
-**v0.4.2** · Python 3.14 · 359 tests green · **live in production on DO**, grounded mode end-to-end validated, unified mode delivery, overflow-to-artifact security pattern, three-layer backups live, Jaeger traces, mobile-friendly Discord rendering, session memory across DM threads.
+**v0.4.3** · Python 3.14 · 366 tests green · **live in production on DO**, grounded mode end-to-end validated, unified mode delivery, overflow-to-artifact security pattern, three-layer backups live, Jaeger traces, mobile-friendly Discord rendering, session memory across DM threads, **scheduler smoke-tested live end-to-end**.
 
 - Foundation built and survived four Codex review passes (defect, adversarial
   challenge, Hermes comparison, round-2 same-class hunt) plus one self-run
   adversarial+polish sweep — plus the **2026-04-29 cross-vendor review pass**
   (Claude Opus 4.7 + Codex GPT-5 + Codex GPT-5.3-codex), seven follow-up PRs
-  shipped in v0.4.1, four "feels like it works" fixes in v0.4.2
+  shipped in v0.4.1, four "feels like it works" fixes in v0.4.2, and three
+  v0.4.3 fixes for shipping bugs the first live scheduler smoke test surfaced
+  (delivery `thread_id` propagation, plain-DM memory dedup, entrypoint
+  auto-migrate)
 - Unified execution graph (`JobContext`), persistent consent, taint tracking on
   every untrusted path, quoted-span grounded validator with smart-quote +
   Unicode NFC normalization (content-strict, rendering-tolerant)
@@ -125,6 +128,10 @@ src/donna/
 - **Phase 3 grounded-mode end-to-end** (2026-04-24) — real `/ask` query against
   the 402-chunk Huck Finn corpus returning clean prose with `✅ validated`
   badge and multi-chunk citation
+- **Phase 4 scheduler end-to-end** (2026-04-30) — `/schedule * * * * *`
+  → `• SCHED_OK` arrives in DM after the v0.4.3 fix; closes a v0.2.0+
+  shipping bug where every scheduled job ran but had no Discord
+  destination.
 - **Current limitations:** Phoenix observability disabled (upstream image
   broken); auto-deploy timer not yet enabled; no off-droplet backups yet (DO
   snapshots + droplet cron + laptop→OneDrive are the three layers); speculative

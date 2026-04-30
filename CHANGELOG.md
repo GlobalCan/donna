@@ -1,5 +1,107 @@
 # Changelog
 
+## [0.4.3] — 2026-04-30 — First live scheduler smoke test + latent-bug cleanup
+
+The Bundle 1 scheduler discoverability runbook in v0.4.2 made the
+operator finally try `/schedule` for real — and the first end-to-end
+fire revealed three shipping bugs that had been silently broken since
+earlier releases. v0.4.3 fixes them and validates the scheduler
+end-to-end live in production.
+
+### Fixed — scheduler delivery (v0.2.0+ regression, PR #47)
+
+`Scheduler._fire` created jobs with `thread_id=NULL` because the
+`schedules` table had no column to remember the originating Discord
+channel. With `thread_id=NULL`, `_resolve_channel_for_job` in the
+adapter returned None, `_post_update` returned False, and every
+scheduled reply piled up undeliverable in `outbox_updates`. Every
+Donna release since v0.2.0 had a non-functional scheduler — it just
+took the first live smoke test to discover this.
+
+- **Migration `0006_schedules_thread_id`** — adds nullable `thread_id
+  TEXT` to `schedules` (forward-only safe; existing rows survive).
+- **`/schedule` (Discord)** — captures the current channel via
+  `get_or_create_thread`, persists on the schedule row.
+- **`Scheduler._fire`** — propagates `sched["thread_id"]` to
+  `insert_job`. One-line change with the load-bearing impact.
+- **`botctl schedule add --discord-channel <id>`** — CLI parity for
+  operators who want CLI-driven scheduling. Without the flag the
+  schedule fires but doesn't deliver to Discord (visible only via
+  `botctl jobs`).
+- **Bonus UX:** `/schedule` detects the spaceless-cron mistype
+  (`*****` vs `* * * * *`) and emits a hint at the missing spaces.
+  The operator hit this exact failure during the smoke test; the
+  bare croniter error was unhelpful.
+
+4 tests in `tests/test_scheduler_thread_id.py` cover insert
+persistence, default-NULL backwards compat, `_fire` propagation, and
+NULL-fire still-creates-job.
+
+### Fixed — plain-DM session memory wrote duplicate user rows (PR #48)
+
+v0.4.2's session memory wired `JobContext.finalize` to write user +
+assistant rows on every chat-mode job completion. But
+`_handle_new_task` in the Discord adapter ALSO wrote a user-message
+row at intake — so plain DM threads accumulated 3 rows per exchange
+(user/user/assistant). Worse, the adapter's intake write made the
+*current* task appear in the next job's `session_history` as if it
+were a prior turn — confusing the model.
+
+`/ask`, `/speculate`, `/debate` (going through `_enqueue_scoped`)
+never had this asymmetry; they were already correct. Fix: drop the
+adapter's intake `threads_mod.insert_message` call. `JobContext.finalize`
+is now the sole writer for all modes.
+
+Trade-off: failed/cancelled jobs lose the user-message audit row, but
+the operator can see what they typed in Discord scrollback so this
+is acceptable. `discord_msg` traceability dropped (was unused — grep
+confirmed no reader anywhere).
+
+3 tests in `tests/test_plain_dm_memory_dedup.py` (intake-doesn't-write,
+full-cycle = 2 rows, sequential-exchanges = 4 rows in clean order).
+
+### Fixed — migrations didn't auto-run on container restart (PR #48)
+
+`scripts/entrypoint.sh` decrypted secrets and exec'd the command
+directly — no `alembic upgrade head` step. Every deploy that included
+a schema migration silently no-op'd until an operator manually ran
+alembic. Discovered when the v0.4.3 deploy didn't pick up migration
+0006 after a routine `docker compose pull && up -d`: the new code
+shipped but the schema didn't match.
+
+Fix: entrypoint runs `alembic upgrade head` for `DONNA_PROCESS_ROLE`
+∈ {bot, worker} before exec'ing the service. Idempotent (locks via
+SQLite, second-runner sees "already at head" and no-ops in <1s).
+botctl invocations skip the migration step. Container fails to start
+on migration error rather than running with a stale schema.
+
+### Validated live in production (2026-04-30)
+
+- **First end-to-end scheduler fire:** `/schedule cron_expr:* * * * *
+  task:Reply with exactly the words SCHED_OK and nothing else.` →
+  `• SCHED_OK` arrived in DM ~90 seconds later. Closes the
+  long-standing "scheduler never smoke-tested in prod" gap.
+- **Daily morning briefing path is now unblocked** — operator can
+  schedule any chat-mode task and the reply will reach Discord.
+
+### Tests
+
+3 new in `test_plain_dm_memory_dedup.py` + 4 from PR #47's
+`test_scheduler_thread_id.py` = 7 added since v0.4.2. **366 / 366
+pass · ruff clean.**
+
+### Docs
+
+- `docs/SCHEDULER_SMOKE_TEST.md` — added "✅ Validated 2026-04-30"
+  preamble and the host-vs-container DB path note (`/data/donna.db`
+  inside the container vs `/data/donna/donna.db` from the droplet
+  host shell).
+- `docs/KNOWN_ISSUES.md` — new "v0.4.3 follow-ups" table documenting
+  the three bugs the smoke test surfaced.
+- `docs/SESSION_RESUME.md` — header, version, and DB path notes.
+- `README.md` — version bump, test count, Phase 4 scheduler
+  end-to-end milestone.
+
 ## [0.4.2] — 2026-04-30 — Bundle 1: Donna feels like she works
 
 Operator-reported production friction (post-v0.4.1 daily use). The
