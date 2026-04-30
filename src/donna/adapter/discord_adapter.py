@@ -246,7 +246,18 @@ class DonnaBot(discord.Client):
         await self._handle_new_task(message, content)
 
     async def _handle_new_task(self, message: discord.Message, content: str) -> None:
-        # Create/get thread record
+        # Create/get thread record. We do NOT write the user message to the
+        # `messages` table here — `JobContext.finalize` is the single source
+        # of truth for conversation history. Pre-fix (v0.4.2) the adapter
+        # wrote the user message at intake AND finalize wrote it again, so
+        # plain DM threads accumulated duplicate user rows. Worse, the
+        # adapter's intake write made the current task appear in the next
+        # job's `session_history` as if it were a prior turn — confusing
+        # the model. Now finalize is the only writer and slash-command
+        # paths (`/ask`, `/speculate`, `/debate`, which never wrote at
+        # intake) are symmetric with plain DM. Trade-off: failed/cancelled
+        # jobs lose the user-message record, but the operator can see it
+        # in Discord scrollback so this is fine.
         conn = connect()
         try:
             with transaction(conn):
@@ -255,10 +266,6 @@ class DonnaBot(discord.Client):
                     discord_channel=str(message.channel.id),
                     discord_thread=str(message.channel.id) if isinstance(message.channel, discord.Thread) else None,
                     title=content[:60],
-                )
-                threads_mod.insert_message(
-                    conn, thread_id=thread_record_id, role="user", content=content,
-                    discord_msg=str(message.id),
                 )
                 job_id = jobs_mod.insert_job(
                     conn, task=content, thread_id=thread_record_id,

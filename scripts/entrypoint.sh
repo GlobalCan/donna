@@ -59,4 +59,29 @@ else
     echo "[entrypoint] no sops secrets at $SECRETS_FILE (or age key missing) — using env_file only"
 fi
 
+# Apply pending alembic migrations before starting the service.
+#
+# Pre-fix (v0.4.2) this entrypoint just decrypted secrets and exec'd the
+# command, so migrations sat unapplied silently after every deploy until
+# an operator manually ran `alembic upgrade head`. Discovered 2026-04-30
+# during the v0.4.3 deploy when migration 0006 didn't take effect after a
+# routine `docker compose pull && up -d` — the new code shipped but the
+# DB schema didn't match, leading to "I deployed but nothing changed"
+# confusion.
+#
+# Only the bot/worker roles run migrations — botctl invocations and any
+# other ad-hoc entrypoint use should not. Running for both bot AND worker
+# is safe: alembic locks via SQLite, and the second one to enter sees
+# "already at head" and no-ops in <1s.
+#
+# A migration failure here is fatal — better to crash the container with
+# a visible error than to start the service against a stale schema.
+if [[ "${DONNA_PROCESS_ROLE:-}" == "bot" || "${DONNA_PROCESS_ROLE:-}" == "worker" ]]; then
+    echo "[entrypoint] applying pending migrations (alembic upgrade head)"
+    if ! alembic upgrade head; then
+        echo "[entrypoint] FATAL: alembic upgrade head failed — refusing to start" >&2
+        exit 1
+    fi
+fi
+
 exec "$@"

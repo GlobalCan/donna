@@ -438,6 +438,22 @@ annoyances after using the bot in real life:
 15 new tests in `tests/test_bundle1_feels_like_it_works.py`. 359 / 359
 pass.
 
+### v0.4.3 follow-ups — bugs surfaced by the live smoke test (2026-04-30)
+
+The Bundle 1 smoke runbook didn't just make the scheduler discoverable
+— running it for the first time uncovered three latent shipping bugs
+that had been present since v0.2.0 and v0.4.2 respectively:
+
+| # | Symptom | Fix | PR |
+|---|---|---|---|
+| V43-1 | **Scheduler delivery silently broken since v0.2.0.** Jobs ran to `status=done` but no Discord message arrived. `Scheduler._fire` created jobs with `thread_id=NULL`, the adapter's `_resolve_channel_for_job` returned None, and `_post_update` returned False — replies piled up undeliverable in `outbox_updates`. The `schedules` table didn't even have a column to remember the originating channel. | Migration `0006_schedules_thread_id`; `/schedule` captures current channel via `get_or_create_thread`; `Scheduler._fire` propagates `thread_id` to `insert_job`; `botctl schedule add --discord-channel` for CLI parity; bonus UX hint when operator forgets cron field spaces (`*****` vs `* * * * *`). | #47 |
+| V43-2 | **Plain-DM session memory wrote duplicate user rows.** `_handle_new_task` inserted a user message at intake; `JobContext.finalize` wrote it again at completion. Pre-fix every plain DM produced 3 message rows (user/user/assistant), and the second job's `session_history` saw the current task as a prior turn — confusing the model. | Drop the adapter's intake `threads_mod.insert_message` call; finalize is the sole writer (matching how `/ask`, `/speculate`, `/debate` already worked). 3 new tests in `test_plain_dm_memory_dedup.py`. | #48 |
+| V43-3 | **Migrations didn't auto-run on container restart.** Entrypoint just decrypted secrets and exec'd the command, so any deploy that included a schema migration silently no-op'd until an operator manually ran `alembic upgrade head`. Discovered when the v0.4.3 deploy didn't pick up migration 0006. | `entrypoint.sh` runs `alembic upgrade head` for `DONNA_PROCESS_ROLE` ∈ {bot, worker} before exec'ing the service. Idempotent (locks via SQLite, second-runner sees "already at head"). Container fails to start on migration error rather than running with a stale schema. | #48 |
+
+**Validation:** scheduler smoke test passed end-to-end against the
+fixed image; `• SCHED_OK` arrived in DM after the schedule was created
+via `/schedule * * * * *`. 366 tests pass, ruff clean.
+
 ### Market-research factual corrections
 
 Two items in the original brief that drove the market research pass
