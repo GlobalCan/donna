@@ -45,6 +45,24 @@ async def _run_chat(ctx: JobContext) -> None:
     scope = ctx.job.agent_scope
     task = ctx.job.task
 
+    # Session memory: load prior conversation in this Discord thread once
+    # at loop entry. The `messages` table is populated by
+    # JobContext.finalize at the end of each clean (non-tainted) job, so
+    # entries here are from PREVIOUS jobs + clean. Per-iteration re-fetch
+    # would also be safe but unnecessary — the loop runs within a single
+    # job and finalize hasn't fired yet.
+    session_history: list[dict] = []
+    if ctx.job.thread_id:
+        from ..memory import threads as threads_mod
+        from ..memory.db import connect as _connect
+        _conn = _connect()
+        try:
+            session_history = threads_mod.recent_messages(
+                _conn, ctx.job.thread_id, limit=8,
+            )
+        finally:
+            _conn.close()
+
     while not ctx.state.done and ctx.state.tool_calls_count < max_tool_calls:
         # Check user-initiated cancellation between iterations. Raises
         # JobCancelled which the context manager catches + checkpoints.
@@ -63,6 +81,7 @@ async def _run_chat(ctx: JobContext) -> None:
         system_blocks = compose_system(
             scope=scope, task=task, mode=ctx.state.mode,
             retrieved_chunks=chunks, examples=examples, style_anchors=anchors,
+            session_history=session_history,
         )
 
         # Shared primitive: model step (tools enabled)

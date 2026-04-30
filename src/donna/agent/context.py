@@ -393,6 +393,29 @@ class JobContext:
                             1 if self.state.tainted else 0,
                         ),
                     )
+                # Session memory: persist the user task + assistant answer
+                # to `messages` for cross-job recall in the same Discord
+                # thread. Tainted jobs DO NOT write — preserves the trust
+                # boundary between attacker-controlled bytes and the next
+                # clean job's context. Production issue 2026-04-30: the bot
+                # was effectively amnesic across `/ask` follow-ups; this
+                # gives chat mode the conversational continuity the user
+                # was missing.
+                if (
+                    self.job.thread_id
+                    and not self.state.tainted
+                    and text
+                    and self.job.task
+                ):
+                    from ..memory import threads as threads_mod
+                    threads_mod.insert_message(
+                        conn, thread_id=self.job.thread_id,
+                        role="user", content=self.job.task[:4000],
+                    )
+                    threads_mod.insert_message(
+                        conn, thread_id=self.job.thread_id,
+                        role="assistant", content=text[:4000],
+                    )
                 return jobs_mod.set_status(
                     conn, self.state.job_id, JobStatus.DONE, worker_id=self.worker_id,
                 )

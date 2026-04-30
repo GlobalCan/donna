@@ -109,13 +109,31 @@ def register_commands(bot: DonnaBot) -> None:
         if not _allowed(interaction):
             await interaction.response.send_message("not authorized", ephemeral=True)
             return
-        conn = connect()
         try:
-            with transaction(conn):
-                sid = sched_mod.insert_schedule(conn, cron_expr=cron_expr, task=task)
-        finally:
-            conn.close()
-        await interaction.response.send_message(f"📅 scheduled `{sid}` — `{cron_expr}`")
+            conn = connect()
+            try:
+                with transaction(conn):
+                    sid = sched_mod.insert_schedule(conn, cron_expr=cron_expr, task=task)
+                # Re-read so we can show the operator the next_run_at
+                # (croniter computes it inside insert_schedule). Confirms
+                # the cron expression parsed and gives a concrete next-fire
+                # time so the operator knows when to look for the result.
+                row = conn.execute(
+                    "SELECT next_run_at FROM schedules WHERE id = ?", (sid,),
+                ).fetchone()
+            finally:
+                conn.close()
+        except ValueError as e:
+            await interaction.response.send_message(
+                f"❌ invalid cron expression `{cron_expr}` — {e}", ephemeral=True,
+            )
+            return
+        next_run = row["next_run_at"] if row else "?"
+        await interaction.response.send_message(
+            f"📅 scheduled `{sid}` — `{cron_expr}`\n"
+            f"   next fire: **{next_run} UTC**\n"
+            f"   task: {task[:200]}"
+        )
 
     @tree.command(name="schedules", description="List active schedules")
     async def schedules_cmd(interaction: discord.Interaction) -> None:
@@ -128,10 +146,18 @@ def register_commands(bot: DonnaBot) -> None:
         finally:
             conn.close()
         if not items:
-            await interaction.response.send_message("no schedules")
+            await interaction.response.send_message(
+                "no active schedules — add one with `/schedule cron_expr task`"
+            )
             return
-        lines = [f"• `{s['id']}` `{s['cron_expr']}` → next: {s['next_run_at']}\n  {s['task'][:80]}"
-                 for s in items]
+        lines = [f"**{len(items)} active schedule(s)**"]
+        for s in items:
+            last = s.get("last_run_at") or "never"
+            lines.append(
+                f"• `{s['id']}` `{s['cron_expr']}`\n"
+                f"   next: {s['next_run_at']} UTC · last fired: {last}\n"
+                f"   {s['task'][:120]}"
+            )
         await interaction.response.send_message("\n".join(lines))
 
     @tree.command(name="heuristics", description="List a scope's heuristics")

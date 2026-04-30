@@ -1,5 +1,102 @@
 # Changelog
 
+## [Unreleased] — 2026-04-30 — Bundle 1: Donna feels like she works
+
+Operator-reported production friction (post-v0.4.1 daily use). The
+cross-vendor review found latent bugs; live use found *daily annoyances*.
+Four small fixes that change how the bot feels in the hand without
+adding new feature surface.
+
+### Fixed — Discord mobile readability
+
+`_DISCORD_MSG_LIMIT` lowered from 1900 → 1400. Operator on iPhone
+reported wall-of-text feel on long answers. 1400 is the thumb-scroll
+sweet spot — fits a mobile portrait viewport without internal scroll
+while still leaving headroom for the `(i/N)` part marker prefix.
+`_OVERFLOW_CLEAN_MAX` rises to `1400 * 4 = 5600` (was `1900 * 3 = 5700`)
+so total inline deliverable stays roughly the same — same long answers
+just split into 4 mobile-friendly chunks instead of 3 desktop ones.
+
+New `_normalize_for_mobile` helper applied to the inline-delivery path:
+
+- Collapses 2+ consecutive blank lines to 1 (mobile renders blank lines
+  with full vertical spacing; runs push real content off-screen).
+- Strips trailing whitespace per line.
+- Converts leading tabs to 2 spaces (Discord mobile renders tabs at
+  varying widths).
+
+Idempotent. Applied only to inline; overflow text stays raw so the
+artifact preserves original bytes for `botctl artifact-show`.
+
+### Added — session memory across Discord threads
+
+Cross-vendor review queue item #8 + operator's "no memory" daily
+complaint. Each `/ask` was a fresh job; the agent had zero recall of
+its last reply in the same DM. Wired up the pre-existing (but unused)
+`messages` table:
+
+- **`agent/context.py::JobContext.finalize`** — after the DONE flip,
+  insert two rows into `messages` (role=user with the task,
+  role=assistant with the final_text) when the job is in a Discord
+  thread AND not tainted. Tainted jobs DO NOT write — preserves the
+  trust boundary so the next clean job can't pick up
+  attacker-controlled bytes from a prior tainted run.
+- **`agent/compose.py::compose_system`** — new optional `session_history`
+  kwarg. When provided, renders in the volatile prompt block as
+  `## Prior conversation in this Discord thread (reference only — do
+  not cite this; cite from chunks or fresh tools)`. Cap at last 8
+  messages (4 turns).
+- **`agent/loop.py::_run_chat`** — fetches `recent_messages(thread_id,
+  limit=8)` once at loop entry and passes to `compose_system`.
+
+Chat mode only (grounded / speculative / debate are one-shot).
+
+### Improved — scheduler discoverability
+
+Operator reported "I could do with scheduled tasks" — the feature had
+shipped in v0.2.0 but they didn't know. The slash commands existed
+but the rendering was minimal:
+
+- **`/schedule`** now reports the next-fire time + a 200-char task
+  preview in the success response. Catches `ValueError` from a bad
+  cron expression and surfaces a user-friendly error instead of a
+  500-style failure.
+- **`/schedules`** shows a count header + last-fired-at per row + an
+  actionable empty-state message ("no active schedules — add one with
+  `/schedule cron_expr task`").
+- **New runbook:** `docs/SCHEDULER_SMOKE_TEST.md` — walks the operator
+  through the first end-to-end fire (schedule a 1-minute job, wait,
+  confirm Discord delivery, then schedule a real daily morning brief).
+  Aimed at finally validating the feature live in prod.
+
+### Fixed — `send_update` policy spec drift
+
+Cross-vendor review queue item #14. `docs/PLAN.md:94,159` said
+`send_update` carrying tainted content requires "every-use confirmation";
+`tools/communicate.py:27-52` has no such gate (and never did). Code
+was right — per-call consent on a progress-ping channel would prompt
+the user for every "I'm working on X" update. The structural protection
+already exists: tainted final_text goes through `_post_overflow_pointer`
+which compartmentalizes attacker-controlled bytes into an artifact
+rather than flooding scrollback.
+
+PLAN.md updated to reflect the actual design: `tainted=1` on
+`outbox_updates` is an audit flag the watchdog and `botctl traces`
+can surface, not a runtime gate. Decision recorded with rationale so
+future reviewers don't re-flag the spec drift.
+
+### Tests
+
+15 new tests in `tests/test_bundle1_feels_like_it_works.py`:
+
+- Mobile rendering: 7 (constants, collapse, whitespace strip,
+  idempotence, empty input)
+- Session memory: 6 (finalize writes for clean+thread; skips for
+  tainted; skips for no-thread; compose injects + omits + caps at 8)
+- Scheduler discoverability: 2 (list shape, invalid-cron raises)
+
+359 / 359 pass. Ruff clean.
+
 ## [0.4.1] — 2026-04-30 — Cross-vendor review v0.5 menu, items #1, #2, #7, #9, #11, #12, #13, #15
 
 Six fix PRs landing the cross-vendor review's lower-effort items
