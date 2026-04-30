@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] — 2026-04-30 — Bundle 1: Donna feels like she works
+## [0.4.2] — 2026-04-30 — Bundle 1: Donna feels like she works
 
 Operator-reported production friction (post-v0.4.1 daily use). The
 cross-vendor review found latent bugs; live use found *daily annoyances*.
