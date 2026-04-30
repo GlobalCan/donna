@@ -25,9 +25,30 @@ Before anything else, read these files. Everything below assumes you have.
 
 ## 1 · Where we are
 
-**Donna v0.4.0 — all five modes live-validated in production on
-DigitalOcean (2026-04-24).** Bot answering DMs as `Donna#3183`. Grounded,
-speculative, debate, chat, and refusal paths all smoke-tested against
+**Donna v0.4.2 — cross-vendor review absorbed + "feels like she works"
+bundle shipped (2026-04-30).** Bot answering DMs as `Donna#3183` on the
+DigitalOcean droplet. All five modes (chat / grounded / speculative /
+debate / refusal) live-validated. 359 tests green. Recent shipped
+changes:
+
+- **v0.4.2 (2026-04-30, Bundle 1):** mobile-friendly Discord rendering
+  (1400-char chunks + `_normalize_for_mobile`), session memory across
+  DM threads (chat mode injects last-8 messages from same Discord
+  thread; tainted-job stripping preserves trust boundary), scheduler
+  discoverability (`/schedule` next-fire-time + `/schedules` last-fired
+  + `docs/SCHEDULER_SMOKE_TEST.md` runbook), `send_update` PLAN drift
+  resolved.
+- **v0.4.1 (2026-04-30, cross-vendor review fixes):** internal retrieval
+  taint propagation (CRITICAL), eval scaffold → ratchet, `work_id`
+  propagation, stale-worker FAILED-write owner guard, attachment
+  temp-file race, audit denied/unknown/disallowed tool calls,
+  sanitizer cost attribution.
+- **Cross-vendor review** at `docs/REVIEW_SYNTHESIS_v0.4.0.md` —
+  three reviewers (Claude Opus 4.7 + Codex GPT-5 + Codex GPT-5.3-codex),
+  ~50 findings synthesized into a 19-item action queue. 8 of 19 shipped;
+  remainder deferred for explicit operator design decisions.
+
+Original v0.4.0 baseline:
 the 402-chunk Huck Finn corpus + real Anthropic Sonnet 4.6 calls.
 Overflow-to-artifact security pattern fired live on the debate transcript
 (8,819 chars → artifact, fetchable via `botctl artifact-show`).

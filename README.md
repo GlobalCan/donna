@@ -74,14 +74,29 @@ src/donna/
 
 ## Status
 
-**v0.4.0 (unreleased)** · Python 3.14 · 293 tests green · **live in production on DO**, grounded mode end-to-end validated, unified mode delivery, overflow-to-artifact security pattern, three-layer backups live, Jaeger traces.
+**v0.4.2** · Python 3.14 · 359 tests green · **live in production on DO**, grounded mode end-to-end validated, unified mode delivery, overflow-to-artifact security pattern, three-layer backups live, Jaeger traces, mobile-friendly Discord rendering, session memory across DM threads.
 
 - Foundation built and survived four Codex review passes (defect, adversarial
   challenge, Hermes comparison, round-2 same-class hunt) plus one self-run
-  adversarial+polish sweep
+  adversarial+polish sweep — plus the **2026-04-29 cross-vendor review pass**
+  (Claude Opus 4.7 + Codex GPT-5 + Codex GPT-5.3-codex), seven follow-up PRs
+  shipped in v0.4.1, four "feels like it works" fixes in v0.4.2
 - Unified execution graph (`JobContext`), persistent consent, taint tracking on
   every untrusted path, quoted-span grounded validator with smart-quote +
   Unicode NFC normalization (content-strict, rendering-tolerant)
+- **Internal retrieval taint propagation** — every mode handler (chat, grounded,
+  speculative, debate) flips `ctx.state.tainted` when retrieved chunks come
+  from tainted sources. Closes the most-actionable security gap from the
+  cross-vendor review.
+- **Session memory** — chat mode injects last-8 messages from the same Discord
+  thread as a `## Prior conversation` block in the volatile prompt. Tainted
+  jobs don't pollute clean future jobs' context.
+- **Mobile-friendly Discord rendering** — 1400-char chunks (was 1900) hit the
+  thumb-scroll sweet spot on iOS portrait. `_normalize_for_mobile` collapses
+  blank-line runs and strips trailing whitespace on the inline path.
+- **Eval ratchet** — `tests/test_evals_smoke.py` is now a CI gate over the
+  golden suite. Tri-state PASS / FAIL / SKIP. Tainted-corpus regressions
+  flip the suite red.
 - **Unified mode delivery** — grounded / speculative / debate all write to
   `outbox_updates` atomically with the DONE status flip inside
   `JobContext.finalize()`. Mode-resume short-circuit prevents double-execution
