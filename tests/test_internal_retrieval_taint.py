@@ -44,7 +44,6 @@ import pytest
 from donna.memory.db import connect, transaction
 from donna.types import JobMode, JobState
 
-
 # ---------- shared fixtures ------------------------------------------------
 
 
