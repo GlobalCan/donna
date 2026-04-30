@@ -16,16 +16,27 @@ def insert_schedule(
     task: str,
     agent_scope: str = "orchestrator",
     mode: str = "chat",
+    thread_id: str | None = None,
 ) -> str:
+    """Insert a schedule row.
+
+    `thread_id` records the Discord destination for replies when the
+    schedule fires. `/schedule` populates it from the interaction's
+    channel; `botctl schedule add` leaves it NULL by default. Schedules
+    with thread_id=NULL fire but their replies sit undeliverable in
+    `outbox_updates` (no channel can be resolved) — appearing only via
+    `botctl jobs`. See migration 0006 for the bug history.
+    """
     _validate_cron(cron_expr)
     sid = ids.schedule_id()
     next_run = croniter(cron_expr, datetime.now(UTC)).get_next(datetime)
     conn.execute(
         """
-        INSERT INTO schedules (id, agent_scope, cron_expr, task, mode, next_run_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO schedules
+            (id, agent_scope, cron_expr, task, mode, next_run_at, thread_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (sid, agent_scope, cron_expr, task, mode, next_run),
+        (sid, agent_scope, cron_expr, task, mode, next_run, thread_id),
     )
     return sid
 

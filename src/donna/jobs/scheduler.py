@@ -67,14 +67,28 @@ class Scheduler:
         try:
             with transaction(conn):
                 mode = JobMode(sched.get("mode", "chat"))
+                # Propagate thread_id from the schedule so the worker's
+                # finalize/outbox path can deliver the reply back to the
+                # Discord channel where /schedule was invoked. NULL is
+                # legitimate for CLI-created schedules; the resulting
+                # job runs but has no destination — visible only via
+                # botctl jobs. Bug fix 2026-04-30 (PR fix/scheduler-thread-
+                # id-delivery); pre-fix every scheduled job got
+                # thread_id=NULL regardless of origin.
                 jid = jobs_mod.insert_job(
                     conn,
                     task=sched["task"],
                     agent_scope=sched.get("agent_scope", "orchestrator"),
                     mode=mode,
+                    thread_id=sched.get("thread_id"),
                 )
                 sched_mod.mark_ran(conn, schedule_id=sched["id"], cron_expr=sched["cron_expr"])
-            log.info("scheduler.fired", schedule_id=sched["id"], job_id=jid)
+            log.info(
+                "scheduler.fired",
+                schedule_id=sched["id"],
+                job_id=jid,
+                thread_id=sched.get("thread_id"),
+            )
         except Exception as e:  # noqa: BLE001
             log.exception("scheduler.fire_failed", schedule_id=sched["id"], error=str(e))
         finally:

@@ -109,11 +109,30 @@ def register_commands(bot: DonnaBot) -> None:
         if not _allowed(interaction):
             await interaction.response.send_message("not authorized", ephemeral=True)
             return
+        # Capture the current Discord channel/thread so when this schedule
+        # fires the worker's finalize/outbox path can deliver the reply
+        # back to where `/schedule` was invoked. Without this the job
+        # runs to status=done but `_resolve_channel_for_job` returns
+        # None and the reply sits undeliverable in `outbox_updates`.
+        # Bug surfaced during the first live smoke test 2026-04-30.
+        from ..memory import threads as threads_mod
         try:
             conn = connect()
             try:
                 with transaction(conn):
-                    sid = sched_mod.insert_schedule(conn, cron_expr=cron_expr, task=task)
+                    thread_id = threads_mod.get_or_create_thread(
+                        conn,
+                        discord_channel=str(interaction.channel_id),
+                        discord_thread=(
+                            str(interaction.channel_id)
+                            if isinstance(interaction.channel, discord.Thread)
+                            else None
+                        ),
+                    )
+                    sid = sched_mod.insert_schedule(
+                        conn, cron_expr=cron_expr, task=task,
+                        thread_id=thread_id,
+                    )
                 # Re-read so we can show the operator the next_run_at
                 # (croniter computes it inside insert_schedule). Confirms
                 # the cron expression parsed and gives a concrete next-fire
@@ -124,8 +143,21 @@ def register_commands(bot: DonnaBot) -> None:
             finally:
                 conn.close()
         except ValueError as e:
+            # The most common error here is forgetting spaces between
+            # cron fields (e.g. typing `*****` instead of `* * * * *`).
+            # Surface that explicitly so the operator doesn't have to
+            # guess at croniter's terse `Invalid cron expression: *****`.
+            stripped = cron_expr.strip()
+            hint = ""
+            if stripped and " " not in stripped:
+                hint = (
+                    "\n\n_Hint: cron needs **5 space-separated fields** "
+                    "(minute hour day month dayOfWeek). Example: "
+                    "`* * * * *` for every minute._"
+                )
             await interaction.response.send_message(
-                f"❌ invalid cron expression `{cron_expr}` — {e}", ephemeral=True,
+                f"❌ invalid cron expression `{cron_expr}` — {e}{hint}",
+                ephemeral=True,
             )
             return
         next_run = row["next_run_at"] if row else "?"
