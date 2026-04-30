@@ -34,6 +34,7 @@ def _prompt() -> str:
 
 async def sanitize_untrusted(
     content: str, *, artifact_id: str, source_url: str | None = None,
+    job_id: str | None = None,
 ) -> str:
     """Summarize untrusted text via Haiku. Returns a safe text summary.
 
@@ -41,6 +42,12 @@ async def sanitize_untrusted(
     Haiku call over nothing, and Anthropic rejects empty user messages with
     a 400. Truncates at 60k chars (cost bound); Haiku's context easily holds
     that much.
+
+    Cross-vendor review #8 (Codex GPT-5): pass `job_id` through to
+    `model().generate()` so the cost ledger attributes the Haiku spend to
+    the right job. Pre-fix, `botctl cost` undercounted by exactly the
+    sanitizer spend on `fetch_url` / `search_web` /
+    `ingest_discord_attachment` calls — invisible security spend.
     """
     if not content or not content.strip():
         return "[no substantive content]"
@@ -52,6 +59,7 @@ async def sanitize_untrusted(
         **{
             "agent.taint.source_artifact_id": artifact_id,
             "agent.taint.source_url": source_url,
+            "agent.job.id": job_id,
             "sanitize.input_bytes": len(content),
         },
     ):
@@ -60,6 +68,7 @@ async def sanitize_untrusted(
             messages=[{"role": "user", "content": truncated}],
             tier=ModelTier.FAST,
             max_tokens=800,
+            job_id=job_id,
         )
     text = (result.text or "").strip()
     if not text:
