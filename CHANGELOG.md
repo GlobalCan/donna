@@ -1,92 +1,169 @@
 # Changelog
 
-## [Unreleased] — 2026-04-29 — Eval scaffold → ratchet (cross-vendor review #2)
+## [0.4.1] — 2026-04-30 — Cross-vendor review v0.5 menu, items #1, #2, #7, #9, #11, #12, #13, #15
 
-### Fixed — eval runner reported PASS without exercising assertions
+Six fix PRs landing the cross-vendor review's lower-effort items
+(`docs/REVIEW_SYNTHESIS_v0.4.0.md` action queue). 51 new tests; 344
+passing in total (was 293 baseline). Ruff clean. No code regressions.
 
-Cross-vendor review #2 / merged action queue #2. The previous
-`evals/runner.py::_run_one` shipped this:
+The headline item was **#1 internal retrieval taint propagation**
+(CRITICAL — flagged independently by Claude + Codex GPT-5 + Codex
+GPT-5.3-codex). Each remaining fix is small, contained, and shipped
+with regression-pinning tests.
 
-```python
-if cap in ("grounded", "speculative") and not live:
-    return True   # silently PASS without checking anything
-```
+### Fixed — internal retrieval bypassed taint policy (#37, queue #1)
 
-So any code change that broke grounded/speculative behaviour got a green
-eval suite. The new ratchet:
-
-- **Tri-state status** — `Result(status, reason, case_id, capability)`.
-  Status is `"PASS"`, `"FAIL"`, or `"SKIP"`. SKIP means "this case needs
-  `--live`; we won't fake it". Live cases now skip explicitly instead of
-  returning PASS.
-- **`schema_lint()`** runs first on every case. Missing required fields
-  (`id`, `description`, `capability`, `setup`, `input`, `expect`) are
-  FAIL, not SKIP. Wrong types are FAIL. Unknown capability is FAIL.
-- **`load_goldens()`** raises `RuntimeError` on YAML parse errors and on
-  non-mapping top-level documents. Previously these were swallowed.
-- **New offline-runnable capabilities:**
-  - `grounded_refusal` — seeds nothing, calls `retrieve_knowledge` for
-    an empty scope, asserts no chunks (the refusal-path trigger).
-  - `taint_propagation` — seeds a knowledge_source with the case's
-    `source_tainted` flag plus chunks, calls `retrieve_knowledge`,
-    asserts the returned `tainted` matches `expect.tainted`. Pins the
-    cross-vendor-review-#1 fix from PR #37 against future regressions.
-- **New goldens** — `04_taint_propagation_internal_retrieval.yaml`
-  (tainted source → tainted=true) and `05_taint_clean_corpus.yaml`
-  (clean source → tainted=false). Existing
-  `03_debate_quote_requirement.yaml` updated to use a turn that
-  actually triggers the validator (the prior fixture shared the word
-  "efficiency" with prior content, satisfying the validator's 10-char
-  fuzzy-overlap escape — silent failure that the new ratchet caught).
-- **CI gate** — `tests/test_evals_smoke.py` is the pytest wrapper that
-  loads every golden, dispatches via `run_one_async`, and asserts no
-  FAILs. `tests/test_eval_runner.py` pins the runner's tri-state
-  semantics, schema_lint, load_goldens behavior, and the new
-  taint_propagation / grounded_refusal dispatchers (negative test
-  included for the mismatch case).
-- **`evals/README.md`** — new schema doc + capability matrix +
-  rationale for the rewrite.
-
-23 new tests. 326 / 326 pass. Ruff clean.
-
-## [Unreleased] — 2026-04-29 — Internal retrieval taint propagation (cross-vendor review #1)
-
-### Fixed — internal retrieval bypassed taint policy (CRITICAL security gap)
-
-Cross-vendor adversarial pass (Claude Opus 4.7 + Codex GPT-5 + Codex
-GPT-5.3-codex, all three independently) flagged the highest-priority
-finding from PR #36's synthesis. `tools.knowledge.recall_knowledge`
-(the agent-callable wrapper) propagated `tainted=True` to the job when
-any returned chunk's `knowledge_sources.tainted=1`, but every mode
-handler (`agent/loop.py::_load_scoped_context` for chat,
-`modes/grounded.py:73`, `modes/speculative.py:46-49`,
-`modes/debate.py:104`) called `modes.retrieval.retrieve_knowledge`
-directly — bypassing the wrapper. A future tainted corpus chunk would
-shape grounded answers without firing consent gates on downstream
-`remember` / `run_python` / write tools.
+`tools.knowledge.recall_knowledge` (the agent-callable wrapper)
+propagated `tainted=True` when any returned chunk's
+`knowledge_sources.tainted=1`, but every mode handler called
+`modes.retrieval.retrieve_knowledge` directly — bypassing the wrapper.
+A tainted corpus chunk would shape grounded answers without firing
+consent gates on downstream `remember` / `run_python` / write tools.
 
 - **`modes/retrieval.py::retrieve_knowledge`** — taint check moved
-  in-core. Single SELECT against `knowledge_sources.tainted` for the
-  chosen chunks' source_ids, on the same connection, returns
+  in-core. Single SELECT against `knowledge_sources.tainted`. Returns
   `tainted: bool` on the result dict. Single source of truth.
 - **`tools/knowledge.py::recall_knowledge`** — simplified to delegate.
-  Manual taint check removed (now redundant). Same wire shape; same
-  `JobContext._execute_one` taint propagation semantics.
 - **`agent/loop.py::_load_scoped_context`** — return shape extended to
-  `(chunks, examples, anchors, tainted)`. Chat-mode loop body
-  propagates `retrieval_tainted` onto `ctx.state.tainted` at the
-  iteration boundary.
-- **`modes/{grounded,speculative,debate}.py`** — each mode handler
-  inspects `retrieval.get("tainted")` after the call and flips
-  `ctx.state.tainted = True` (with `otel.set_attr` for trace audit).
+  `(chunks, examples, anchors, tainted)`. Chat-mode propagates per
+  iteration.
+- **`modes/{grounded,speculative,debate}.py`** — each handler inspects
+  `retrieval.get("tainted")` and flips `ctx.state.tainted = True`
+  (with `otel.set_attr("agent.job.tainted", True)`).
 
-10 new tests (`tests/test_internal_retrieval_taint.py`) pin the fix:
-unit tests for `retrieve_knowledge`'s `tainted` flag (true / false /
-empty corpus); integration tests confirming each of the four direct-call
-paths (chat, grounded, speculative, debate) propagates the flag onto
-`JobContext.state.tainted`.
+10 new tests in `tests/test_internal_retrieval_taint.py` cover all four
+direct-call paths plus the wrapper.
 
-303 tests green (293 baseline + 10 new). No regressions.
+### Added — eval scaffold → ratchet (#38, queue #2)
+
+The previous `evals/runner.py::_run_one` returned `True` for non-`live`
+grounded/speculative cases without exercising any assertion, making the
+eval suite a fake CI gate. Rewritten:
+
+- **Tri-state status** — `Result(status, reason, case_id, capability)`
+  with `PASS` / `FAIL` / `SKIP`. SKIP reserved for cases that genuinely
+  need a live model.
+- **`schema_lint()`** runs first. Missing keys, wrong types, unknown
+  capability all map to FAIL.
+- **`load_goldens()`** raises on YAML parse errors and non-mapping
+  top-level documents.
+- **New offline-runnable capabilities** — `grounded_refusal` (empty
+  corpus → no chunks → refusal trigger) and `taint_propagation` (seed
+  source + chunks; assert `retrieve_knowledge.tainted` matches expect).
+- **2 new goldens** — `04_taint_propagation_internal_retrieval.yaml`
+  (pins #37's fix) and `05_taint_clean_corpus.yaml`. Existing
+  `03_debate_quote_requirement.yaml` was silently never triggering the
+  validator (the prior fixture shared "efficiency" with the prior
+  content, satisfying the validator's fuzzy-overlap escape) — fixed.
+- **`tests/test_evals_smoke.py`** — pytest wrapper that loads every
+  golden, dispatches via `run_one_async`, asserts no FAILs. Makes the
+  eval suite a real CI gate.
+- **`tests/test_eval_runner.py`** — runner unit tests covering tri-state,
+  schema_lint, load_goldens, and dispatcher behavior.
+- **`evals/README.md`** — new schema doc + capability matrix.
+
+23 new tests.
+
+### Fixed — `work_id` propagation to chunks (#39, queue #7)
+
+`ingest/pipeline.py::ingest_text` gave the source row a surrogate
+`work_id` (the artifact ID) when caller didn't supply one, but chunk
+rows got the raw caller value (None). Result: chunks across unrelated
+default ingests all carried `work_id=NULL`, and `_apply_diversity` in
+`modes/retrieval.py` collapsed them under a single `__none__` bucket
+— silently losing diversity across mixed corpora.
+
+Two-line fix: resolve `work_id` once at the top, use the same value
+for source AND every chunk.
+
+4 new tests in `tests/test_work_id_propagation.py`.
+
+### Fixed — stale-worker FAILED-write owner guard (#40, queue #12)
+
+`Worker._run_one`'s exception handler in `jobs/runner.py` wrote
+`FAILED` status without an owner guard. A stale worker (lease reclaimed
+by another worker but exception handler still firing) could clobber a
+recovered/completed job's status. Symmetric to the v0.3.3 #23 owner
+guard on `consent._persist_pending`. Threading `self.worker_id` through
+to `set_status` (which already accepts the parameter) closes the gap.
+
+### Fixed — attachment temp-file race under concurrency (#40, queue #15)
+
+`tools/attachments.py` wrote attachments to a fixed `attach{ext}` path.
+Two concurrent ingests with the same extension overwrote each other.
+Append `uuid4().hex[:12]` to the filename. Existing `finally` unlink
+keeps `tmp/` tidy. 4 tests for both fixes.
+
+### Added — audit denied / unknown / disallowed tool calls (#41, queue #13)
+
+Net-new finding from Codex GPT-5.3-codex (neither Claude nor GPT-5
+caught it). When `_execute_one` rejected a tool call (consent denied,
+tool not registered, not allowlisted), it returned an error block to
+the model but did NOT insert a row into `tool_calls`. Operators had no
+audit trail for attempted bypasses.
+
+New `JobContext._audit_rejection()` helper. Inserts a `tool_calls` row
+with one of three new status values:
+
+| Status | Meaning |
+|---|---|
+| `unknown_tool` | Model called a tool not in REGISTRY |
+| `not_allowlisted` | Tool exists but `scope` not in `entry.agents` |
+| `denied:<reason>` | Consent gate said no — `<reason>` from the gate |
+
+Best-effort: a logging failure is caught + logged but doesn't break
+the agent loop. 5 new tests including a negative DB-explosion test.
+
+### Fixed — sanitizer cost not attributed to jobs (#42, queue #9)
+
+`security/sanitize.py::sanitize_untrusted` called `model().generate()`
+without passing `job_id`. The cost ledger therefore couldn't attribute
+the Haiku-sanitize spend to the calling job — invisible blind spot in
+`botctl cost`. On a heavily-tainted day, per-job cost undercounted by
+the exact sanitizer spend.
+
+Threaded `job_id` through:
+
+```
+sanitize_untrusted(..., job_id=...)
+  → model().generate(..., job_id=...)
+    → cost_ledger.record_llm_usage(job_id=...)
+```
+
+`tools/web.py::search_web` / `search_news` / `fetch_url` accept
+`job_id` (auto-injected by `JobContext._execute_one`'s inspect-based
+arg threading) and pass through. 5 new tests.
+
+### Cleanup (#43)
+
+Re-applied the ruff I001 import-order fix on `tests/test_internal_retrieval_taint.py` that PR #37's squash merge had inadvertently dropped from main. One-line.
+
+### Test summary
+
+| Source | Tests added |
+|---|---|
+| #37 internal retrieval taint | +10 |
+| #38 eval ratchet | +23 |
+| #39 work_id propagation | +4 |
+| #40 small fixes (stale-worker + attachment race) | +4 |
+| #41 audit denied tool calls | +5 |
+| #42 sanitizer cost attribution | +5 |
+| **Total** | **+51** |
+
+344 / 344 pass. Ruff clean across `src/`, `tests/`, and `evals/`.
+
+### What's still open from the merged action queue
+
+| # | Item | Effort | Status |
+|---|---|---|---|
+| 3 | `agent_scope` first-class | M-L | Schema decision needed |
+| 4 | Scheduler leadership lock | M | Architecture decision needed |
+| 5 | Step-level checkpoint/replay/fork | M | Design decision needed |
+| 6 | `/validate` URL critique | M | v0.5 user-facing feature |
+| 8 | Session memory across Discord threads | S-M | UX design needed |
+| 10 | Claim objects + span drilldown | M | UX foundation for #6 |
+| 11 | Bitemporal facts | M-L | Market-driven, defer |
+| 14 | `send_update` policy fix | XS | Policy decision needed |
 
 ## [0.4.0] — 2026-04-24 — Unified mode delivery + round-3 adversarial sweep + grounded end-to-end
 
