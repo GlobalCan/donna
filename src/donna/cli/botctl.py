@@ -483,16 +483,49 @@ def forget_artifact(
 
 
 @schedule_app.command("add")
-def schedule_add(cron_expr: str, task: str, agent_scope: str = "orchestrator") -> None:
+def schedule_add(
+    cron_expr: str,
+    task: str,
+    agent_scope: str = "orchestrator",
+    discord_channel: str = typer.Option(
+        None,
+        "--discord-channel",
+        help=(
+            "Discord channel ID to deliver the reply to when this schedule "
+            "fires. If omitted the schedule still fires but its job has no "
+            "thread_id, so the reply only appears in `botctl jobs`. Use "
+            "/schedule from Discord for automatic destination capture."
+        ),
+    ),
+) -> None:
+    """Add a cron schedule. CLI-created schedules with no
+    `--discord-channel` will fire successfully but their replies sit in
+    `outbox_updates` undeliverable. The Discord-side `/schedule` slash
+    command auto-captures the current channel and is the recommended path.
+    """
+    from ..memory import threads as threads_mod
     conn = connect()
     try:
         with transaction(conn):
+            thread_id: str | None = None
+            if discord_channel:
+                thread_id = threads_mod.get_or_create_thread(
+                    conn,
+                    discord_channel=discord_channel,
+                    discord_thread=None,
+                )
             sid = sched_mod.insert_schedule(
-                conn, cron_expr=cron_expr, task=task, agent_scope=agent_scope,
+                conn, cron_expr=cron_expr, task=task,
+                agent_scope=agent_scope, thread_id=thread_id,
             )
     finally:
         conn.close()
-    console.print(f"📅 scheduled [bold]{sid}[/bold] — `{cron_expr}`")
+    suffix = (
+        f" → channel `{discord_channel}`"
+        if discord_channel
+        else " (no Discord destination — replies visible only via `botctl jobs`)"
+    )
+    console.print(f"📅 scheduled [bold]{sid}[/bold] — `{cron_expr}`{suffix}")
 
 
 @schedule_app.command("list")
