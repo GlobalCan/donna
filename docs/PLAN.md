@@ -91,7 +91,7 @@ async def search_web(query: str, max_results: int = 10) -> list[Result]:
 | `recall` | read_memory | — | never | FTS5 + semantic |
 | `forget` | write_memory | — | always | cautious by default |
 | `ask_user` | communicate | — | never | pause for clarifying Q |
-| `send_update` | communicate | — | **always if tainted content** | progress ping to Discord |
+| `send_update` | communicate | — | never (audit-flag only — see §below) | progress ping to Discord |
 | `run_python` | exec_code | ✅ | always | sandboxed (see Security) |
 
 **L2/L3/L4 tools are deferred.** Folders exist, nothing registered yet. The bot doesn't know about them.
@@ -156,7 +156,7 @@ The bot has all three legs of Simon Willison's "lethal trifecta": private data (
 2. **Tainted-job policy:**
    - `remember` → requires **every-use confirmation** in Discord
    - All future L2/L3 tools (when added) → **every-use confirmation**
-   - `send_update` with content derived from tainted sources → **every-use confirmation** (plain progress pings are fine)
+   - `send_update` carrying tainted content → **persisted with `tainted=1` on the outbox row; no consent gate.** Per-call consent on a progress-ping channel was deemed worse-UX than the structural protection that already exists: any `final_text` derived from tainted material goes through `_post_overflow_pointer` (`adapter/discord_adapter.py:397`), which compartmentalizes attacker-controlled bytes into an artifact rather than flooding Discord scrollback. The `tainted` column on `outbox_updates` is an audit flag that the watchdog and `botctl traces` can surface; it is not a runtime gate. Decision recorded 2026-04-30 after the cross-vendor review #14 spec-drift surfaced. (If a real attack vector appears that this misses, revisit.)
    - `run_python` → **every-use confirmation** (already `always` by default)
 
 3. **Dual-call for untrusted content.** When `fetch_url` / `read_pdf` / `scrape` returns, the raw content is:

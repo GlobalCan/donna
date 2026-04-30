@@ -22,6 +22,7 @@ def compose_system(
     examples: list[dict[str, Any]] | None = None,
     style_anchors: list[Chunk] | None = None,
     debate_context: str | None = None,
+    session_history: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Returns system prompt as content blocks; first block has cache_control marker."""
     conn = connect()
@@ -78,6 +79,20 @@ def compose_system(
 
     if debate_context:
         volatile.append("\n\n## Debate so far\n" + debate_context + "\n")
+
+    if session_history:
+        # Prior Discord-thread conversation context. Injected for chat mode
+        # only (grounded/speculative/debate are one-shot per question).
+        # Reference-only — the model should answer from chunks/web/its own
+        # reasoning, not regurgitate the prior turn's text.
+        volatile.append(
+            "\n\n## Prior conversation in this Discord thread "
+            "(reference only — do not cite this; cite from chunks or fresh tools)\n"
+        )
+        for m in session_history[-8:]:
+            who = "User" if m.get("role") == "user" else "You"
+            content = (m.get("content") or "").strip()[:1500]
+            volatile.append(f"{who}: {content}\n\n")
 
     if volatile:
         blocks.append({"type": "text", "text": "".join(volatile)})

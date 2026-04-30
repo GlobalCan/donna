@@ -34,13 +34,20 @@ log = get_logger(__name__)
 _DRAIN_POLL_S = 1.0
 # Per-job rate limit for progress updates. Matches prior behavior.
 _UPDATE_RATE_LIMIT_S = 5.0
-# Per-Discord-message char cap. Discord's hard limit is 2000; 1900 leaves
-# headroom for prefix/marker characters ("• (1/N) " etc).
-_DISCORD_MSG_LIMIT = 1900
+# Per-Discord-message char cap. Discord's hard limit is 2000; we used to use
+# 1900 for desktop. Mobile thumb-scroll feedback (the operator on iPhone)
+# was that 1900-char chunks felt like wall-of-text. Lowered to 1400: that's
+# the sweet spot where a chunk fits in roughly one mobile-portrait viewport
+# without scrolling, while still leaving headroom for the `(i/N)` part
+# marker prefix and any leading bullets.
+_DISCORD_MSG_LIMIT = 1400
 
 # Overflow-to-artifact thresholds. Anything longer than these caps goes to
 # an artifact + a short pointer message in Discord, instead of flooding
-# scrollback with (N/M) multi-part messages.
+# scrollback with (N/M) multi-part messages. The clean cap stays close to
+# its prior absolute value (~5600) so a long grounded answer still gets
+# inline delivery — just in 4 mobile-friendly chunks instead of 3 desktop
+# ones.
 #
 # Security rationale for the lower tainted cap: attacker-controlled text
 # (fetched URLs, PDF attachments, search snippets) shouldn't be materialized
@@ -49,9 +56,39 @@ _DISCORD_MSG_LIMIT = 1900
 # conversation. By sending tainted overflow through the artifact path, the
 # raw content sits in compartmentalized storage and the operator must
 # explicitly `botctl artifact-show <id>` to view it in full.
-_OVERFLOW_CLEAN_MAX = _DISCORD_MSG_LIMIT * 3     # ~5700 chars — up to 3 parts
-_OVERFLOW_TAINTED_MAX = _DISCORD_MSG_LIMIT * 1   # ~1900 chars — single part
-_OVERFLOW_PREVIEW_LEN = 1200                     # chars shown in pointer msg
+_OVERFLOW_CLEAN_MAX = _DISCORD_MSG_LIMIT * 4     # ~5600 chars — up to 4 parts
+_OVERFLOW_TAINTED_MAX = _DISCORD_MSG_LIMIT * 1   # ~1400 chars — single part
+_OVERFLOW_PREVIEW_LEN = 1000                     # chars shown in pointer msg
+
+
+def _normalize_for_mobile(text: str) -> str:
+    """Light normalization that improves mobile readability without changing
+    semantics. Cheap and idempotent so it can run on every outgoing message.
+
+    - Collapse 3+ consecutive blank lines to 2 (mobile renders empty lines
+      with full vertical spacing; runs of them push real content off-screen).
+    - Strip trailing whitespace per line (leftover spaces sometimes survive
+      markdown rendering and look like artifacts on mobile clients).
+    - Convert leading-tab indented blocks to 2-space (Discord mobile renders
+      tabs at varying widths; 2-space stays consistent).
+    """
+    if not text:
+        return text
+    lines = [ln.rstrip() for ln in text.split("\n")]
+    # Collapse 2+ blanks to 1 — mobile thumb-scroll feedback was that
+    # multiple blank lines push real content off-screen. One blank line
+    # between paragraphs is enough visual separation on a phone.
+    out: list[str] = []
+    blank_run = 0
+    for ln in lines:
+        if not ln:
+            blank_run += 1
+            if blank_run <= 1:
+                out.append(ln)
+        else:
+            blank_run = 0
+            out.append(ln.replace("\t", "  "))
+    return "\n".join(out)
 
 
 def _split_for_discord(text: str, limit: int = _DISCORD_MSG_LIMIT) -> list[str]:
@@ -374,11 +411,19 @@ class DonnaBot(discord.Client):
         # Overflow-to-artifact: long texts go to artifact + pointer message.
         # Tainted text uses a much tighter cap so untrusted content doesn't
         # bloat Discord scrollback (see _OVERFLOW_TAINTED_MAX comment).
+        # Cap check runs on the RAW text — the artifact preserves the
+        # original bytes so the operator's `botctl artifact-show` returns
+        # exactly what was generated, not a normalized version.
         cap = _OVERFLOW_TAINTED_MAX if tainted else _OVERFLOW_CLEAN_MAX
         if len(text) > cap:
             return await self._post_overflow_pointer(
                 ch=ch, job_id=job_id, text=text, tainted=tainted,
             )
+
+        # Mobile normalization runs only on the inline-delivery path —
+        # collapses runs of blank lines and tab→2-space, both of which
+        # mangle on Discord mobile portrait. Cheap and idempotent.
+        text = _normalize_for_mobile(text)
 
         prefix = "🔮 " if tainted else "• "
         parts = _split_for_discord(text)
