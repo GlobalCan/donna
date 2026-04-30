@@ -19,33 +19,110 @@ grounded, speculative, debate) is live-validated end-to-end in production.
 293 tests green. You are NOT in a debugging loop — you're choosing what to
 build next.
 
-## State snapshot (as of 2026-04-24 end-of-session)
+## State snapshot (as of 2026-04-30 end-of-session)
 
-- **Branch:** `claude/load-up-setup-7XtVU` (or main — they may be equivalent post-merge)
-- **Version:** `v0.4.0 (unreleased)` — all code merged to main, no release tag yet
-- **Tests:** 293 passing, Python 3.12 (sandbox) or 3.14 (prod), ruff clean
-- **Production droplet:** `159.203.34.165`, containers up, Huck Finn corpus (402 chunks) loaded
-- **Migrations:** head is `0005_outbox_tables`
-- **Open PRs:** 0
-- **Live-validated today:**
-  - Grounded short + long (multi-part inline)
-  - Speculative (after seeding an `agent_prompts` row for the scope)
-  - Debate (overflow-to-artifact fired, artifact fetchable via `botctl`)
-  - `botctl artifacts`, `artifact-show`, `heuristics list`
-- **Six PRs merged today:** #28 (unified mode delivery), #29 (prose render + forget-artifact), #30 (adversarial round 2 + overflow-to-artifact + compose/watchdog/cost), #31 (code-fence hotfix), #32 (smart-quote normalization), #33 (docs + prompt polish)
+- **Branch:** `main`. Open PR `claude/v042-deploy-prep` (docs sync only)
+  pending merge — squash + tag v0.4.2 right after.
+- **Version:** `v0.4.2` (Bundle 1 — "feels like she works" production
+  fixes) — supersedes v0.4.1 (cross-vendor review action queue items
+  #1, #2, #7, #9, #11, #12, #13, #15) and v0.4.0 (unified mode delivery).
+- **Tests:** **359 passing**, Python 3.14 local / 3.12 CI, ruff clean.
+  Migrations head: `0005_outbox_tables`. No new schema since v0.4.0.
+- **Production droplet:** `159.203.34.165`, containers up, Huck Finn
+  corpus (402 chunks) loaded.
+- **Operator's pending action:** smoke-test the scheduler live per
+  `docs/SCHEDULER_SMOKE_TEST.md` after deploying v0.4.2. Then decide
+  what's next (see "What's queued" below).
+- **What shipped in v0.4.2 (Bundle 1, 2026-04-30):**
+  - Mobile-friendly Discord rendering (1400-char chunks +
+    `_normalize_for_mobile` collapse runs of blank lines, strip
+    trailing whitespace, tabs → 2 spaces; inline path only)
+  - Session memory in chat mode (`messages` table now written on
+    `JobContext.finalize` + read into `compose_system` via new
+    `session_history` kwarg; tainted jobs stripped to preserve trust
+    boundary)
+  - Scheduler discoverability (`/schedule` shows next-fire-time +
+    task preview; `/schedules` shows count + last-fired-at; new
+    `docs/SCHEDULER_SMOKE_TEST.md` runbook)
+  - `send_update` policy spec drift resolved (PLAN.md updated to
+    match the audit-flag-only design that the code already had)
+- **What shipped in v0.4.1 (cross-vendor review fixes, 2026-04-30):**
+  PR #37 (internal retrieval taint), #38 (eval ratchet), #39 (work_id
+  propagation), #40 (stale-worker FAILED-write owner guard +
+  attachment temp-file race), #41 (audit denied tool calls),
+  #42 (sanitizer cost attribution), #43 (CI ruff cleanup),
+  #44 (release notes consolidation).
 
 ## Read in this order, before writing any code
 
-1. `README.md` — current status section tells you what shipped
-2. `CHANGELOG.md` [0.4.0] section — the full story of today's work
+1. `README.md` — current status section tells you what shipped (v0.4.2)
+2. `CHANGELOG.md` `[0.4.2]` and `[0.4.1]` sections — what just shipped
 3. `docs/SESSION_RESUME.md` — full context snapshot
-4. `docs/KNOWN_ISSUES.md` — what's deferred vs what's shipped
-5. `docs/PLAN.md` — the original architectural plan (mostly historical at this point)
-6. `docs/THINK_BRIEF.md` — the sibling project (separate session / separate repo `GlobalCan/Think`)
+4. `docs/REVIEW_SYNTHESIS_v0.4.0.md` — three-reviewer synthesis + the
+   19-item action queue with shipped vs deferred status. **The right
+   place to start when picking what's next.**
+5. `docs/KNOWN_ISSUES.md` — what's deferred vs what's shipped
+6. `docs/PLAN.md` — the original architectural plan (mostly historical
+   at this point — search for "send_update" to see the v0.4.2
+   spec-drift fix)
+7. `docs/THINK_BRIEF.md` — the sibling project (separate session /
+   separate repo `GlobalCan/Think`)
 
 Then confirm orientation by telling the user in one paragraph: what Donna
-is, what just shipped, what's open, what you recommend working on first.
-Do NOT start coding until the user picks a track.
+is, what just shipped (v0.4.2), what's queued (`/validate` is the next
+big thing if the operator gives the word), what you recommend working
+on first. **Do NOT start coding until the user picks.**
+
+## What's queued NOW (post-v0.4.2, ranked)
+
+The cross-vendor review's 19-item action queue had 8 items shipped in
+v0.4.1 + v0.4.2. The remaining 11 are deferred behind explicit operator
+decisions. Ranked by the operator's tier system from the `/validate`
+walkthrough:
+
+### Tier 1 — actual product (do these next when the operator says go)
+
+1. **`/validate <url>` URL critique mode** (~3-4 days). New
+   `JobMode.VALIDATE`. Reuses fetch_url + sanitize_untrusted +
+   grounded retrieval + overflow-to-artifact. Output: structured per-
+   claim verdicts with quoted_span evidence + red-flag detection +
+   cross-corpus + web-source verification. Operator's words: "the
+   actual product." Spec discussion in the most recent transcript;
+   ready to scope into a design doc the moment the operator says go.
+2. **Daily morning briefing** as the first concrete scheduled task
+   (~hours, after operator confirms scheduler smoke test passes).
+
+### Tier 2 — assistant-makers (do once `/validate` is shipping)
+
+3. **Read your files: Notion OR Drive connector** (~1 week). Operator
+   has both; pick one based on where their docs actually live. New
+   per-source ingest pipeline + OAuth wiring + scheduled re-sync.
+4. **Persistent web monitoring** (~3 days post-scheduler). Cron +
+   diff against last `fetch_url` output + Discord notify on change.
+
+### Tier 3 — heavier (defer)
+
+5. **Send emails / calendar events** — security boundary, the lethal-
+   trifecta endpoint. Big trust step.
+6. **Long-running research** — mostly tuning of compaction + tool
+   budget; not new infrastructure.
+
+### Tier 4 — different products (probably never as a Donna feature)
+
+7. **Voice (STT + TTS)** — different UX altogether
+8. **Run YOUR code** — workspace architecture decision (git-clone
+   pattern vs attachment vs SSH-back)
+9. **Database / spreadsheet access** — niche for a personal bot
+
+### Architecture queue (defer until forced)
+
+10. **`agent_scope` first-class** (#3 from review queue) — until 3+
+    corpora exist or THINK starts
+11. **Step-level checkpoint/replay/fork** (#5) — until evals demand it
+12. **Scheduler leadership lock** (#4) — until multi-worker is real
+13. **Bitemporal facts** (#11) — market-driven, not user-driven
+14. **Claim objects + span drilldown** (#10) — fold into `/validate`
+    when it ships
 
 ## Open tracks (v0.5 menu)
 

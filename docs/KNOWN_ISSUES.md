@@ -391,27 +391,52 @@ code. Index of the file:line citations is the table in
   Future dynamic-taint tools would slip past pre-scan in same parallel
   batch.
 
-### Action queue — ranked merge of all sources
+### Action queue — ranked merge of all sources (status as of v0.4.2)
 
 Top 19 items in the merged queue live in
-[`REVIEW_SYNTHESIS_v0.4.0.md`](REVIEW_SYNTHESIS_v0.4.0.md) §5. The v0.5
-recommended menu is items 1-10; v0.6+ is 11-19. Headlines:
+[`REVIEW_SYNTHESIS_v0.4.0.md`](REVIEW_SYNTHESIS_v0.4.0.md) §5. **8 of 19
+shipped between v0.4.1 and v0.4.2.** Status:
 
-1. **Internal retrieval taint propagation** (C-RF-1) — top priority
-2. **Eval scaffold → ratchet** — F2 + Claude §4 #1
-3. **`agent_scope` first-class** — Claude §B.2.5 + Codex stronger ❌
-4. **Scheduler leadership lock** (C53-RF-1) — net-new from GPT-5.3-codex
-5. **Step-level checkpoint/replay/fork** — C-RF-2 + checkpoint_state
-6. **`/validate` URL critique only** — Claude + Codex unanimous
-7. **`work_id` propagation fix** — C-RF-3
-8. **Session memory across Discord threads** — Claude §B.4 #5
-9. **Sanitizer cost attribution** — C-RF-7
-10. **Claim objects + span drilldown for grounded UI**
+1. ✅ **Internal retrieval taint propagation** (C-RF-1) — v0.4.1 PR #37
+2. ✅ **Eval scaffold → ratchet** — v0.4.1 PR #38
+3. ⏸ **`agent_scope` first-class** — deferred (M-L; schema decision)
+4. ⏸ **Scheduler leadership lock** (C53-RF-1) — deferred (multi-worker
+   not real yet for solo bot)
+5. ⏸ **Step-level checkpoint/replay/fork** — deferred (M; design call)
+6. ⏸ **`/validate` URL critique only** — **NEXT IN QUEUE** when operator
+   says go (~3-4 days)
+7. ✅ **`work_id` propagation fix** — v0.4.1 PR #39
+8. ✅ **Session memory across Discord threads** — **v0.4.2 Bundle 1**
+9. ✅ **Sanitizer cost attribution** — v0.4.1 PR #42
+10. ⏸ **Claim objects + span drilldown for grounded UI** — fold into #6
 
-Items 11-19: bitemporal facts, stale-worker guard, **denied-tool audit
-gap (C53-RF-2)**, `send_update` policy fix, attachment temp-file race,
-tainted-fact quarantine, streaming, Jaeger custom view, proactive
-surfacing.
+Items 11-19 status:
+
+- ⏸ Bitemporal facts (#11) — defer (no use case yet)
+- ✅ Stale-worker FAILED-write owner guard — v0.4.1 PR #40
+- ✅ **Denied-tool audit gap** (C53-RF-2) — v0.4.1 PR #41
+- ✅ **`send_update` policy fix** — v0.4.2 Bundle 1 (PLAN.md updated to
+  match audit-flag-only design)
+- ✅ Attachment temp-file race — v0.4.1 PR #40
+- ⏸ Tainted-fact quarantine — defer (low-leverage defensive)
+- ⏸ Streaming Discord delivery — defer (perceived-latency win, not real)
+- ⏸ Jaeger LLM-span custom view — defer (debugging luxury)
+- ⏸ Proactive knowledge surfacing — fold into scheduled-tasks work
+
+### Bundle 1 — operator production friction (v0.4.2, 2026-04-30)
+
+Beyond the cross-vendor review queue, the operator reported four daily
+annoyances after using the bot in real life:
+
+| # | Symptom | Fix | PR |
+|---|---|---|---|
+| B1-1 | Mobile (iOS) Discord answers were wall-of-text | `_DISCORD_MSG_LIMIT` 1900→1400 + `_normalize_for_mobile` (collapse blanks, strip trailing whitespace, tabs→spaces) | #45 |
+| B1-2 | "No memory" — every `/ask` was a fresh context | Wired the existing `messages` table: writes in `JobContext.finalize` for clean+thread, reads in `compose_system` via new `session_history` kwarg, capped at last 8 messages, tainted jobs skip writes | #45 |
+| B1-3 | Operator didn't know `/schedule` existed (shipped v0.2.0, never live-validated) | `/schedule` + `/schedules` rendering improvements + `docs/SCHEDULER_SMOKE_TEST.md` runbook | #45 |
+| B1-4 | `send_update` PLAN spec drift (queue #14) | PLAN.md updated to match the audit-flag-only design | #45 |
+
+15 new tests in `tests/test_bundle1_feels_like_it_works.py`. 359 / 359
+pass.
 
 ### Market-research factual corrections
 
