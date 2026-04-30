@@ -1,5 +1,54 @@
 # Changelog
 
+## [Unreleased] — 2026-04-29 — Eval scaffold → ratchet (cross-vendor review #2)
+
+### Fixed — eval runner reported PASS without exercising assertions
+
+Cross-vendor review #2 / merged action queue #2. The previous
+`evals/runner.py::_run_one` shipped this:
+
+```python
+if cap in ("grounded", "speculative") and not live:
+    return True   # silently PASS without checking anything
+```
+
+So any code change that broke grounded/speculative behaviour got a green
+eval suite. The new ratchet:
+
+- **Tri-state status** — `Result(status, reason, case_id, capability)`.
+  Status is `"PASS"`, `"FAIL"`, or `"SKIP"`. SKIP means "this case needs
+  `--live`; we won't fake it". Live cases now skip explicitly instead of
+  returning PASS.
+- **`schema_lint()`** runs first on every case. Missing required fields
+  (`id`, `description`, `capability`, `setup`, `input`, `expect`) are
+  FAIL, not SKIP. Wrong types are FAIL. Unknown capability is FAIL.
+- **`load_goldens()`** raises `RuntimeError` on YAML parse errors and on
+  non-mapping top-level documents. Previously these were swallowed.
+- **New offline-runnable capabilities:**
+  - `grounded_refusal` — seeds nothing, calls `retrieve_knowledge` for
+    an empty scope, asserts no chunks (the refusal-path trigger).
+  - `taint_propagation` — seeds a knowledge_source with the case's
+    `source_tainted` flag plus chunks, calls `retrieve_knowledge`,
+    asserts the returned `tainted` matches `expect.tainted`. Pins the
+    cross-vendor-review-#1 fix from PR #37 against future regressions.
+- **New goldens** — `04_taint_propagation_internal_retrieval.yaml`
+  (tainted source → tainted=true) and `05_taint_clean_corpus.yaml`
+  (clean source → tainted=false). Existing
+  `03_debate_quote_requirement.yaml` updated to use a turn that
+  actually triggers the validator (the prior fixture shared the word
+  "efficiency" with prior content, satisfying the validator's 10-char
+  fuzzy-overlap escape — silent failure that the new ratchet caught).
+- **CI gate** — `tests/test_evals_smoke.py` is the pytest wrapper that
+  loads every golden, dispatches via `run_one_async`, and asserts no
+  FAILs. `tests/test_eval_runner.py` pins the runner's tri-state
+  semantics, schema_lint, load_goldens behavior, and the new
+  taint_propagation / grounded_refusal dispatchers (negative test
+  included for the mismatch case).
+- **`evals/README.md`** — new schema doc + capability matrix +
+  rationale for the rewrite.
+
+23 new tests. 326 / 326 pass. Ruff clean.
+
 ## [Unreleased] — 2026-04-29 — Internal retrieval taint propagation (cross-vendor review #1)
 
 ### Fixed — internal retrieval bypassed taint policy (CRITICAL security gap)

@@ -1,0 +1,18 @@
+id: taint_propagation_internal_retrieval_dirty
+description: |
+  Cross-vendor review #1 fix: retrieve_knowledge must set tainted=True
+  when any chosen chunk's source has knowledge_sources.tainted=1. This
+  is the offline ratchet for the taint propagation in PR #37 — if the
+  fix gets reverted, this golden flips to FAIL.
+capability: taint_propagation
+setup:
+  scope: eval_taint_dirty
+  source_tainted: true
+  chunks:
+    - {content: "alpha bravo charlie content payload one"}
+    - {content: "delta echo foxtrot content payload two"}
+    - {content: "golf hotel india content payload three"}
+input:
+  query: "content payload"
+expect:
+  tainted: true

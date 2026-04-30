@@ -77,3 +77,8 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# `evals/` is the offline-runnable golden suite + dispatcher. It's not a
+# pip-installed package (only `src/donna/` is in [tool.hatch...packages]),
+# so without explicit pythonpath the eval-runner imports fail in CI even
+# though they work locally via pytest's cwd-on-sys.path heuristic.
+pythonpath = ["."]

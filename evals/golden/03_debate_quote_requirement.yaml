@@ -1,11 +1,19 @@
 id: debate_quote_requirement
-description: Debate turn that attacks opposing speaker without quoting is flagged
+description: |
+  Debate turn that attacks an opposing speaker without quoting their
+  prior content (and without sharing a 10-char normalized substring)
+  must be flagged by validate_debate_turn. Updated 2026-04-29: the
+  original prior/turn pair shared the word "efficiency", which trips
+  the validator's 10-char fuzzy-overlap escape and never actually
+  fired the flag — the prior runner reported PASS without checking,
+  so the silent regression sat undetected. New input has zero 10-char
+  overlapping substrings with prior.
 capability: debate
 setup:
   prior_turns:
-    - {round: 1, scope: lewis, content: "Markets are efficient only if you define efficiency narrowly."}
+    - {round: 1, scope: lewis, content: "Markets reward depth of focus over breadth of curiosity."}
 input:
   current_scope: dalio
-  turn_text: "Lewis argues that efficiency is real and pervasive."
+  turn_text: "Lewis claims that the wisdom of crowds always wins out."
 expect:
   flagged_issue_contains: "attacks_without_quote"
