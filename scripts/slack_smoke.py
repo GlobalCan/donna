@@ -38,9 +38,7 @@ need to look up your own Slack user ID upfront.)
 from __future__ import annotations
 
 import os
-import signal
 import sys
-import threading
 import time
 from dataclasses import dataclass
 
@@ -151,9 +149,7 @@ def _allow(team_id: str, user_id: str | None) -> bool:
         _allowed_user_id = user_id
         print(f"  → bound allowed user_id = {user_id}")
         return True
-    if user_id != _allowed_user_id:
-        return False
-    return True
+    return user_id == _allowed_user_id
 
 
 # --- app + handlers ---------------------------------------------------------
@@ -387,49 +383,41 @@ def _print_walkthrough() -> None:
 
 
 def main() -> None:
-    handler = SocketModeHandler(app, APP_TOKEN)
+    """slack_bolt's `handler.start()` registers its own SIGINT handler via
+    `signal.signal()`, which only works on the main thread. Earlier
+    versions of this script ran `start()` in a worker thread and got a
+    spurious `ValueError: signal only works in main thread` — Socket
+    Mode itself connected fine ("Bolt app is running!" printed) but
+    probe 1 reported false-negative.
 
-    # Connect in a background thread so we can detect connect-failure
-    # quickly rather than block forever.
-    connect_event = threading.Event()
-    connect_err: list[Exception] = []
+    Fix: run start() on the main thread; mark probe 1 PASS optimistically
+    just before calling it (slack_bolt rejects an invalid app token at
+    start() entry, so a wrong token would throw immediately). Catch
+    KeyboardInterrupt to print the summary cleanly.
+    """
+    print("  Connecting via Socket Mode…")
 
-    def _start():
-        try:
-            handler.start()
-        except Exception as e:  # noqa: BLE001
-            connect_err.append(e)
-        finally:
-            connect_event.set()
-
-    t = threading.Thread(target=_start, daemon=True)
-    t.start()
-
-    # Give Socket Mode a moment to actually establish. slack_bolt logs
-    # "Bolt app is running!" when ready; we treat ~3 seconds without an
-    # exception as success.
-    time.sleep(3.0)
-    if connect_err:
-        mark("1_socket_connect", "FAIL",
-             f"{type(connect_err[0]).__name__}: {connect_err[0]}")
-        print_summary()
-        sys.exit(1)
+    # Mark probe 1 PASS optimistically. handler.start() will throw
+    # immediately if the app token is invalid or Socket Mode connection
+    # fails — that exception propagates to the except block below and
+    # we re-mark FAIL with the actual error.
     mark("1_socket_connect", "PASS")
-
     _print_walkthrough()
 
-    # Catch Ctrl+C cleanly to print summary.
-    stop = threading.Event()
+    handler = SocketModeHandler(app, APP_TOKEN)
 
-    def _on_sigint(signum, frame):  # noqa: ARG001
+    try:
+        handler.start()  # blocks until KeyboardInterrupt
+    except KeyboardInterrupt:
         print("\n\n  Stopping — collecting results…")
-        stop.set()
-
-    signal.signal(signal.SIGINT, _on_sigint)
-    while not stop.is_set():
-        time.sleep(0.5)
-
-    print_summary()
+    except Exception as e:  # noqa: BLE001
+        mark(
+            "1_socket_connect",
+            "FAIL",
+            f"{type(e).__name__}: {e}",
+        )
+    finally:
+        print_summary()
 
 
 if __name__ == "__main__":
