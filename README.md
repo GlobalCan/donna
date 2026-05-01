@@ -76,7 +76,7 @@ src/donna/
 
 ## Status
 
-**v0.5.1** · Python 3.14 · 398 tests green · **Slack adapter live in production with V50-1 dead-letter routing**, grounded mode end-to-end validated, modal-based `/schedule` validated, Block Kit consent buttons validated, scheduler delivery validated, session memory across threads (with tainted-with-warning rendering for web-tool exchanges), three-layer backups live (verifier now schema-aware), Jaeger traces, overflow-to-artifact security pattern.
+**v0.5.2** · Python 3.14 · 414 tests green · **Slack adapter live in production with V50-1 dead-letter routing**, grounded mode end-to-end validated, modal-based `/schedule` validated, Block Kit consent buttons validated, scheduler delivery validated, **dual-field session memory** (raw audit `content` + sanitized `safe_summary`; tainted rows render unwrapped once laundered), three-layer backups live (verifier schema-aware), Jaeger traces, overflow-to-artifact security pattern.
 
 - Foundation built and survived four Codex review passes (defect, adversarial
   challenge, Hermes comparison, round-2 same-class hunt) plus one self-run
