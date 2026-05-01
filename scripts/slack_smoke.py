@@ -152,6 +152,27 @@ def _allow(team_id: str, user_id: str | None) -> bool:
     return user_id == _allowed_user_id
 
 
+def _extract_team_user(body: dict) -> tuple[str, str | None]:
+    """Slack payload shapes differ by event type:
+
+    - slash command:    body["team_id"], body["user_id"]
+    - message event:    body["team_id"], body["event"]["user"]
+    - block_actions:    body["team"]["id"], body["user"]["id"]
+    - view_submission:  body["team"]["id"], body["user"]["id"]
+
+    First version of this script only handled the first two. Button
+    clicks and modal submissions silently bailed because team_id read
+    as empty string. Hit during Phase 0 smoke 2026-05-01.
+    """
+    team_id = body.get("team_id") or body.get("team", {}).get("id", "")
+    user_id = body.get("user_id")
+    if not user_id:
+        user_obj = body.get("user")
+        if isinstance(user_obj, dict):
+            user_id = user_obj.get("id")
+    return team_id, user_id
+
+
 # --- app + handlers ---------------------------------------------------------
 
 app = App(token=BOT_TOKEN)
@@ -287,8 +308,7 @@ def on_smoke_command(ack, body, client):
 @app.view("donna_smoke_modal")
 def on_modal_submit(ack, body, view, client):
     """Probe 6: modal submission delivers form values."""
-    team_id = body.get("team_id", "")
-    user_id = body.get("user", {}).get("id")
+    team_id, user_id = _extract_team_user(body)
     if not _allow(team_id, user_id):
         ack(response_action="errors", errors={"task_block": "not authorized"})
         return
@@ -328,8 +348,7 @@ def on_button(ack, body, client):
     ack()
     ack_dur = time.time() - t0
 
-    team_id = body.get("team_id", "")
-    user_id = body.get("user", {}).get("id")
+    team_id, user_id = _extract_team_user(body)
     if not _allow(team_id, user_id):
         return
 

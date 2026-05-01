@@ -46,6 +46,17 @@ display_information:
   background_color: "#1a1a2e"
 
 features:
+  # Slack apps default to no DM tab, which makes the bot un-DM-able
+  # ("Messaging isn't available — Donna is an app"). Operator hit this
+  # during Phase 0 smoke 2026-05-01. Enabling messages_tab_enabled +
+  # messages_tab_read_only_enabled=false makes the bot DM-able. We don't
+  # use a custom home tab — set home_tab_enabled=false to skip Slack's
+  # default "configure your home" placeholder.
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+
   bot_user:
     display_name: Donna
     always_online: true
