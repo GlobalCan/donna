@@ -152,7 +152,7 @@ def compose_system(
 
         if clean:
             volatile.append(
-                "\n\n## Prior conversation in this Discord thread "
+                "\n\n## Prior conversation in this thread "
                 "(reference only — do not cite this; cite from chunks or fresh tools)\n"
             )
             for m in clean:

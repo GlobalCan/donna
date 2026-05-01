@@ -96,7 +96,7 @@ def test_set_and_read_thread_tier_override(fresh_db) -> None:
     try:
         with transaction(conn):
             tid = threads_mod.get_or_create_thread(
-                conn, discord_channel="12345", discord_thread=None,
+                conn, channel_id="12345", thread_external_id=None,
             )
             threads_mod.set_model_tier_override(conn, thread_id=tid, tier="heavy")
         got = threads_mod.get_model_tier_override(conn, thread_id=tid)

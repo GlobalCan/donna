@@ -1,4 +1,14 @@
-"""Cron schedules — v1 only proactive trigger."""
+"""Cron schedules — v1's only proactive trigger.
+
+v0.5.0 adds `target_channel_id` so scheduled tasks can post to a
+specific channel (e.g. `#morning-brief`) instead of cluttering the
+operator's DM. Set via the `/schedule` modal's channel-select input.
+When NULL, replies go to the originating thread (the channel from
+which `/schedule` was invoked).
+
+`target_thread_ts` is reserved for replying inside an existing thread;
+not yet wired through `/schedule` UX.
+"""
 from __future__ import annotations
 
 import sqlite3
@@ -17,15 +27,15 @@ def insert_schedule(
     agent_scope: str = "orchestrator",
     mode: str = "chat",
     thread_id: str | None = None,
+    target_channel_id: str | None = None,
+    target_thread_ts: str | None = None,
 ) -> str:
     """Insert a schedule row.
 
-    `thread_id` records the Discord destination for replies when the
-    schedule fires. `/schedule` populates it from the interaction's
-    channel; `botctl schedule add` leaves it NULL by default. Schedules
-    with thread_id=NULL fire but their replies sit undeliverable in
-    `outbox_updates` (no channel can be resolved) — appearing only via
-    `botctl jobs`. See migration 0006 for the bug history.
+    `thread_id` records the originating Discord thread (legacy v0.4.3
+    fix). `target_channel_id` overrides delivery to a specific channel
+    when present; otherwise replies use the originating thread's
+    channel.
     """
     _validate_cron(cron_expr)
     sid = ids.schedule_id()
@@ -33,10 +43,14 @@ def insert_schedule(
     conn.execute(
         """
         INSERT INTO schedules
-            (id, agent_scope, cron_expr, task, mode, next_run_at, thread_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (id, agent_scope, cron_expr, task, mode, next_run_at,
+             thread_id, target_channel_id, target_thread_ts)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (sid, agent_scope, cron_expr, task, mode, next_run, thread_id),
+        (
+            sid, agent_scope, cron_expr, task, mode, next_run,
+            thread_id, target_channel_id, target_thread_ts,
+        ),
     )
     return sid
 

@@ -47,8 +47,8 @@ def _simulate_plain_dm_intake(content: str, channel_id: str) -> tuple[str, str]:
         with transaction(conn):
             tid = threads_mod.get_or_create_thread(
                 conn,
-                discord_channel=channel_id,
-                discord_thread=None,
+                channel_id=channel_id,
+                thread_external_id=None,
                 title=content[:60],
             )
             jid = jobs_mod.insert_job(

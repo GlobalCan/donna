@@ -1,6 +1,8 @@
 # Donna
 
-A personal AI assistant bot. Always-on Discord, runs on a DigitalOcean droplet, powered by Claude.
+A personal AI assistant bot. Always-on Slack, runs on a DigitalOcean droplet, powered by Claude.
+
+> **v0.5.0 (2026-05-01) retooled from Discord to Slack.** Pre-v0.5.0 history: see `legacy/v0.4.4-discord` git tag. Slack setup runbook: `docs/slack/PHASE_0_RUNBOOK.md`.
 
 **Scope:** solo-user, single-droplet, foundation-first. Designed to grow into multi-specialist agents with scoped knowledge bases.
 
@@ -74,7 +76,7 @@ src/donna/
 
 ## Status
 
-**v0.4.4** · Python 3.14 · 381 tests green · **live in production on DO**, grounded mode end-to-end validated, unified mode delivery, overflow-to-artifact security pattern, three-layer backups live, Jaeger traces, mobile-friendly Discord rendering, session memory across DM threads (including tainted-with-warning rendering for web-tool exchanges), **scheduler smoke-tested live end-to-end**.
+**v0.5.0-rc1** · Python 3.14 · 373 tests green · **Slack adapter retool**, grounded mode end-to-end validated, unified mode delivery, overflow-to-artifact security pattern, three-layer backups live, Jaeger traces, Block Kit rendering, button-based consent, modal-based `/schedule`, session memory across threads (with tainted-with-warning rendering for web-tool exchanges), scheduler smoke-tested live end-to-end on v0.4.x.
 
 - Foundation built and survived four Codex review passes (defect, adversarial
   challenge, Hermes comparison, round-2 same-class hunt) plus one self-run

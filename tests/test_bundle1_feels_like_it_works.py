@@ -1,10 +1,11 @@
 """Bundle 1 — "Donna feels like she works" — production-issue fixes
 (2026-04-30) reported by the solo operator after live use:
 
-1. Mobile readability: 1900-char chunks were wall-of-text on phone;
-   lowered to 1400 + added `_normalize_for_mobile` for whitespace/tab
-   cleanup. (`adapter/discord_adapter.py`)
-2. No session memory: every `/ask` was a fresh job; the agent had no
+1. (Discord-only) mobile readability: 1900-char chunks were wall-of-text
+   on phone; lowered to 1400 + added `_normalize_for_mobile`. v0.5.0
+   migrated to Slack which uses Block Kit's own rendering and doesn't
+   need the per-platform mobile tweak — those tests are retired.
+2. Session memory: every `/ask` was a fresh job; the agent had no
    recall of its last reply. Wire `messages` table writes into
    `JobContext.finalize` and `recent_messages` reads into chat-mode
    prompt composition. (`agent/context.py`, `agent/loop.py`,
@@ -12,7 +13,7 @@
 3. Scheduler discoverability: the slash commands existed but the
    operator didn't know. `/schedule` now reports next-fire time, and
    `/schedules` shows last-fired plus an actionable empty-state hint.
-   (`adapter/discord_ux.py`)
+   (`adapter/slack_ux.py` — was `adapter/discord_ux.py` pre-v0.5.0.)
 4. `send_update` policy spec drift: `docs/PLAN.md` mandated per-call
    consent on tainted updates; the code never enforced it. Updated PLAN
    to reflect the audit-flag-only design. (Docs only — no test needed.)
@@ -20,84 +21,6 @@
 from __future__ import annotations
 
 import pytest
-
-# ---------- 1. mobile rendering -------------------------------------------
-
-
-def test_discord_msg_limit_lowered_for_mobile() -> None:
-    """The constant lowered from 1900 to 1400. Documented as the mobile
-    thumb-scroll sweet spot."""
-    from donna.adapter.discord_adapter import _DISCORD_MSG_LIMIT
-    assert _DISCORD_MSG_LIMIT == 1400, (
-        f"_DISCORD_MSG_LIMIT must be 1400 for mobile readability; got "
-        f"{_DISCORD_MSG_LIMIT}. If you raised it, document why on a per-"
-        "platform basis (this fixed real production friction on iOS)."
-    )
-
-
-def test_overflow_clean_max_grows_proportionally() -> None:
-    """4 mobile-sized chunks instead of 3 desktop-sized. Total deliverable
-    inline stays roughly the same (~5600 vs ~5700)."""
-    from donna.adapter.discord_adapter import (
-        _DISCORD_MSG_LIMIT,
-        _OVERFLOW_CLEAN_MAX,
-    )
-    assert _OVERFLOW_CLEAN_MAX == _DISCORD_MSG_LIMIT * 4
-    assert _OVERFLOW_CLEAN_MAX >= 5000, (
-        "clean-text overflow cap must stay generous so long inline answers "
-        "don't get pushed to artifact unnecessarily"
-    )
-
-
-def test_overflow_tainted_max_unchanged_in_intent() -> None:
-    """Tainted text still capped at 1 message. The cap value drops with
-    _DISCORD_MSG_LIMIT (1900 → 1400) but the policy is identical."""
-    from donna.adapter.discord_adapter import (
-        _DISCORD_MSG_LIMIT,
-        _OVERFLOW_TAINTED_MAX,
-    )
-    assert _OVERFLOW_TAINTED_MAX == _DISCORD_MSG_LIMIT
-
-
-def test_normalize_collapses_long_blank_runs() -> None:
-    from donna.adapter.discord_adapter import _normalize_for_mobile
-    text = "para1\n\n\n\n\npara2\n\n\n\npara3"
-    out = _normalize_for_mobile(text)
-    # Runs of 4+ blanks → 2 blanks
-    assert out.count("\n\n\n") == 0, (
-        f"3+ consecutive blank lines should collapse to 2; got {out!r}"
-    )
-    # Paragraphs survive
-    assert "para1" in out and "para2" in out and "para3" in out
-
-
-def test_normalize_strips_trailing_whitespace() -> None:
-    from donna.adapter.discord_adapter import _normalize_for_mobile
-    text = "line one   \nline two\t\t\nline three"
-    out = _normalize_for_mobile(text)
-    for line in out.split("\n"):
-        # Trailing whitespace stripped; tabs converted to spaces (only on
-        # non-empty lines)
-        if line:
-            assert line == line.rstrip(), (
-                f"trailing whitespace should be stripped: {line!r}"
-            )
-            assert "\t" not in line, f"tabs should become spaces: {line!r}"
-
-
-def test_normalize_is_idempotent() -> None:
-    from donna.adapter.discord_adapter import _normalize_for_mobile
-    text = "a\n\n\nb\t\nc"
-    once = _normalize_for_mobile(text)
-    twice = _normalize_for_mobile(once)
-    assert once == twice
-
-
-def test_normalize_handles_empty_input() -> None:
-    from donna.adapter.discord_adapter import _normalize_for_mobile
-    assert _normalize_for_mobile("") == ""
-    assert _normalize_for_mobile("   ") == ""  # all-whitespace lines stripped
-
 
 # ---------- 2. session memory ---------------------------------------------
 
@@ -118,7 +41,7 @@ async def test_finalize_writes_user_and_assistant_messages_when_thread() -> None
     try:
         with transaction(conn):
             tid = threads_mod.get_or_create_thread(
-                conn, discord_channel="dm:user1", discord_thread=None,
+                conn, channel_id="dm:user1", thread_external_id=None,
             )
             jid = jobs_mod.insert_job(
                 conn, task="what is the weather", agent_scope="any",
@@ -179,7 +102,7 @@ async def test_finalize_writes_tainted_job_with_flag() -> None:
     try:
         with transaction(conn):
             tid = threads_mod.get_or_create_thread(
-                conn, discord_channel="dm:user1", discord_thread=None,
+                conn, channel_id="dm:user1", thread_external_id=None,
             )
             jid = jobs_mod.insert_job(
                 conn, task="fetch evil.com", agent_scope="any",
@@ -263,7 +186,7 @@ async def test_finalize_skips_message_write_without_thread() -> None:
 @pytest.mark.usefixtures("fresh_db")
 def test_compose_system_includes_session_history_when_provided() -> None:
     """compose_system accepts a `session_history` kwarg and renders it
-    in the volatile block as 'Prior conversation in this Discord thread'."""
+    in the volatile block as 'Prior conversation in this thread'."""
     from donna.agent.compose import compose_system
     from donna.types import JobMode
 
@@ -279,7 +202,7 @@ def test_compose_system_includes_session_history_when_provided() -> None:
     )
     # Combine all volatile + task blocks into a single string for assertion
     full = "\n".join(b.get("text", "") for b in blocks)
-    assert "Prior conversation in this Discord thread" in full
+    assert "Prior conversation in this thread" in full
     assert "what's the weather" in full
     assert "70 partly cloudy" in full
     assert "rain forecast" in full
@@ -297,7 +220,7 @@ def test_compose_system_omits_session_block_when_empty() -> None:
         session_history=[],
     )
     full = "\n".join(b.get("text", "") for b in blocks)
-    assert "Prior conversation in this Discord thread" not in full
+    assert "Prior conversation in this thread" not in full
 
 
 @pytest.mark.usefixtures("fresh_db")

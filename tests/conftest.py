@@ -14,8 +14,10 @@ def isolated_data_dir(monkeypatch: pytest.MonkeyPatch) -> Path:
         monkeypatch.setenv("DONNA_ENV", "dev")
         # dummies so config validation passes
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
-        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test")
-        monkeypatch.setenv("DISCORD_ALLOWED_USER_ID", "0")
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+        monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+        monkeypatch.setenv("SLACK_TEAM_ID", "T_test")
+        monkeypatch.setenv("SLACK_ALLOWED_USER_ID", "U_test")
         monkeypatch.setenv("TAVILY_API_KEY", "test")
         monkeypatch.setenv("VOYAGE_API_KEY", "test")
 
