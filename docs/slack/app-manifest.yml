@@ -1,0 +1,130 @@
+# Donna — Slack app manifest
+#
+# Source-of-truth declaration of every scope, slash command, event
+# subscription, and interactive component the bot needs. Kept in repo
+# so scope creep is reviewable in PRs (Codex review recommendation,
+# 2026-04-30).
+#
+# Usage:
+#   1. Operator goes to https://api.slack.com/apps
+#   2. Click "Create New App" → "From an app manifest"
+#   3. Pick the personal Slack workspace
+#   4. Paste the YAML below into the editor
+#   5. Click "Create" → "Install to Workspace" → approve scopes
+#   6. From "OAuth & Permissions": copy `xoxb-...` (SLACK_BOT_TOKEN)
+#   7. From "Basic Information" → "App-Level Tokens" → "Generate":
+#        name "donna-socket-mode", scope `connections:write` → copy
+#        `xapp-...` (SLACK_APP_TOKEN)
+#   8. Workspace Team ID: visible in the app's install page or via
+#        any API response. Starts `T0...` (SLACK_TEAM_ID).
+#
+# Token rotation is intentionally NOT enabled for v0.5.0 — see Codex
+# review notes in CHANGELOG. With rotation off, tokens don't expire;
+# refresh-token flow is bolt-on work for a later release.
+#
+# Minimum scopes per Codex (v0.5.0):
+#   - chat:write           — post messages (DMs and channels Donna is in)
+#   - commands             — receive slash commands
+#   - app_mentions:read    — receive @donna mentions in channels
+#   - im:history           — read DM history (for session_history fetches)
+#   - im:write             — proactively open DMs (budget alerts, watchdog)
+#   - connections:write    — Socket Mode app-level token (granted on the
+#                            app token, not the bot token)
+#
+# Deliberately AVOIDED:
+#   - chat:write.public    — would let bot post to channels it isn't a
+#                            member of. Prefer explicit channel invitation.
+#   - channels:history     — would let bot read all channel chat, not
+#                            just mentions. Privacy + token blast radius.
+#   - files:read           — Slack file ingest is out of scope until we
+#                            explicitly build attachment-via-Slack handling.
+#   - reactions:read/write — using Block Kit buttons for consent instead.
+
+display_information:
+  name: Donna
+  description: Personal AI assistant — solo-user, allowlisted, runs on a single droplet
+  background_color: "#1a1a2e"
+
+features:
+  bot_user:
+    display_name: Donna
+    always_online: true
+
+  slash_commands:
+    # Phase 0 smoke test command — exercises slash routing + modal opening.
+    # Removed before v0.5.0 ship in favor of /ask, /schedule, etc.
+    - command: /donna_smoke
+      description: Run Donna's Phase 0 smoke test (dev only)
+      usage_hint: "(no args)"
+      should_escape: false
+
+    # Real Donna commands — port from Discord (v0.4.4 surface).
+    # Slack sends everything after the command as one raw `text` field,
+    # so any structured input is collected via modals (see schedule_cmd).
+    - command: /ask
+      description: Ask a scoped agent a grounded question
+      usage_hint: "scope: question..."
+      should_escape: false
+
+    - command: /schedule
+      description: Add a cron schedule (UTC) — opens a structured input form
+      usage_hint: "(no args; submit form)"
+      should_escape: false
+
+    - command: /schedules
+      description: List active schedules
+      usage_hint: "(no args)"
+      should_escape: false
+
+    - command: /history
+      description: Recent jobs
+      usage_hint: "(optional: limit)"
+      should_escape: false
+
+    - command: /budget
+      description: Today's spend
+      usage_hint: "(no args)"
+      should_escape: false
+
+    - command: /cancel
+      description: Cancel a running job
+      usage_hint: "job-id"
+      should_escape: false
+
+    - command: /status
+      description: Check a job's status
+      usage_hint: "job-id"
+      should_escape: false
+
+    - command: /model
+      description: Set the model tier for this conversation
+      usage_hint: "fast | strong | heavy | clear"
+      should_escape: false
+
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - commands
+      - app_mentions:read
+      - im:history
+      - im:write
+
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention      # @donna in any channel Donna is invited to
+      - message.im       # DMs sent to Donna
+
+  interactivity:
+    is_enabled: true
+    # Socket Mode — no inbound HTTPS endpoint. Slack pushes events via
+    # the bot's outbound WebSocket, same connection model as Discord
+    # gateway. App-level token (xapp-...) with `connections:write`
+    # scope is what makes this work; see slack_bolt SocketModeHandler.
+    # Codex 2026-04-30: "Socket Mode is the right choice for a single
+    # droplet."
+
+  socket_mode_enabled: true
+  token_rotation_enabled: false
+  org_deploy_enabled: false
