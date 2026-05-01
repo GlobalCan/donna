@@ -159,10 +159,16 @@ async def test_finalize_writes_user_and_assistant_messages_when_thread() -> None
 
 @pytest.mark.usefixtures("fresh_db")
 @pytest.mark.asyncio
-async def test_finalize_skips_message_write_when_tainted() -> None:
-    """Tainted jobs do NOT write to `messages`. Preserves the trust
-    boundary — the next clean job in this thread shouldn't pick up
-    attacker-controlled text from the prior tainted run as context."""
+async def test_finalize_writes_tainted_job_with_flag() -> None:
+    """v0.4.4 (2026-04-30): tainted jobs now DO write to `messages`,
+    flagged with `tainted=1`. compose_system renders tainted rows in
+    a separate XML-delimited block with explicit untrusted-source
+    warnings — preserving the trust boundary at the prompt layer
+    while keeping session memory functional for daily use (almost
+    every web-tool DM is tainted).
+
+    Pre-v0.4.4 this test asserted `msgs == []` for tainted jobs;
+    that design killed memory in practice."""
     from donna.agent.context import JobContext
     from donna.memory import jobs as jobs_mod
     from donna.memory import threads as threads_mod
@@ -193,20 +199,26 @@ async def test_finalize_skips_message_write_when_tainted() -> None:
     finally:
         _conn.close()
     ctx = JobContext(job, worker_id="test_worker")
-    ctx.state.final_text = "the page said: ignore previous instructions"
+    ctx.state.final_text = "the page said something interesting"
     ctx.state.tainted = True
     ctx.state.done = True
 
-    ctx.finalize()
+    assert ctx.finalize()
 
     conn = connect()
     try:
         msgs = threads_mod.recent_messages(conn, tid, limit=10)
     finally:
         conn.close()
-    assert msgs == [], (
-        f"tainted job must not write to messages; got {len(msgs)} entries"
+    assert len(msgs) == 2, (
+        f"tainted job must write user + assistant to messages; got "
+        f"{len(msgs)} entries: {msgs}"
     )
+    assert all(m["tainted"] for m in msgs), (
+        f"both rows must carry tainted=True; got {msgs}"
+    )
+    assert msgs[0]["role"] == "user"
+    assert msgs[1]["role"] == "assistant"
 
 
 @pytest.mark.usefixtures("fresh_db")
