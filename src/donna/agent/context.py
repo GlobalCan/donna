@@ -66,6 +66,12 @@ class JobContext:
         self.state: JobState = _init_state(job)
         self.stop_hb = asyncio.Event()
         self.hb_task: asyncio.Task | None = None
+        # V50-8 (v0.5.2): when finalize() inserts a tainted assistant
+        # message, it stashes the row id + raw content here so the
+        # post-finalize hook in `open()` can spawn an async sanitizer
+        # backfill task. Both fields stay None for clean jobs.
+        self.assistant_message_id: str | None = None
+        self.assistant_content: str | None = None
 
     @classmethod
     @asynccontextmanager
@@ -92,6 +98,24 @@ class JobContext:
                 # Auto-finalize if the mode set done=True
                 if ctx.state.done and not ctx.finalize():
                     raise LeaseLost(job_id)
+                # V50-8: tainted assistant rows get an async safe_summary
+                # backfill so the next chat job's prompt sees a sanitized
+                # paraphrase (rendered unwrapped) instead of the raw
+                # content (rendered wrapped). Fire-and-forget — if the
+                # task fails or the worker restarts before it completes,
+                # compose_system falls back to the v0.4.4 wrapped-raw
+                # render.
+                if (
+                    ctx.state.done
+                    and ctx.state.tainted
+                    and ctx.assistant_message_id
+                    and ctx.assistant_content
+                ):
+                    asyncio.create_task(_backfill_safe_summary(
+                        message_id=ctx.assistant_message_id,
+                        content=ctx.assistant_content,
+                        job_id=ctx.job.id,
+                    ))
         except LeaseLost:
             log.error("agent.job.lease_lost_aborted", job_id=job_id, worker_id=worker_id)
         except JobCancelled:
@@ -429,16 +453,92 @@ class JobContext:
                         role="user", content=self.job.task[:4000],
                         tainted=self.state.tainted,
                     )
-                    threads_mod.insert_message(
+                    capped_assistant = assistant_content[:4000]
+                    asst_mid = threads_mod.insert_message(
                         conn, thread_id=self.job.thread_id,
-                        role="assistant", content=assistant_content[:4000],
+                        role="assistant", content=capped_assistant,
                         tainted=self.state.tainted,
                     )
+                    # V50-8: capture the assistant row id + content so the
+                    # post-finalize hook in JobContext.open can fire the
+                    # async safe_summary backfill task. Only matters for
+                    # tainted rows; clean rows render as User/You dialogue
+                    # directly from `content`.
+                    if self.state.tainted:
+                        self.assistant_message_id = asst_mid
+                        self.assistant_content = capped_assistant
                 return jobs_mod.set_status(
                     conn, self.state.job_id, JobStatus.DONE, worker_id=self.worker_id,
                 )
         finally:
             conn.close()
+
+
+# ---------- V50-8 safe_summary backfill ------------------------------------
+
+
+async def _backfill_safe_summary(
+    *, message_id: str, content: str, job_id: str,
+) -> None:
+    """Asynchronously sanitize a tainted assistant message and update its
+    safe_summary column. Fire-and-forget from JobContext.open's
+    post-finalize hook.
+
+    Failure modes:
+      - Sanitize call errors -> log + leave NULL. compose_system falls
+        back to wrapped-raw render. The next chat job pays a small cost
+        (more raw bytes in the model context) but the trust boundary
+        holds via the wrapper.
+      - Worker dies mid-sanitize -> same outcome; row stays NULL until
+        a future write triggers another backfill or an operator runs a
+        backfill script.
+      - Concurrent backfill attempts on the same row -> idempotent via
+        `update_safe_summary`'s WHERE safe_summary IS NULL guard.
+    """
+    from ..memory import threads as threads_mod
+    from ..memory.db import connect, transaction
+    from ..security.sanitize import sanitize_untrusted
+
+    try:
+        summary = await sanitize_untrusted(
+            content,
+            artifact_id=f"msg:{message_id}",
+            source_url=None,
+            job_id=job_id,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning(
+            "safe_summary.sanitize_failed",
+            message_id=message_id, job_id=job_id, error=str(e),
+        )
+        return
+
+    if not summary or not summary.strip():
+        log.info(
+            "safe_summary.empty_summary_skipped",
+            message_id=message_id, job_id=job_id,
+        )
+        return
+
+    conn = connect()
+    try:
+        with transaction(conn):
+            wrote = threads_mod.update_safe_summary(
+                conn, message_id=message_id, summary=summary,
+            )
+        if wrote:
+            log.debug(
+                "safe_summary.persisted",
+                message_id=message_id, job_id=job_id,
+                summary_chars=len(summary),
+            )
+    except Exception as e:  # noqa: BLE001
+        log.warning(
+            "safe_summary.persist_failed",
+            message_id=message_id, job_id=job_id, error=str(e),
+        )
+    finally:
+        conn.close()
 
 
 # ---------- helpers --------------------------------------------------------

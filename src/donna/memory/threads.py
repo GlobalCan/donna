@@ -77,27 +77,54 @@ def insert_message(
     content: str,
     external_msg_id: str | None = None,
     tainted: bool = False,
+    safe_summary: str | None = None,
 ) -> str:
     """Insert a message row.
 
     `tainted` flags rows whose content was produced (or might have been
-    influenced) by an untrusted source. `compose_system` renders tainted
-    rows in a separate `<untrusted_session_history>` block with a
-    DO-NOT-FOLLOW-INSTRUCTIONS warning. See v0.4.4 for the design.
+    influenced) by an untrusted source. v0.4.4: rows are rendered with
+    an explicit untrusted-source wrapper. v0.5.2 (V50-8): tainted rows
+    grow a `safe_summary` field — a sanitized paraphrase that reaches
+    the model unwrapped. Decouples audit (raw `content`) from prompt
+    rendering (laundered `safe_summary`).
+
+    `safe_summary` is typically NULL at insert time and backfilled
+    asynchronously via `update_safe_summary` after `JobContext.finalize`.
+    Callers writing pre-sanitized content can pass it directly to skip
+    the backfill round-trip.
 
     `external_msg_id` is the Slack message `ts` (string), kept for
-    audit-trail / cross-reference. The current code doesn't read it
-    back; preserved for future "show this conversation in Slack"
-    features and for traceability.
+    audit-trail / cross-reference.
     """
     mid = ids.message_id()
     conn.execute(
         "INSERT INTO messages "
-        "(id, thread_id, role, content, external_msg_id, tainted) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (mid, thread_id, role, content, external_msg_id, 1 if tainted else 0),
+        "(id, thread_id, role, content, external_msg_id, tainted, "
+        "safe_summary) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            mid, thread_id, role, content, external_msg_id,
+            1 if tainted else 0, safe_summary,
+        ),
     )
     return mid
+
+
+def update_safe_summary(
+    conn: sqlite3.Connection, *, message_id: str, summary: str,
+) -> bool:
+    """Backfill `safe_summary` for an existing message row.
+
+    Idempotency: only updates when safe_summary is currently NULL, so
+    racing backfill attempts (e.g. retried tasks) don't overwrite each
+    other. Returns True when the UPDATE actually ran (1 row affected).
+    """
+    cur = conn.execute(
+        "UPDATE messages SET safe_summary = ? "
+        "WHERE id = ? AND safe_summary IS NULL",
+        (summary, message_id),
+    )
+    return cur.rowcount > 0
 
 
 def recent_messages(
@@ -105,13 +132,14 @@ def recent_messages(
 ) -> list[dict]:
     """Return up to `limit` most-recent messages in chronological order.
 
-    Each dict carries a `tainted: bool` flag. Callers (notably
-    `compose_system`) render tainted entries with an explicit
-    untrusted-source wrapper rather than treating them like clean
-    operator/assistant text.
+    Each dict carries `tainted: bool` and `safe_summary: str | None`.
+    `compose_system` renders tainted rows with safe_summary present as
+    plain continuity context; tainted rows with safe_summary NULL fall
+    back to the v0.4.4 wrapped-raw render.
     """
     rows = conn.execute(
-        "SELECT role, content, created_at, tainted FROM messages "
+        "SELECT role, content, created_at, tainted, safe_summary "
+        "FROM messages "
         "WHERE thread_id = ? ORDER BY created_at DESC LIMIT ?",
         (thread_id, limit),
     ).fetchall()

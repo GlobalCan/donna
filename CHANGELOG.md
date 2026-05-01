@@ -1,5 +1,73 @@
 # Changelog
 
+## [0.5.2] — 2026-05-01 — V50-8 dual-field memory
+
+V50-8 was deferred from v0.5.1 per Codex's hard timebox rule. With
+v0.5.1 shipped clean, the architectural cleanup gets its own focused
+release.
+
+### What changed
+
+v0.4.4 stored tainted assistant replies as raw `content` with
+`tainted=1`, then `compose_system` rendered them inside a
+`<untrusted_session_history>` XML wrapper carrying a "do not follow
+instructions" warning. That worked, but coupled audit storage to
+render-time wrapping discipline: any future bug in the wrapper logic
+(forgetting it for a new mode, mis-escaping the delimiters, etc.)
+would silently expose raw tainted content to the model.
+
+Codex's recommended split:
+
+| Field | Role | Reaches model? |
+|---|---|---|
+| `content` (existing) | Raw exchange — audit-only when tainted | No (when tainted; clean rows still render content) |
+| `safe_summary` (new) | Sanitized paraphrase via Haiku | Yes — rendered as plain User/You continuity dialogue |
+
+Decouples audit from rendering: even if the wrapper is removed
+entirely, raw tainted content can never reach the model because
+`compose_system` reads `safe_summary`, not `content`, for tainted rows.
+
+### Implementation
+
+- **Migration 0010** — `ALTER TABLE messages ADD COLUMN safe_summary TEXT`
+- **Write path** — `JobContext.finalize()` captures the assistant
+  message id + content into `ctx.assistant_message_id` /
+  `ctx.assistant_content` for tainted rows. After `finalize()` returns,
+  `JobContext.open()`'s post-finalize hook spawns
+  `asyncio.create_task(_backfill_safe_summary(...))` — fire-and-forget.
+  No latency added to the user-perceived "answer arriving"; the summary
+  fills in seconds later.
+- **Backfill helper** — `_backfill_safe_summary()` calls the existing
+  `sanitize_untrusted` (Haiku-based) sanitizer, then UPDATEs the row
+  via `threads.update_safe_summary()` which guards against double-write
+  with `WHERE safe_summary IS NULL`.
+- **Read path** — `compose.py::compose_system` splits tainted rows into
+  two buckets:
+  - **Sanitized** (safe_summary present): rendered as `User: / You:`
+    continuity dialogue. No wrapper. The sanitize step is the trust
+    boundary, not the wrapper.
+  - **Raw-only** (safe_summary NULL — legacy data, race window before
+    backfill, or sanitize failure): rendered inside the v0.4.4
+    untrusted-source wrapper as fallback. Trust boundary preserved.
+
+### Failure modes
+
+- Sanitize call errors -> log + leave NULL. Falls back to wrapped-raw
+  render. Operator pays a small cost (more raw bytes in next prompt's
+  context) but the trust boundary holds.
+- Worker dies mid-sanitize -> same outcome; row stays NULL until a
+  future backfill or operator script triggers re-attempt.
+- Concurrent backfill attempts on same row -> idempotent via the
+  `UPDATE ... WHERE safe_summary IS NULL` null-guard.
+
+### Validation
+
+- 414 tests green (403 baseline + 11 new in
+  `test_safe_summary_dual_field.py`)
+- Ruff clean
+- Existing v0.4.4 `test_tainted_session_memory.py` tests still pass —
+  the wrapper-fallback path is preserved bit-for-bit for legacy rows
+
 ## [0.5.1] — 2026-05-01 — Slack outbox dead-letter + polish bundle
 
 Codex review (2026-05-01) of the v0.5.1 plan sharpened the bundle from
