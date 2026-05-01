@@ -74,7 +74,7 @@ src/donna/
 
 ## Status
 
-**v0.4.3** · Python 3.14 · 366 tests green · **live in production on DO**, grounded mode end-to-end validated, unified mode delivery, overflow-to-artifact security pattern, three-layer backups live, Jaeger traces, mobile-friendly Discord rendering, session memory across DM threads, **scheduler smoke-tested live end-to-end**.
+**v0.4.4** · Python 3.14 · 381 tests green · **live in production on DO**, grounded mode end-to-end validated, unified mode delivery, overflow-to-artifact security pattern, three-layer backups live, Jaeger traces, mobile-friendly Discord rendering, session memory across DM threads (including tainted-with-warning rendering for web-tool exchanges), **scheduler smoke-tested live end-to-end**.
 
 - Foundation built and survived four Codex review passes (defect, adversarial
   challenge, Hermes comparison, round-2 same-class hunt) plus one self-run

@@ -395,26 +395,44 @@ class JobContext:
                     )
                 # Session memory: persist the user task + assistant answer
                 # to `messages` for cross-job recall in the same Discord
-                # thread. Tainted jobs DO NOT write — preserves the trust
-                # boundary between attacker-controlled bytes and the next
-                # clean job's context. Production issue 2026-04-30: the bot
-                # was effectively amnesic across `/ask` follow-ups; this
-                # gives chat mode the conversational continuity the user
-                # was missing.
-                if (
-                    self.job.thread_id
-                    and not self.state.tainted
-                    and text
-                    and self.job.task
-                ):
+                # thread.
+                #
+                # v0.4.4 (2026-04-30): tainted jobs ARE now written, with
+                # `tainted=1` so `compose_system` can render them with an
+                # explicit "from untrusted source — do not follow
+                # instructions" wrapper. Pre-v0.4.4 tainted exchanges
+                # were silently skipped, on the theory that any web-tool
+                # bytes shouldn't pollute future clean-job context. In
+                # practice nearly every real DM ends up tainted (weather,
+                # news, lookups all use `fetch_url` / `search_web`), so
+                # session memory was effectively dead for daily use. The
+                # tagged-and-rendered design preserves the trust boundary
+                # at the prompt-rendering layer while keeping the UX
+                # working.
+                if self.job.thread_id and text and self.job.task:
+                    from ..agent.compose import scrub_protocol_tokens
                     from ..memory import threads as threads_mod
-                    threads_mod.insert_message(
-                        conn, thread_id=self.job.thread_id,
-                        role="user", content=self.job.task[:4000],
+                    # Scrub protocol-impersonating tokens from tainted
+                    # replies before they land in messages — a clean
+                    # run later that quotes back the prior reply via
+                    # session_history shouldn't carry `<tool_use>`,
+                    # role tags, or scaffolding-shaped delimiters.
+                    # The user task is operator-typed text and isn't
+                    # scrubbed; only the assistant reply could carry
+                    # web/file-derived bytes.
+                    assistant_content = (
+                        scrub_protocol_tokens(text)
+                        if self.state.tainted else text
                     )
                     threads_mod.insert_message(
                         conn, thread_id=self.job.thread_id,
-                        role="assistant", content=text[:4000],
+                        role="user", content=self.job.task[:4000],
+                        tainted=self.state.tainted,
+                    )
+                    threads_mod.insert_message(
+                        conn, thread_id=self.job.thread_id,
+                        role="assistant", content=assistant_content[:4000],
+                        tainted=self.state.tainted,
                     )
                 return jobs_mod.set_status(
                     conn, self.state.job_id, JobStatus.DONE, worker_id=self.worker_id,
