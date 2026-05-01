@@ -97,6 +97,10 @@ _UPDATE_RATE_LIMIT_S = 5.0
 # Per-channel rate limit. Slack guidance is ~1 msg/sec/channel; we use
 # a slightly more conservative 1.2s. Codex review 2026-04-30.
 _CHANNEL_RATE_LIMIT_S = 1.2
+# Operator alert throttle: when V50-1 routes a row to dead-letter, DM
+# the operator at most once per (channel, error_code) per hour. Codex
+# review 2026-05-01: don't replace API spam with DM spam.
+_OPERATOR_ALERT_THROTTLE_S = 3600.0
 
 # Slack section block text limit — 3000 chars per block. chat.postMessage
 # top-level text recommends 4000 chars. We use 3500 as the inline cap so
@@ -216,6 +220,13 @@ class DonnaSlackBot:
         # with a Retry-After header. Honored before the soft per-channel
         # pacing gate; values are absolute time.time() epochs.
         self._rate_limited_until: dict[str, float] = {}
+        # V50-1: in-memory operator-alert throttle keyed by
+        # (channel, error_code). When a delivery hits a terminal/unknown
+        # error and we DM the operator, we record now() here; future hits
+        # within _OPERATOR_ALERT_THROTTLE_S skip the DM. Resets on
+        # restart — that's intentional (the persistent record is in
+        # outbox_dead_letter; the DM is just immediate notification).
+        self._alert_throttle: dict[tuple[str, str], float] = {}
         slack_ux.register_handlers(self)
 
     async def start(self) -> None:
@@ -413,6 +424,20 @@ class DonnaSlackBot:
             row_age_s=row_age_s,
             error_msg=result.error_msg,
         )
+        # Throttled operator DM. Fire-and-forget if a loop is running
+        # (production); silently skipped in tests where we drive
+        # _handle_update_result synchronously.
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._maybe_alert_operator(
+                channel=channel,
+                error_code=error_code,
+                error_class=cls.value,
+                job_id=job_id,
+                attempt_count=attempt_count,
+            ))
+        except RuntimeError:
+            pass
         # Resolve the schedule-or-thread first attempt time; we use
         # outbox_updates.created_at as a good-enough proxy.
         first_attempt_at: datetime | None = None
@@ -450,6 +475,56 @@ class DonnaSlackBot:
                 )
         finally:
             conn.close()
+
+    async def _maybe_alert_operator(
+        self,
+        *,
+        channel: str,
+        error_code: str,
+        error_class: str,
+        job_id: str,
+        attempt_count: int,
+    ) -> None:
+        """Throttled DM to the allowed operator about a terminal/unknown
+        delivery failure. Throttle key is (channel, error_code) so 100
+        jobs targeting one broken channel produce one alert, not 100.
+
+        If the alert send itself fails (operator's own DM channel broken
+        somehow), we log and bail — never loop.
+        """
+        key = (channel, error_code)
+        now = time.time()
+        if (now - self._alert_throttle.get(key, 0.0)) < _OPERATOR_ALERT_THROTTLE_S:
+            return
+        operator_id = settings().slack_allowed_user_id
+        text = (
+            f"⚠️ *Donna delivery failure* — `{error_class}`\n"
+            f"• Error: `{error_code}`\n"
+            f"• Channel: `{channel}`\n"
+            f"• Job: `{job_id}`\n"
+            f"• Attempts: {attempt_count}\n"
+            f"\n"
+            f"_Row moved to_ `outbox_dead_letter`. "
+            f"Throttled: max one alert per "
+            f"(channel, error_code) per "
+            f"{int(_OPERATOR_ALERT_THROTTLE_S/60)}min."
+        )
+        try:
+            await self.client.chat_postMessage(
+                channel=operator_id,
+                text=text,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+            # Record AFTER successful send; if the send fails we'll retry
+            # the next time the same key fires (still throttled by the
+            # next attempt's failure cadence, not by this map).
+            self._alert_throttle[key] = now
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "slack.operator_alert_failed",
+                error=str(e), channel=channel, error_code=error_code,
+            )
 
     async def _post_update(
         self,

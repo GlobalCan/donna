@@ -75,6 +75,7 @@ def _build_bot_no_app() -> DonnaSlackBot:
     bot = DonnaSlackBot.__new__(DonnaSlackBot)
     bot._last_sent_per_channel = {}
     bot._rate_limited_until = {}
+    bot._alert_throttle = {}
     bot.client = MagicMock()
     return bot
 
@@ -415,3 +416,146 @@ async def test_post_update_success_returns_ok() -> None:
     )
     assert result.ok is True
     assert result.error_code is None
+
+
+# ---------- operator-alert throttling (V50-1 Day 2) ----------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("fresh_db")
+async def test_operator_alert_first_terminal_sends_dm() -> None:
+    """V50-1 Day 2: first terminal/unknown failure for a (channel,
+    error_code) key DMs the operator with diagnostic info."""
+    bot = _build_bot_no_app()
+    bot.client.chat_postMessage = AsyncMock(
+        return_value={"ok": True, "ts": "1.0"},
+    )
+    await bot._maybe_alert_operator(
+        channel="C_DEAD",
+        error_code="not_in_channel",
+        error_class="terminal",
+        job_id="job_x",
+        attempt_count=3,
+    )
+    assert bot.client.chat_postMessage.await_count == 1
+    call = bot.client.chat_postMessage.call_args.kwargs
+    # Sent to the configured operator user, not the broken channel.
+    assert call["channel"] == "U_test"
+    assert "not_in_channel" in call["text"]
+    assert "C_DEAD" in call["text"]
+    assert "job_x" in call["text"]
+    assert "Attempts: 3" in call["text"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("fresh_db")
+async def test_operator_alert_throttles_repeats_within_window() -> None:
+    """V50-1 Day 2: 100 jobs all hitting not_in_channel on the same
+    channel produce ONE DM, not 100. Throttle key is (channel,
+    error_code)."""
+    bot = _build_bot_no_app()
+    bot.client.chat_postMessage = AsyncMock(
+        return_value={"ok": True, "ts": "1.0"},
+    )
+    for i in range(5):
+        await bot._maybe_alert_operator(
+            channel="C_DEAD",
+            error_code="not_in_channel",
+            error_class="terminal",
+            job_id=f"job_{i}",
+            attempt_count=1,
+        )
+    assert bot.client.chat_postMessage.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("fresh_db")
+async def test_operator_alert_distinct_keys_each_send_once() -> None:
+    """V50-1 Day 2: different channel OR different error_code produces
+    separate alerts. Throttle is per-key, not global."""
+    bot = _build_bot_no_app()
+    bot.client.chat_postMessage = AsyncMock(
+        return_value={"ok": True, "ts": "1.0"},
+    )
+    # Same error, different channels -> 2 DMs
+    await bot._maybe_alert_operator(
+        channel="C_A", error_code="not_in_channel",
+        error_class="terminal", job_id="j1", attempt_count=1,
+    )
+    await bot._maybe_alert_operator(
+        channel="C_B", error_code="not_in_channel",
+        error_class="terminal", job_id="j2", attempt_count=1,
+    )
+    # Same channel, different errors -> 1 more DM
+    await bot._maybe_alert_operator(
+        channel="C_A", error_code="channel_not_found",
+        error_class="terminal", job_id="j3", attempt_count=1,
+    )
+    assert bot.client.chat_postMessage.await_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("fresh_db")
+async def test_operator_alert_send_failure_does_not_update_throttle() -> None:
+    """V50-1 Day 2: if the DM send itself fails (e.g. operator's IM is
+    weirdly broken), don't record the throttle — next failure should
+    still try to alert. Better re-attempt than silently lose the warning.
+    """
+    bot = _build_bot_no_app()
+    bot.client.chat_postMessage = AsyncMock(
+        side_effect=_slack_error("user_disabled"),
+    )
+    await bot._maybe_alert_operator(
+        channel="C_X", error_code="not_in_channel",
+        error_class="terminal", job_id="j", attempt_count=1,
+    )
+    # Throttle map stayed empty because send failed
+    assert bot._alert_throttle == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("fresh_db")
+async def test_handle_update_result_in_async_context_fires_alert() -> None:
+    """V50-1 Day 2: when _handle_update_result runs inside a real event
+    loop, the dead-letter branch schedules an operator DM via
+    loop.create_task. The DM happens fire-and-forget; we yield control
+    to let the task run, then assert the call."""
+    jid = _make_job()
+    row_id = _enqueue_outbox_row(job_id=jid)
+    bot = _build_bot_no_app()
+    bot.client.chat_postMessage = AsyncMock(
+        return_value={"ok": True, "ts": "1.0"},
+    )
+
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id, job_id, text, tainted, attempt_count, created_at "
+            "FROM outbox_updates WHERE id = ?",
+            (row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    bot._handle_update_result(
+        row=row,
+        channel="C_DEAD",
+        thread_ts=None,
+        result=PostResult(
+            ok=False,
+            error_code="not_in_channel",
+            error_class=ErrorClass.TERMINAL,
+        ),
+        last_sent_per_job={},
+    )
+    # Yield control so the scheduled operator-alert task runs.
+    import asyncio
+    await asyncio.sleep(0)
+
+    # Source row deleted (terminal routing)
+    assert _select_outbox_row(row_id) is None
+    # Operator DM fired
+    assert bot.client.chat_postMessage.await_count == 1
+    assert (
+        bot.client.chat_postMessage.call_args.kwargs["channel"] == "U_test"
+    )

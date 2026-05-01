@@ -1,5 +1,114 @@
 # Changelog
 
+## [0.5.1] — 2026-05-01 — Slack outbox dead-letter + polish bundle
+
+Codex review (2026-05-01) of the v0.5.1 plan sharpened the bundle from
+"V50-1 + V50-7 + V50-8" into a tighter, incident-shaped sequence: ship
+the V50-1 fire fix with full operability, fold in the operational gaps
+that surfaced during v0.5.0 smoke (backup verifier blind to schema
+change, no documented token rotation path, no operator alert path),
+and timebox V50-8 dual-field memory — punt if it slips.
+
+V50-8 was punted to v0.5.2 per the timebox rule. Today's bundle is
+specifically about putting clean walls around v0.5.0's incident
+surface; the architectural-cleanup work deserves its own PR.
+
+### V50-1 (HIGH) — Slack error classifier + dead-letter table
+
+**Bug:** the v0.5.0 outbox drainer treated every `chat.postMessage`
+failure as transient — left the row, retried every ~1.5s. For terminal
+Slack errors (`not_in_channel`, `channel_not_found`, `is_archived`,
+`account_inactive`, `invalid_auth`, `token_revoked`, etc.) this was an
+infinite retry storm. Operator hit it during v0.5.0 smoke when a stale
+outbox row referenced a channel where Donna wasn't a member; thousands
+of identical errors at 1.5s intervals before manual SQL DELETE.
+
+**Fix:** classify SlackApiError into three buckets and route accordingly.
+
+| Class | Examples | Routing |
+|---|---|---|
+| **transient** | `rate_limited`, `server_error`, `service_unavailable`, `request_timeout` | Leave row, bump `attempt_count` + `last_error` + `last_attempt_at`. If Slack returned `Retry-After`, set per-channel hard cool-down (capped at 5min so a runaway header doesn't park the row indefinitely). |
+| **terminal** | `not_in_channel`, `channel_not_found`, `is_archived`, `invalid_auth`, `token_revoked`, ~20 others | Log WARN with full context, INSERT `outbox_dead_letter` row preserving provenance (`source_table`, `source_id`, `payload`, `error_code`, `attempt_count`, ...), DELETE source row. |
+| **unknown** | Never-seen-before code | Same routing as terminal so a human eyeballs the new code rather than the drainer guessing classification. |
+
+**Surfaces:**
+
+- `src/donna/adapter/slack_errors.py` — `TRANSIENT_ERRORS` /
+  `TERMINAL_ERRORS` frozensets, `classify_error_code()`,
+  `extract_error_code()`, `extract_retry_after_seconds()`.
+  Pure logic, no DB, no Slack network.
+- `src/donna/memory/dead_letter.py` — `record_dead_letter()` /
+  `list_dead_letter()` / `count_dead_letter()` over the new
+  `outbox_dead_letter` table.
+- `migrations/versions/0009_outbox_dead_letter.py` —
+  `outbox_dead_letter` table + `outbox_updates.attempt_count` /
+  `last_error` / `last_attempt_at` for per-row retry visibility.
+- `slack_adapter.py` — `PostResult` dataclass replaces bare bool,
+  `_handle_update_result` extracted from the drainer for testability.
+- **Structured observability:** `slack.update_transient` and
+  `slack.update_dead_letter` log lines include `error_code`,
+  `error_class`, `attempt_count`, `channel`, `job_id`, `row_age_s`,
+  and `retry_after_s`. Codex review specifically called this out as
+  the gap that would have caught the original storm in seconds.
+
+### V50-1 Day 2 — Operator alert + backup verifier + token rotation runbook
+
+Three operational gaps the v0.5.0 retrospective surfaced:
+
+**Operator-DM alert (throttled).** Terminal/unknown failures now DM
+the allowed operator with diagnostic info (error_code, channel, job,
+attempts) — but throttled per `(channel, error_code)` to 1 alert/hour
+so 100 jobs targeting the same broken channel produce one alert, not
+100. Codex review: "don't replace API spam with DM spam."
+In-memory throttle resets on restart (intentional — the persistent
+audit lives in `outbox_dead_letter`).
+
+**Backup verifier schema check.** `scripts/donna-verify-backup.sh` was
+blind to migration 0008's INTEGER→TEXT changes. A successful
+`integrity_check` on a pre-0008 backup would have produced a "passing"
+backup that silently broke `posted_message_id` deserialization on
+restore (Slack `ts` strings can't round-trip through INTEGER columns).
+Verifier now also asserts:
+
+- `alembic_version >= 0008` (pre-Slack backups fail loud)
+- All Slack-shaped columns (`threads.channel_id`,
+  `messages.external_msg_id`, `outbox_asks.posted_*`,
+  `pending_consents.posted_*`, `schedules.target_*`) are TEXT type
+- `outbox_dead_letter` table + `outbox_updates.attempt_count` etc.
+  exist when revision >= 0009
+- Sample of `posted_message_id` rows match Slack ts shape
+  `^\d{10}\.\d{6}$`
+
+**Token rotation runbook** — `docs/slack/TOKEN_ROTATION.md`. Slack's
+"Reinstall to Workspace" doesn't actually rotate the bot token most
+of the time (operator hit this during v0.5.0); the runbook documents
+the explicit revoke + reinstall path for bot, app, signing, and
+client tokens. Includes the deploy-key write-toggle dance for pushing
+secrets from the droplet.
+
+### V50-7 (cosmetic) — validator footer glyph hoisted out of italic span
+
+The `⚠️` / `✅` validator badge was wrapped INSIDE the
+`_..._` italic markers. Slack's renderer mangled emoji adjacent to
+italic markers (operator hit this in v0.5.0 live smoke — saw literal
+`:warning:` text). Hoisted the glyph out of the italic span — emoji
+renders as emoji, italic-formatted label follows.
+
+### V50-8 — deferred to v0.5.2
+
+Dual-field memory (raw_content for audit + safe_summary for prompt
+rendering) deferred to v0.5.2. Codex's hard timebox rule honored: a
+real production fire (V50-1) shouldn't wait on architectural cleanup.
+
+### Validation
+
+- 398 tests green (373 baseline + 25 new across `test_slack_errors.py`
+  / `test_outbox_dead_letter.py` + V50-7 regression guards in
+  `test_grounded_render.py`).
+- Ruff clean.
+- Backup verifier schema-check logic confirmed against current local
+  DB (alembic 0009).
+
 ## [0.5.0] — 2026-05-01 — Slack adapter retool (live-validated)
 
 Promoted from rc1 → final after 4/4 critical paths validated live in
