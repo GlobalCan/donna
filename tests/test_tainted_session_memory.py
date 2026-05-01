@@ -91,7 +91,7 @@ async def test_finalize_scrubs_tainted_assistant_content() -> None:
     try:
         with transaction(conn):
             tid = threads_mod.get_or_create_thread(
-                conn, discord_channel="dm:scrub", discord_thread=None,
+                conn, channel_id="dm:scrub", thread_external_id=None,
             )
             jid = jobs_mod.insert_job(
                 conn, task="fetch the page", agent_scope="any",
@@ -140,7 +140,7 @@ async def test_finalize_does_not_scrub_clean_assistant_content() -> None:
     try:
         with transaction(conn):
             tid = threads_mod.get_or_create_thread(
-                conn, discord_channel="dm:clean", discord_thread=None,
+                conn, channel_id="dm:clean", thread_external_id=None,
             )
             jid = jobs_mod.insert_job(
                 conn, task="say hi", agent_scope="any",
@@ -288,7 +288,7 @@ async def test_clean_exchange_writes_with_tainted_false() -> None:
     try:
         with transaction(conn):
             tid = threads_mod.get_or_create_thread(
-                conn, discord_channel="dm:clean2", discord_thread=None,
+                conn, channel_id="dm:clean2", thread_external_id=None,
             )
             jid = jobs_mod.insert_job(
                 conn, task="hello", agent_scope="any",

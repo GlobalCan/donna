@@ -21,10 +21,15 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="DONNA_LOG_LEVEL")
     process_role: str = Field(default="bot", alias="DONNA_PROCESS_ROLE")
 
-    # Discord
-    discord_bot_token: str = Field(default="", alias="DISCORD_BOT_TOKEN")
-    discord_allowed_user_id: int = Field(default=0, alias="DISCORD_ALLOWED_USER_ID")
-    discord_guild_id: int | None = Field(default=None, alias="DISCORD_GUILD_ID")
+    # Slack
+    # bot token (xoxb-...) — Web API auth, scoped to the workspace
+    slack_bot_token: str = Field(default="", alias="SLACK_BOT_TOKEN")
+    # app-level token (xapp-...) with `connections:write` — Socket Mode
+    slack_app_token: str = Field(default="", alias="SLACK_APP_TOKEN")
+    # workspace allowlist (T0...) — every event is checked against this
+    slack_team_id: str = Field(default="", alias="SLACK_TEAM_ID")
+    # solo-operator allowlist (U0...) — only this user's events are processed
+    slack_allowed_user_id: str = Field(default="", alias="SLACK_ALLOWED_USER_ID")
 
     # Anthropic
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")

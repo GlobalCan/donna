@@ -35,7 +35,7 @@ def test_insert_schedule_persists_thread_id() -> None:
     try:
         with transaction(conn):
             tid = threads_mod.get_or_create_thread(
-                conn, discord_channel="123456789", discord_thread=None,
+                conn, channel_id="123456789", thread_external_id=None,
             )
             sid = sched_mod.insert_schedule(
                 conn, cron_expr="* * * * *", task="every minute",
@@ -80,7 +80,7 @@ async def test_fire_propagates_thread_id_to_job() -> None:
     try:
         with transaction(conn):
             tid = threads_mod.get_or_create_thread(
-                conn, discord_channel="987654321", discord_thread=None,
+                conn, channel_id="987654321", thread_external_id=None,
             )
             sid = sched_mod.insert_schedule(
                 conn, cron_expr="* * * * *", task="reply SCHED_OK",

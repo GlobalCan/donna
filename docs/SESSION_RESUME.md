@@ -25,11 +25,22 @@ Before anything else, read these files. Everything below assumes you have.
 
 ## 1 · Where we are
 
-**Donna v0.4.3 — first live scheduler smoke test passed; latent
-shipping bugs cleaned up (2026-04-30).** Bot answering DMs as
-`Donna#3183` on the DigitalOcean droplet. All five modes (chat /
-grounded / speculative / debate / refusal) live-validated. 366 tests
-green. Recent shipped changes:
+**Donna v0.5.0-rc1 — Slack adapter retool (2026-05-01).** Discord
+adapter retired in favor of Slack via Socket Mode. Pre-v0.5.0 history
+preserved at git tag `legacy/v0.4.4-discord`. Operator's personal Slack
+workspace; all five modes (chat / grounded / speculative / debate /
+refusal) validated against the new adapter via Phase 0 smoke test
+(scripts/slack_smoke.py — see docs/slack/PHASE_0_RUNBOOK.md). 373 tests
+green; live smoke against real Slack pending operator wake-up.
+
+Slack-specific UX wins shipping with v0.5.0:
+- Block Kit message rendering (richer than Discord embeds)
+- Button-based consent (✅ Approve / ❌ Decline replaces emoji reactions)
+- Modal-based `/schedule` (channel selector, structured fields)
+- Channel-target scheduling (route morning brief to `#morning-brief`)
+- `@donna` mentions in channels with threaded replies
+
+Recent shipped changes:
 
 - **v0.4.3 (2026-04-30, post-smoke-test cleanup):** scheduler
   delivery fix (PR #47 — `thread_id` propagation through migration

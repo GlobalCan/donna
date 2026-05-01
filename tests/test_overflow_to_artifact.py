@@ -1,28 +1,29 @@
-"""Overflow-to-artifact delivery path.
+"""Overflow-to-artifact delivery path (Slack adapter, v0.5.0+).
 
 When a final answer exceeds the message-cap thresholds, `_post_update`
 saves the FULL text as an artifact and posts a short preview + pointer
-message instead of flooding Discord with multi-part `(N/M)` messages.
+message instead of flooding Slack with multi-part `(N/M)` messages.
 
-Two thresholds:
+Two thresholds (Slack-tuned for Block Kit's 3000-char section limit;
+the inline cap is 3500 with overflow at 4× for clean and 1× for
+tainted):
 
-- Clean (non-tainted) text:  up to 3 parts inline (~5700 chars), then overflow
-- Tainted text:              up to 1 part inline (~1900 chars), then overflow
+- Clean (non-tainted) text:  up to ~14k chars inline, then overflow
+- Tainted text:              up to ~3500 chars inline, then overflow
 
-Security rationale for the tighter tainted cap: attacker-controlled output
-(derived from fetch_url, PDF attachments, search snippets) shouldn't take
-up rows of Discord scrollback. Materializing tainted text at length also
-makes it harder to visually distinguish legitimate operator conversation
-from injection content. By routing tainted overflow through the artifact
-path, the raw content sits in compartmentalized storage and requires an
-explicit `botctl artifact-show` to view in full.
+Security rationale for the tighter tainted cap: attacker-controlled
+output (derived from fetch_url, PDF attachments, search snippets)
+shouldn't take up rows of Slack scrollback. Materializing tainted text
+at length also makes it harder to visually distinguish legitimate
+operator conversation from injection content. By routing tainted
+overflow through the artifact path, the raw content sits in
+compartmentalized storage and requires an explicit `botctl
+artifact-show` to view in full.
 
 The artifact:
 - Inherits `tainted` from the source, so subsequent reads propagate taint
 - Is tagged `overflow` + `tainted` where applicable
 - Named `overflow:<job_id>:<Nchars>` for audit
-- Is created via the same `save_artifact` call chain used by `save_artifact`
-  tool, so schema and dedup (sha256 UNIQUE) are identical
 """
 from __future__ import annotations
 
@@ -30,27 +31,27 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from donna.adapter.discord_adapter import (
+from donna.adapter.slack_adapter import (
     _OVERFLOW_CLEAN_MAX,
     _OVERFLOW_TAINTED_MAX,
-    DonnaBot,
+    DonnaSlackBot,
 )
 from donna.config import settings
 from donna.memory import jobs as jobs_mod
 from donna.memory.db import connect, transaction
 
 
-class _FakeChannel:
-    def __init__(self) -> None:
-        self.sent: list[str] = []
-        self.send = AsyncMock(side_effect=self._track)
-        self.id = 42
+class _FakeClient:
+    """Stand-in for the Slack AsyncWebClient. Records every
+    chat_postMessage call so tests can assert what got sent."""
 
-    async def _track(self, content: str) -> object:
-        self.sent.append(content)
-        class _Msg:
-            id = 1
-        return _Msg()
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.chat_postMessage = AsyncMock(side_effect=self._track)
+
+    async def _track(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"ok": True, "ts": "1.0"}
 
 
 def _make_job() -> str:
@@ -62,15 +63,11 @@ def _make_job() -> str:
         conn.close()
 
 
-def _bot_with_channel(ch: _FakeChannel) -> DonnaBot:
-    """Build a DonnaBot without running discord.Client.__init__ (which
-    spins up a gateway connection). We just need the method machinery."""
-    bot = DonnaBot.__new__(DonnaBot)
-
-    async def _fake_resolve(job_id: str) -> _FakeChannel | None:
-        return ch
-
-    bot._resolve_channel_for_job = _fake_resolve  # type: ignore[attr-defined]
+def _bot_with_client(client: _FakeClient) -> DonnaSlackBot:
+    """Build a DonnaSlackBot without instantiating slack_bolt's AsyncApp
+    (which would try to connect). Just need the method machinery."""
+    bot = DonnaSlackBot.__new__(DonnaSlackBot)
+    bot.client = client  # type: ignore[attr-defined]
     return bot
 
 
@@ -94,18 +91,18 @@ def _artifacts() -> list[dict]:
 async def test_short_clean_text_stays_inline_no_artifact() -> None:
     settings().artifacts_dir.mkdir(parents=True, exist_ok=True)
     jid = _make_job()
-    ch = _FakeChannel()
-    bot = _bot_with_channel(ch)
+    client = _FakeClient()
+    bot = _bot_with_client(client)
 
     short = "a perfectly normal grounded reply"
-    ok = await bot._post_update(job_id=jid, text=short, tainted=False)
+    ok = await bot._post_update(
+        channel="C_test", job_id=jid, thread_ts=None,
+        text=short, tainted=False,
+    )
     assert ok is True
-
-    # One inline message, no multi-part marker
-    assert len(ch.sent) == 1
-    assert short in ch.sent[0]
-    assert "(1/" not in ch.sent[0]
-    # No artifact was created
+    assert len(client.calls) == 1
+    assert short in client.calls[0]["text"]
+    assert "(1/" not in client.calls[0]["text"]
     assert _artifacts() == []
 
 
@@ -114,36 +111,43 @@ async def test_short_clean_text_stays_inline_no_artifact() -> None:
 async def test_short_tainted_text_stays_inline_no_artifact() -> None:
     settings().artifacts_dir.mkdir(parents=True, exist_ok=True)
     jid = _make_job()
-    ch = _FakeChannel()
-    bot = _bot_with_channel(ch)
+    client = _FakeClient()
+    bot = _bot_with_client(client)
 
     short = "a brief tainted reply (eg a URL fetch summary)"
-    ok = await bot._post_update(job_id=jid, text=short, tainted=True)
+    ok = await bot._post_update(
+        channel="C_test", job_id=jid, thread_ts=None,
+        text=short, tainted=True,
+    )
     assert ok is True
-
-    assert len(ch.sent) == 1
-    assert "🔮" in ch.sent[0]
+    assert len(client.calls) == 1
+    assert "🔮" in client.calls[0]["text"]
+    # Unfurls disabled for tainted
+    assert client.calls[0].get("unfurl_links") is False
+    assert client.calls[0].get("unfurl_media") is False
     assert _artifacts() == []
 
 
 @pytest.mark.usefixtures("fresh_db")
 @pytest.mark.asyncio
 async def test_medium_clean_text_uses_multi_part_not_overflow() -> None:
-    """Clean text in the 2000-5000 char range should multi-part, NOT
-    overflow. Overflow cutoff is ~5700."""
+    """Mid-sized clean text should multi-part, NOT overflow."""
     settings().artifacts_dir.mkdir(parents=True, exist_ok=True)
     jid = _make_job()
-    ch = _FakeChannel()
-    bot = _bot_with_channel(ch)
+    client = _FakeClient()
+    bot = _bot_with_client(client)
 
-    # 3500 chars — expected 2 parts inline
-    medium = ("sentence. " * 350).strip()
+    # ~7000 chars — past one Slack section, but well below clean overflow cap
+    medium = ("sentence. " * 700).strip()
     assert len(medium) < _OVERFLOW_CLEAN_MAX
-    ok = await bot._post_update(job_id=jid, text=medium, tainted=False)
+    ok = await bot._post_update(
+        channel="C_test", job_id=jid, thread_ts=None,
+        text=medium, tainted=False,
+    )
     assert ok is True
 
-    assert len(ch.sent) >= 2
-    assert any("(1/" in m for m in ch.sent)
+    assert len(client.calls) >= 2
+    assert any("(1/" in c["text"] for c in client.calls)
     assert _artifacts() == []
 
 
@@ -155,25 +159,24 @@ async def test_medium_clean_text_uses_multi_part_not_overflow() -> None:
 async def test_long_clean_text_goes_to_artifact() -> None:
     settings().artifacts_dir.mkdir(parents=True, exist_ok=True)
     jid = _make_job()
-    ch = _FakeChannel()
-    bot = _bot_with_channel(ch)
+    client = _FakeClient()
+    bot = _bot_with_client(client)
 
-    # Well past the clean cap (_OVERFLOW_CLEAN_MAX ≈ 5700)
-    long = "Important content. " * 600   # ~11k chars
+    # Past the clean cap (_OVERFLOW_CLEAN_MAX ≈ 14k)
+    long = "Important content. " * 1000   # ~19k chars
     assert len(long) > _OVERFLOW_CLEAN_MAX
-    ok = await bot._post_update(job_id=jid, text=long, tainted=False)
+    ok = await bot._post_update(
+        channel="C_test", job_id=jid, thread_ts=None,
+        text=long, tainted=False,
+    )
     assert ok is True
-
-    # One short pointer message sent, not multi-part
-    assert len(ch.sent) == 1
-    pointer = ch.sent[0]
+    assert len(client.calls) == 1
+    pointer = client.calls[0]["text"]
     assert "📎" in pointer
-    assert "too long for DM" in pointer
+    assert "Answer too long" in pointer or "saved as artifact" in pointer
     assert "botctl artifact-show" in pointer
-    # Not flooded with (1/N) markers
     assert "(1/" not in pointer
 
-    # Artifact with FULL content saved
     arts = _artifacts()
     assert len(arts) == 1
     assert arts[0]["name"].startswith(f"overflow:{jid}:")
@@ -188,26 +191,26 @@ async def test_long_clean_text_goes_to_artifact() -> None:
 @pytest.mark.usefixtures("fresh_db")
 @pytest.mark.asyncio
 async def test_medium_tainted_text_overflows_because_tainted_cap_is_tighter() -> None:
-    """A 2500-char tainted reply is INLINE for clean content but OVERFLOW
-    for tainted. Security: don't let attacker content splash across 2-3
-    Discord messages when it could be one short pointer."""
+    """A 5000-char tainted reply is INLINE for clean content but OVERFLOW
+    for tainted. Don't let attacker content splash across multiple Slack
+    messages when it could be one short pointer."""
     settings().artifacts_dir.mkdir(parents=True, exist_ok=True)
     jid = _make_job()
-    ch = _FakeChannel()
-    bot = _bot_with_channel(ch)
+    client = _FakeClient()
+    bot = _bot_with_client(client)
 
-    tainted_medium = "Attacker sentence. " * 180    # ~3400 chars
+    tainted_medium = "Attacker sentence. " * 300    # ~5700 chars
     assert len(tainted_medium) > _OVERFLOW_TAINTED_MAX
     assert len(tainted_medium) < _OVERFLOW_CLEAN_MAX
 
     ok = await bot._post_update(
-        job_id=jid, text=tainted_medium, tainted=True,
+        channel="C_test", job_id=jid, thread_ts=None,
+        text=tainted_medium, tainted=True,
     )
     assert ok is True
-
-    assert len(ch.sent) == 1
-    pointer = ch.sent[0]
-    assert "🔮" in pointer  # tainted header keeps the signal marker
+    assert len(client.calls) == 1
+    pointer = client.calls[0]["text"]
+    assert "🔮" in pointer
     assert "Tainted answer" in pointer or "compartmentalized" in pointer
     assert "untrusted" in pointer or "Review the artifact carefully" in pointer
 
@@ -225,18 +228,17 @@ async def test_medium_tainted_text_overflows_because_tainted_cap_is_tighter() ->
 async def test_long_tainted_text_still_goes_to_artifact_not_multipart() -> None:
     settings().artifacts_dir.mkdir(parents=True, exist_ok=True)
     jid = _make_job()
-    ch = _FakeChannel()
-    bot = _bot_with_channel(ch)
+    client = _FakeClient()
+    bot = _bot_with_client(client)
 
-    tainted_long = "Attacker's extended content. " * 500    # ~14.5k
+    tainted_long = "Attacker's extended content. " * 800    # ~22k
     ok = await bot._post_update(
-        job_id=jid, text=tainted_long, tainted=True,
+        channel="C_test", job_id=jid, thread_ts=None,
+        text=tainted_long, tainted=True,
     )
     assert ok is True
-
-    # Single pointer, not (1/N) multipart
-    assert len(ch.sent) == 1
-    assert "(1/" not in ch.sent[0]
+    assert len(client.calls) == 1
+    assert "(1/" not in client.calls[0]["text"]
     arts = _artifacts()
     assert len(arts) == 1
     assert arts[0]["tainted"] == 1
@@ -248,20 +250,22 @@ async def test_long_tainted_text_still_goes_to_artifact_not_multipart() -> None:
 @pytest.mark.usefixtures("fresh_db")
 @pytest.mark.asyncio
 async def test_overflow_pointer_includes_leading_preview() -> None:
-    """The pointer message shows the first ~1200 chars as preview so the
+    """The pointer message shows the first ~1500 chars as preview so the
     operator has immediate context — don't force a botctl trip for the
     gist of the answer."""
     settings().artifacts_dir.mkdir(parents=True, exist_ok=True)
     jid = _make_job()
-    ch = _FakeChannel()
-    bot = _bot_with_channel(ch)
+    client = _FakeClient()
+    bot = _bot_with_client(client)
 
     marker = "UNIQUE_PREVIEW_MARKER"
-    body = marker + ". " + ("continuing content. " * 500)
-    await bot._post_update(job_id=jid, text=body, tainted=False)
-
-    assert len(ch.sent) == 1
-    assert marker in ch.sent[0]
+    body = marker + ". " + ("continuing content. " * 1000)
+    await bot._post_update(
+        channel="C_test", job_id=jid, thread_ts=None,
+        text=body, tainted=False,
+    )
+    assert len(client.calls) == 1
+    assert marker in client.calls[0]["text"]
 
 
 # ---------- failure path ------------------------------------------
@@ -277,8 +281,8 @@ async def test_artifact_save_failure_falls_back_to_truncated_inline(
     degradation."""
     settings().artifacts_dir.mkdir(parents=True, exist_ok=True)
     jid = _make_job()
-    ch = _FakeChannel()
-    bot = _bot_with_channel(ch)
+    client = _FakeClient()
+    bot = _bot_with_client(client)
 
     from donna.memory import artifacts as artifacts_mod
 
@@ -287,35 +291,13 @@ async def test_artifact_save_failure_falls_back_to_truncated_inline(
 
     monkeypatch.setattr(artifacts_mod, "save_artifact", _blow_up)
 
-    body = "unique content " * 600  # well past clean cap
-    result = await bot._post_update(job_id=jid, text=body, tainted=False)
-
-    # Return False to signal the drainer to retry or log; but the fallback
-    # inline send did happen so operator isn't in the dark
-    assert result is False
-    assert len(ch.sent) == 1
-    assert "artifact save failed" in ch.sent[0].lower()
-    # No artifact created
-    assert _artifacts() == []
-
-
-@pytest.mark.usefixtures("fresh_db")
-@pytest.mark.asyncio
-async def test_resolve_channel_failure_returns_false_no_artifact() -> None:
-    """If the channel can't be resolved, no Discord write happens and no
-    artifact is wasted either."""
-    settings().artifacts_dir.mkdir(parents=True, exist_ok=True)
-    jid = _make_job()
-    bot = DonnaBot.__new__(DonnaBot)
-
-    async def _no_channel(job_id: str) -> None:
-        return None
-
-    bot._resolve_channel_for_job = _no_channel  # type: ignore[attr-defined]
-
+    body = "unique content " * 1500  # well past clean cap
     result = await bot._post_update(
-        job_id=jid, text="x" * 10_000, tainted=False,
+        channel="C_test", job_id=jid, thread_ts=None,
+        text=body, tainted=False,
     )
     assert result is False
-    # No artifact created — we never got far enough to save it
+    # The fallback "artifact save failed" stub is sent inline.
+    assert len(client.calls) == 1
+    assert "artifact save failed" in client.calls[0]["text"].lower()
     assert _artifacts() == []

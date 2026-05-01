@@ -1,5 +1,153 @@
 # Changelog
 
+## [0.5.0-rc1] — 2026-05-01 — Slack adapter retool
+
+Major platform migration: v0.4.x's Discord adapter is retired in favor
+of Slack via Socket Mode. Single-platform — operator wasn't using
+Discord, so dual-adapter abstraction would have been YAGNI tax. Discord
+revival point preserved as the `legacy/v0.4.4-discord` git tag.
+
+### Cross-vendor design review (2026-05-01)
+
+Asked Codex (gpt-5.5-pro) to sanity-check the migration plan before
+shipping. Confirmed full retool was correct (vs dual-platform with
+abstraction); recommended five concrete corrections, all included in
+this release:
+
+| Codex correction | Shipped? |
+|---|---|
+| Posted message IDs as TEXT (Slack `ts` is a string, not int) | ✅ migration 0008 |
+| `/schedule` as a Block Kit modal, not parsed slash args | ✅ slack_ux.py |
+| Buttons for consent, not emoji reactions or modals | ✅ Block Kit `actions` block |
+| Per-channel rate limiter (~1 msg/sec) | ✅ `_CHANNEL_RATE_LIMIT_S` |
+| Validate Slack first via Phase 0 smoke before destructive migration | ✅ scripts/slack_smoke.py + docs/slack/PHASE_0_RUNBOOK.md |
+| Allowlist by SLACK_TEAM_ID + SLACK_ALLOWED_USER_ID, every event | ✅ slack_adapter.is_authorized |
+| Don't enable token rotation (12hr expiry + refresh-token plumbing not built) | ✅ manifest |
+| Escape `&`, `<`, `>` in tainted text + disable unfurls | ✅ `_escape_for_slack` + `unfurl_links=False` |
+| Strip protocol-impersonating tokens from tainted assistant content | ✅ already shipped in v0.4.4 |
+| Dual-field memory (raw + safe_summary) | Deferred to v0.5.1 per Codex's ship plan |
+
+### Schema (migration 0008)
+
+- Rename `threads.discord_channel` → `channel_id`
+- Rename `threads.discord_thread` → `thread_external_id`
+- Rename `messages.discord_msg` → `external_msg_id`
+- Change `outbox_asks.posted_channel_id` and `posted_message_id` from
+  INTEGER to TEXT (Slack `ts` is `"1234567890.123456"`)
+- Same for `pending_consents.posted_channel_id` and `posted_message_id`
+- Add `schedules.target_channel_id` (channel-target scheduling — replies
+  to e.g. `#morning-brief` instead of cluttering DM)
+- Add `schedules.target_thread_ts` (reserved for in-thread scheduled replies)
+- Wipe Discord-platform-bound rows (operator confirmed: no production data
+  worth migrating). Knowledge corpora, artifacts, traces, prompts, runtimes
+  preserved.
+- Forward-only — no downgrade. Discord revival is via the
+  `legacy/v0.4.4-discord` git tag, not this migration.
+
+### Adapter
+
+`adapter/discord_adapter.py` (~700 lines) and `adapter/discord_ux.py`
+deleted. Replaced by:
+
+- **`adapter/slack_adapter.py`** — Socket Mode intake (`AsyncSocketModeHandler`),
+  outbox drainers (updates / asks / consent), Block Kit rendering,
+  per-channel rate limiter, untrusted-text escaping, unfurl
+  disabling for tainted output.
+- **`adapter/slack_ux.py`** — slash commands (`/ask`, `/schedule` modal,
+  `/schedules`, `/history`, `/budget`, `/cancel`, `/status`, `/model`,
+  `/heuristics`, `/approve_heuristic`, `/speculate`, `/debate`),
+  button-based consent handlers (`consent_approve` / `consent_decline`
+  with `chat.update` editing the original card), modal submission
+  handler for `/schedule`, message + app_mention event intake.
+
+`main.py` switched from `adapter.discord_adapter:build_bot` to
+`adapter.slack_adapter:build_bot`. Required env vars now:
+`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_TEAM_ID`,
+`SLACK_ALLOWED_USER_ID`, plus `ANTHROPIC_API_KEY`. Old
+`DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`, `DISCORD_ALLOWED_USER_ID`
+removed from `Settings`.
+
+### UX wins from Slack
+
+- **Channel-target scheduling**: `/schedule` modal includes a channel
+  selector. Daily morning brief can route to `#morning-brief` instead
+  of cluttering the operator's DM.
+- **Modal-based `/schedule`**: structured fields (cron, task, channel,
+  mode) replace Slack's bad raw-text slash arg parsing. The
+  spaceless-cron mistype (`*****` vs `* * * * *`) hint we shipped in
+  v0.4.3 still applies.
+- **Block Kit consent**: ✅ Approve / ❌ Decline buttons replace Discord
+  emoji reactions. Click → handler acks within 3s → `chat.update`
+  removes the buttons + shows resolution. Slacker than reaction-based
+  flow.
+- **`@donna` channel mentions**: replies threaded to keep the channel
+  clean.
+
+### Phase 0 de-risk (2026-05-01)
+
+Before any destructive code change, validated 9 Slack primitives in the
+operator's environment via `scripts/slack_smoke.py` + the runbook at
+`docs/slack/PHASE_0_RUNBOOK.md`:
+
+1. Socket Mode connects ✅
+2. DM event intake ✅
+3. `chat.postMessage` reply ✅
+4. Slash command routes ✅
+5. Modal opens ✅
+6. Modal submission delivers form values ✅
+7. Block Kit button renders ✅
+8. Button click handler fires + `chat.update` edits ✅
+9. Post to specific channel ✅
+
+The smoke harness caught two adapter-shape bugs before the rewrite
+shipped: `signal.signal()` only works on the main thread (so
+`handler.start()` runs in main, not a worker), and Slack payload
+shapes vary by event type — block_actions/view_submission nest
+team/user, others flatten them.
+
+### Tests
+
+Test suite restructured to drop Discord-specific UX tests (mobile
+chunking, `_normalize_for_mobile`, `_DISCORD_MSG_LIMIT`) and replace
+them with Slack equivalents (`_split_for_slack`, Block Kit rendering,
+button handlers).
+
+- `test_overflow_to_artifact.py` rewritten to mock `AsyncWebClient`
+  instead of a fake Discord channel. Same security guarantees:
+  tainted overflow goes to artifact, clean overflow goes to artifact
+  past the 4× cap, single failures fall back to truncated inline.
+- `test_discord_message_split.py` → `test_slack_message_split.py` with
+  the new `_SLACK_SECTION_LIMIT` (3500-char Block Kit cap).
+- All threads-table tests updated for `channel_id` /
+  `thread_external_id` column names.
+- `conftest.py` env-var fixture switched from `DISCORD_*` to `SLACK_*`.
+
+**373 / 373 pass · ruff clean.**
+
+### Operator deploy
+
+```bash
+# On droplet
+docker compose pull
+docker compose up -d
+```
+
+The v0.4.3 entrypoint auto-migrate runs migration 0008 at container
+start; no manual alembic step needed. Required env vars must be set
+in `.env` (or sops-decrypted secrets file) before starting:
+`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_TEAM_ID`,
+`SLACK_ALLOWED_USER_ID`. Pre-deploy: install the Slack app via
+`docs/slack/app-manifest.yml` (or paste the manifest JSON from
+the runbook) and collect tokens.
+
+### What's next
+
+- v0.5.0 final after operator runs the v0.5.0 live smoke (DM, slash
+  commands, modal-based `/schedule`, button-based consent flow,
+  channel-target schedule)
+- v0.5.1 dual-field memory (raw_content + safe_summary for tainted
+  rows) per Codex's recommended next iteration
+
 ## [0.4.4] — 2026-04-30 — Tainted session memory: tag-and-render not skip
 
 The v0.4.3 plain-DM memory dedup fix unblocked a deeper issue: the v0.4.2

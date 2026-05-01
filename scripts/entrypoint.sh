@@ -9,8 +9,10 @@
 # are their string values. Example decrypted content:
 #
 #   ANTHROPIC_API_KEY: sk-ant-xxx
-#   DISCORD_BOT_TOKEN: mfa.xxx
-#   DISCORD_ALLOWED_USER_ID: "123456789012345678"
+#   SLACK_BOT_TOKEN: xoxb-...
+#   SLACK_APP_TOKEN: xapp-...
+#   SLACK_TEAM_ID: T01ABCDEF
+#   SLACK_ALLOWED_USER_ID: U01ABCDEF
 #
 # We parse with Python so we don't depend on yq / have to hand-roll YAML parsing.
 set -euo pipefail
