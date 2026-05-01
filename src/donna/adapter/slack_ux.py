@@ -300,7 +300,7 @@ def register_handlers(bot: DonnaSlackBot) -> None:
     # Slash: /ask — scoped grounded query
     # --------------------------------------------------------------
 
-    @app.command("/ask")
+    @app.command("/donna_ask")
     async def cmd_ask(ack, body, client):
         if not _is_allowed_command(body):
             await ack(text="not authorized")
@@ -327,7 +327,7 @@ def register_handlers(bot: DonnaSlackBot) -> None:
                  f"mode `grounded`",
         )
 
-    @app.command("/speculate")
+    @app.command("/donna_speculate")
     async def cmd_speculate(ack, body, client):
         if not _is_allowed_command(body):
             await ack(text="not authorized")
@@ -343,7 +343,7 @@ def register_handlers(bot: DonnaSlackBot) -> None:
         )
         await ack(text=f"📌 Job `{jid[:18]}…` queued · mode `speculative`")
 
-    @app.command("/debate")
+    @app.command("/donna_debate")
     async def cmd_debate(ack, body, client):
         if not _is_allowed_command(body):
             await ack(text="not authorized")
@@ -382,7 +382,7 @@ def register_handlers(bot: DonnaSlackBot) -> None:
     # Slash: /schedule (opens modal)
     # --------------------------------------------------------------
 
-    @app.command("/schedule")
+    @app.command("/donna_schedule")
     async def cmd_schedule(ack, body, client):
         if not _is_allowed_command(body):
             await ack(text="not authorized")
@@ -510,7 +510,7 @@ def register_handlers(bot: DonnaSlackBot) -> None:
     # Slash: /schedules (list)
     # --------------------------------------------------------------
 
-    @app.command("/schedules")
+    @app.command("/donna_schedules")
     async def cmd_schedules(ack, body, client):
         if not _is_allowed_command(body):
             await ack(text="not authorized")
@@ -544,7 +544,7 @@ def register_handlers(bot: DonnaSlackBot) -> None:
     # Slash: /history /budget /cancel /status
     # --------------------------------------------------------------
 
-    @app.command("/history")
+    @app.command("/donna_history")
     async def cmd_history(ack, body, client):
         if not _is_allowed_command(body):
             await ack(text="not authorized")
@@ -567,7 +567,7 @@ def register_handlers(bot: DonnaSlackBot) -> None:
         ]
         await ack(text="\n".join(lines))
 
-    @app.command("/budget")
+    @app.command("/donna_budget")
     async def cmd_budget(ack, body, client):
         if not _is_allowed_command(body):
             await ack(text="not authorized")
@@ -583,7 +583,7 @@ def register_handlers(bot: DonnaSlackBot) -> None:
                  + ", ".join(f"${t:.0f}" for t in thresholds),
         )
 
-    @app.command("/cancel")
+    @app.command("/donna_cancel")
     async def cmd_cancel(ack, body, client):
         if not _is_allowed_command(body):
             await ack(text="not authorized")
@@ -600,7 +600,7 @@ def register_handlers(bot: DonnaSlackBot) -> None:
             conn.close()
         await ack(text=f"cancelled `{job_id[:20]}`")
 
-    @app.command("/status")
+    @app.command("/donna_status")
     async def cmd_status(ack, body, client):
         if not _is_allowed_command(body):
             await ack(text="not authorized")
@@ -623,7 +623,7 @@ def register_handlers(bot: DonnaSlackBot) -> None:
     # Slash: /model /heuristics /approve_heuristic
     # --------------------------------------------------------------
 
-    @app.command("/model")
+    @app.command("/donna_model")
     async def cmd_model(ack, body, client):
         if not _is_allowed_command(body):
             await ack(text="not authorized")
@@ -663,7 +663,7 @@ def register_handlers(bot: DonnaSlackBot) -> None:
         )
         await ack(text=msg)
 
-    @app.command("/heuristics")
+    @app.command("/donna_heuristics")
     async def cmd_heuristics(ack, body, client):
         if not _is_allowed_command(body):
             await ack(text="not authorized")
@@ -679,7 +679,7 @@ def register_handlers(bot: DonnaSlackBot) -> None:
             return
         await ack(text="\n".join(f"• {h}" for h in hs))
 
-    @app.command("/approve_heuristic")
+    @app.command("/donna_approve_heuristic")
     async def cmd_approve_h(ack, body, client):
         if not _is_allowed_command(body):
             await ack(text="not authorized")
