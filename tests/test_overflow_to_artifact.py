@@ -95,11 +95,11 @@ async def test_short_clean_text_stays_inline_no_artifact() -> None:
     bot = _bot_with_client(client)
 
     short = "a perfectly normal grounded reply"
-    ok = await bot._post_update(
+    result = await bot._post_update(
         channel="C_test", job_id=jid, thread_ts=None,
         text=short, tainted=False,
     )
-    assert ok is True
+    assert result.ok is True
     assert len(client.calls) == 1
     assert short in client.calls[0]["text"]
     assert "(1/" not in client.calls[0]["text"]
@@ -115,11 +115,11 @@ async def test_short_tainted_text_stays_inline_no_artifact() -> None:
     bot = _bot_with_client(client)
 
     short = "a brief tainted reply (eg a URL fetch summary)"
-    ok = await bot._post_update(
+    result = await bot._post_update(
         channel="C_test", job_id=jid, thread_ts=None,
         text=short, tainted=True,
     )
-    assert ok is True
+    assert result.ok is True
     assert len(client.calls) == 1
     assert "🔮" in client.calls[0]["text"]
     # Unfurls disabled for tainted
@@ -140,11 +140,11 @@ async def test_medium_clean_text_uses_multi_part_not_overflow() -> None:
     # ~7000 chars — past one Slack section, but well below clean overflow cap
     medium = ("sentence. " * 700).strip()
     assert len(medium) < _OVERFLOW_CLEAN_MAX
-    ok = await bot._post_update(
+    result = await bot._post_update(
         channel="C_test", job_id=jid, thread_ts=None,
         text=medium, tainted=False,
     )
-    assert ok is True
+    assert result.ok is True
 
     assert len(client.calls) >= 2
     assert any("(1/" in c["text"] for c in client.calls)
@@ -165,11 +165,11 @@ async def test_long_clean_text_goes_to_artifact() -> None:
     # Past the clean cap (_OVERFLOW_CLEAN_MAX ≈ 14k)
     long = "Important content. " * 1000   # ~19k chars
     assert len(long) > _OVERFLOW_CLEAN_MAX
-    ok = await bot._post_update(
+    result = await bot._post_update(
         channel="C_test", job_id=jid, thread_ts=None,
         text=long, tainted=False,
     )
-    assert ok is True
+    assert result.ok is True
     assert len(client.calls) == 1
     pointer = client.calls[0]["text"]
     assert "📎" in pointer
@@ -203,11 +203,11 @@ async def test_medium_tainted_text_overflows_because_tainted_cap_is_tighter() ->
     assert len(tainted_medium) > _OVERFLOW_TAINTED_MAX
     assert len(tainted_medium) < _OVERFLOW_CLEAN_MAX
 
-    ok = await bot._post_update(
+    result = await bot._post_update(
         channel="C_test", job_id=jid, thread_ts=None,
         text=tainted_medium, tainted=True,
     )
-    assert ok is True
+    assert result.ok is True
     assert len(client.calls) == 1
     pointer = client.calls[0]["text"]
     assert "🔮" in pointer
@@ -232,11 +232,11 @@ async def test_long_tainted_text_still_goes_to_artifact_not_multipart() -> None:
     bot = _bot_with_client(client)
 
     tainted_long = "Attacker's extended content. " * 800    # ~22k
-    ok = await bot._post_update(
+    result = await bot._post_update(
         channel="C_test", job_id=jid, thread_ts=None,
         text=tainted_long, tainted=True,
     )
-    assert ok is True
+    assert result.ok is True
     assert len(client.calls) == 1
     assert "(1/" not in client.calls[0]["text"]
     arts = _artifacts()
@@ -296,7 +296,11 @@ async def test_artifact_save_failure_falls_back_to_truncated_inline(
         channel="C_test", job_id=jid, thread_ts=None,
         text=body, tainted=False,
     )
-    assert result is False
+    # V50-1 (2026-05-01): _post_update now returns PostResult, not bool.
+    # On artifact-save failure the inline-fallback path returns
+    # PostResult(ok=False, error_class=UNKNOWN) so the drainer dead-letters
+    # the source row rather than retrying forever.
+    assert result.ok is False
     # The fallback "artifact save failed" stub is sent inline.
     assert len(client.calls) == 1
     assert "artifact save failed" in client.calls[0]["text"].lower()

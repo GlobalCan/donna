@@ -86,7 +86,7 @@ def test_format_output_renders_prose_on_validation_pass() -> None:
     assert "quoted_span" not in out
     assert '"claims"' not in out
     # Footer still present
-    assert "✅ validated" in out
+    assert "✅" in out and "validated" in out
     assert "Huck Finn" in out
 
 
@@ -108,7 +108,7 @@ def test_format_output_appends_validation_issues_on_failure() -> None:
     assert "Validation issues:" in out
     assert "bad_citation:chk_x" in out
     assert "fabricated claim" in out
-    assert "⚠️ partial validation" in out
+    assert "⚠️" in out and "partial validation" in out
 
 
 def test_format_output_falls_back_to_raw_on_unparseable() -> None:
@@ -119,7 +119,7 @@ def test_format_output_falls_back_to_raw_on_unparseable() -> None:
     out = _format_output(raw, _OK, [_chunk()])
 
     assert raw in out
-    assert "✅ validated" in out
+    assert "✅" in out and "validated" in out
 
 
 def test_format_output_falls_back_when_prose_missing() -> None:
@@ -132,7 +132,36 @@ def test_format_output_falls_back_when_prose_missing() -> None:
 
     # Raw JSON reaches the user (degraded but non-empty)
     assert '"claims"' in out
-    assert "✅ validated" in out
+    assert "✅" in out and "validated" in out
+
+
+def test_format_output_emoji_glyph_outside_italic_span() -> None:
+    """V50-7 (2026-05-01): the validator badge glyph (⚠️ / ✅) must NOT be
+    wrapped inside `_..._` italic markers — Slack mangles emoji adjacent to
+    italic markers and renders ⚠️ as literal `:warning:` text. Operator hit
+    this in v0.5.0 live smoke. The fix hoists the glyph out of the italic
+    span so it renders as an emoji glyph followed by italic-formatted label.
+    """
+    raw = json.dumps({"claims": [], "prose": "answer"})
+    out = _format_output(raw, _OK, [_chunk()])
+    # Negative assertion: glyph immediately followed by underscore
+    # (the broken layout) must NOT appear.
+    assert "_✅" not in out, (
+        f"validator badge glyph wrapped in italic span (V50-7): {out!r}"
+    )
+    # Positive assertion: glyph followed by space + underscore
+    # (the fixed layout) IS present.
+    assert "✅ _validated" in out
+
+
+def test_format_output_failure_glyph_outside_italic_span() -> None:
+    """V50-7 (2026-05-01): same regression guard for the failure-case glyph."""
+    raw = json.dumps({"claims": [], "prose": "fabricated"})
+    out = _format_output(raw, _BAD, [_chunk()])
+    assert "_⚠️" not in out, (
+        f"validator badge glyph wrapped in italic span (V50-7): {out!r}"
+    )
+    assert "⚠️ _partial validation" in out
 
 
 def test_format_output_never_empty_even_on_blank_prose() -> None:
@@ -144,4 +173,4 @@ def test_format_output_never_empty_even_on_blank_prose() -> None:
 
     # Something renders — the raw JSON in this degraded case
     assert out.strip() != ""
-    assert "✅ validated" in out
+    assert "✅" in out and "validated" in out
