@@ -46,20 +46,47 @@ import asyncio
 import contextlib
 import json
 import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
+from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
 from ..config import settings
 from ..logging import get_logger
+from ..memory import dead_letter as dl_mod
 from ..memory import jobs as jobs_mod
 from ..memory.db import connect, transaction
 from ..security import consent as consent_mod
 from ..tools import registry as tool_registry
 from . import slack_ux
+from .slack_errors import (
+    ErrorClass,
+    classify_error_code,
+    extract_error_code,
+    extract_retry_after_seconds,
+)
 
 log = get_logger(__name__)
+
+
+@dataclass(slots=True, frozen=True)
+class PostResult:
+    """Outcome of a single chat.postMessage attempt.
+
+    On success: ok=True, all other fields None.
+    On SlackApiError: ok=False with error_code + error_class set.
+    On other exceptions (network, timeout): ok=False, error_code=None,
+    error_class=UNKNOWN. retry_after_s is set only when Slack returned
+    rate_limited with a Retry-After header.
+    """
+    ok: bool
+    error_code: str | None = None
+    error_class: ErrorClass | None = None
+    retry_after_s: float | None = None
+    error_msg: str | None = None
 
 
 # DB poll cadence for outbox drains. 1s feels instant in Slack just
@@ -70,6 +97,10 @@ _UPDATE_RATE_LIMIT_S = 5.0
 # Per-channel rate limit. Slack guidance is ~1 msg/sec/channel; we use
 # a slightly more conservative 1.2s. Codex review 2026-04-30.
 _CHANNEL_RATE_LIMIT_S = 1.2
+# Operator alert throttle: when V50-1 routes a row to dead-letter, DM
+# the operator at most once per (channel, error_code) per hour. Codex
+# review 2026-05-01: don't replace API spam with DM spam.
+_OPERATOR_ALERT_THROTTLE_S = 3600.0
 
 # Slack section block text limit — 3000 chars per block. chat.postMessage
 # top-level text recommends 4000 chars. We use 3500 as the inline cap so
@@ -185,6 +216,17 @@ class DonnaSlackBot:
         self.handler = AsyncSocketModeHandler(self.app, s.slack_app_token)
         self._drain_tasks: list[asyncio.Task] = []
         self._last_sent_per_channel: dict[str, float] = {}
+        # V50-1: hard per-channel cool-down when Slack returns rate_limited
+        # with a Retry-After header. Honored before the soft per-channel
+        # pacing gate; values are absolute time.time() epochs.
+        self._rate_limited_until: dict[str, float] = {}
+        # V50-1: in-memory operator-alert throttle keyed by
+        # (channel, error_code). When a delivery hits a terminal/unknown
+        # error and we DM the operator, we record now() here; future hits
+        # within _OPERATOR_ALERT_THROTTLE_S skip the DM. Resets on
+        # restart — that's intentional (the persistent record is in
+        # outbox_dead_letter; the DM is just immediate notification).
+        self._alert_throttle: dict[tuple[str, str], float] = {}
         slack_ux.register_handlers(self)
 
     async def start(self) -> None:
@@ -225,16 +267,32 @@ class DonnaSlackBot:
     # ------------------------------------------------------------------
 
     async def _drain_updates(self) -> None:
-        """Poll outbox_updates, post oldest-first per (job, channel),
-        DELETE after post. Adds a per-channel rate limiter on top of
-        the per-job limiter — Slack expects ~1 msg/sec/channel."""
+        """Poll outbox_updates, post oldest-first per (job, channel), branch
+        on the post outcome (V50-1):
+
+          - ok       -> DELETE row (current path)
+          - transient-> bump attempt_count + last_error + last_attempt_at,
+                        leave row in place; if Retry-After present, set a
+                        per-channel hard cool-down so we don't hammer
+          - terminal -> log WARN, INSERT outbox_dead_letter, DELETE source row
+          - unknown  -> same as terminal (operator inspects dead-letter to
+                        decide if the code should join TRANSIENT_ERRORS)
+
+        Two rate-limit gates exist:
+          1. Hard per-channel cool-down `self._rate_limited_until` honored
+             after a real `rate_limited` response with Retry-After.
+          2. Soft per-channel pacing `self._last_sent_per_channel` (~1.2s),
+             always applied to keep us under Slack's per-channel guideline.
+        """
         last_sent_per_job: dict[str, float] = {}
         while True:
             await asyncio.sleep(_DRAIN_POLL_S)
             conn = connect()
             try:
                 rows = conn.execute(
-                    "SELECT id, job_id, text, tainted FROM outbox_updates "
+                    "SELECT id, job_id, text, tainted, "
+                    "attempt_count, created_at "
+                    "FROM outbox_updates "
                     "ORDER BY created_at LIMIT 50"
                 ).fetchall()
             finally:
@@ -250,27 +308,223 @@ class DonnaSlackBot:
                     # Can't resolve — leave the row; could be a transient
                     # job-not-yet-claimed condition.
                     continue
+                # Hard rate-limit cool-down (Slack Retry-After). Overrides
+                # soft pacing.
+                if now < self._rate_limited_until.get(ch, 0.0):
+                    continue
+                # Soft pacing.
                 if (now - self._last_sent_per_channel.get(ch, 0.0)) < _CHANNEL_RATE_LIMIT_S:
                     continue
-                posted = await self._post_update(
+                thread_ts = await self._resolve_thread_ts_for_job(job_id)
+                result = await self._post_update(
                     channel=ch,
                     job_id=job_id,
-                    thread_ts=await self._resolve_thread_ts_for_job(job_id),
+                    thread_ts=thread_ts,
                     text=row["text"],
                     tainted=bool(row["tainted"]),
                 )
-                if posted:
-                    last_sent_per_job[job_id] = time.time()
-                    self._last_sent_per_channel[ch] = time.time()
-                    conn = connect()
-                    try:
-                        with transaction(conn):
-                            conn.execute(
-                                "DELETE FROM outbox_updates WHERE id = ?",
-                                (row["id"],),
-                            )
-                    finally:
-                        conn.close()
+                self._handle_update_result(
+                    row=row, channel=ch, thread_ts=thread_ts,
+                    result=result, last_sent_per_job=last_sent_per_job,
+                )
+
+    def _handle_update_result(
+        self,
+        *,
+        row,
+        channel: str,
+        thread_ts: str | None,
+        result: PostResult,
+        last_sent_per_job: dict[str, float],
+    ) -> None:
+        """Apply the V50-1 routing rules to a single drain attempt.
+
+        Mutates `last_sent_per_job` and `self._last_sent_per_channel` /
+        `self._rate_limited_until` in place. Performs DB writes per the
+        result.error_class branch.
+        """
+        row_id = row["id"]
+        job_id = row["job_id"]
+        attempt_count = (row["attempt_count"] or 0) + 1
+        now_epoch = time.time()
+
+        if result.ok:
+            last_sent_per_job[job_id] = now_epoch
+            self._last_sent_per_channel[channel] = now_epoch
+            conn = connect()
+            try:
+                with transaction(conn):
+                    conn.execute(
+                        "DELETE FROM outbox_updates WHERE id = ?", (row_id,),
+                    )
+            finally:
+                conn.close()
+            return
+
+        cls = result.error_class or ErrorClass.UNKNOWN
+        error_code = result.error_code or "unknown"
+        # Structured observability: error_code + retry class + attempt
+        # count + channel + row age make stuck rows obvious.
+        row_age_s: float | None = None
+        try:
+            created_at = row["created_at"]
+            if created_at is not None:
+                ca = (
+                    datetime.fromisoformat(created_at)
+                    if isinstance(created_at, str)
+                    else created_at
+                )
+                if ca.tzinfo is None:
+                    ca = ca.replace(tzinfo=UTC)
+                row_age_s = (datetime.now(UTC) - ca).total_seconds()
+        except (TypeError, ValueError):
+            row_age_s = None
+
+        if cls is ErrorClass.TRANSIENT:
+            # Keep the row alive; update visibility columns. If Slack gave a
+            # hard Retry-After, set the per-channel cool-down too.
+            log.info(
+                "slack.update_transient",
+                error_code=error_code,
+                error_class=cls.value,
+                attempt_count=attempt_count,
+                channel=channel,
+                job_id=job_id,
+                row_age_s=row_age_s,
+                retry_after_s=result.retry_after_s,
+            )
+            if result.retry_after_s is not None and result.retry_after_s > 0:
+                # Cap to 5 minutes — anything bigger means the bot is
+                # severely throttled; better to recover via the supervisor
+                # restart than wait silently.
+                wait_s = min(result.retry_after_s, 300.0)
+                self._rate_limited_until[channel] = now_epoch + wait_s
+            conn = connect()
+            try:
+                with transaction(conn):
+                    conn.execute(
+                        "UPDATE outbox_updates "
+                        "SET attempt_count = ?, last_error = ?, "
+                        "last_attempt_at = CURRENT_TIMESTAMP "
+                        "WHERE id = ?",
+                        (attempt_count, error_code, row_id),
+                    )
+            finally:
+                conn.close()
+            return
+
+        # TERMINAL or UNKNOWN: dead-letter + delete the source row.
+        log.warning(
+            "slack.update_dead_letter",
+            error_code=error_code,
+            error_class=cls.value,
+            attempt_count=attempt_count,
+            channel=channel,
+            job_id=job_id,
+            row_age_s=row_age_s,
+            error_msg=result.error_msg,
+        )
+        # Throttled operator DM. Fire-and-forget if a loop is running
+        # (production); silently skipped in tests where we drive
+        # _handle_update_result synchronously.
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._maybe_alert_operator(
+                channel=channel,
+                error_code=error_code,
+                error_class=cls.value,
+                job_id=job_id,
+                attempt_count=attempt_count,
+            ))
+        except RuntimeError:
+            pass
+        # Resolve the schedule-or-thread first attempt time; we use
+        # outbox_updates.created_at as a good-enough proxy.
+        first_attempt_at: datetime | None = None
+        try:
+            ca = row["created_at"]
+            if ca is not None:
+                first_attempt_at = (
+                    datetime.fromisoformat(ca)
+                    if isinstance(ca, str)
+                    else ca
+                )
+                if first_attempt_at.tzinfo is None:
+                    first_attempt_at = first_attempt_at.replace(tzinfo=UTC)
+        except (TypeError, ValueError):
+            first_attempt_at = None
+        conn = connect()
+        try:
+            with transaction(conn):
+                dl_mod.record_dead_letter(
+                    conn,
+                    source_table="outbox_updates",
+                    source_id=row_id,
+                    job_id=job_id,
+                    channel_id=channel,
+                    thread_ts=thread_ts,
+                    payload=row["text"],
+                    tainted=bool(row["tainted"]),
+                    error_code=error_code,
+                    error_class=cls.value,
+                    attempt_count=attempt_count,
+                    first_attempt_at=first_attempt_at,
+                )
+                conn.execute(
+                    "DELETE FROM outbox_updates WHERE id = ?", (row_id,),
+                )
+        finally:
+            conn.close()
+
+    async def _maybe_alert_operator(
+        self,
+        *,
+        channel: str,
+        error_code: str,
+        error_class: str,
+        job_id: str,
+        attempt_count: int,
+    ) -> None:
+        """Throttled DM to the allowed operator about a terminal/unknown
+        delivery failure. Throttle key is (channel, error_code) so 100
+        jobs targeting one broken channel produce one alert, not 100.
+
+        If the alert send itself fails (operator's own DM channel broken
+        somehow), we log and bail — never loop.
+        """
+        key = (channel, error_code)
+        now = time.time()
+        if (now - self._alert_throttle.get(key, 0.0)) < _OPERATOR_ALERT_THROTTLE_S:
+            return
+        operator_id = settings().slack_allowed_user_id
+        text = (
+            f"⚠️ *Donna delivery failure* — `{error_class}`\n"
+            f"• Error: `{error_code}`\n"
+            f"• Channel: `{channel}`\n"
+            f"• Job: `{job_id}`\n"
+            f"• Attempts: {attempt_count}\n"
+            f"\n"
+            f"_Row moved to_ `outbox_dead_letter`. "
+            f"Throttled: max one alert per "
+            f"(channel, error_code) per "
+            f"{int(_OPERATOR_ALERT_THROTTLE_S/60)}min."
+        )
+        try:
+            await self.client.chat_postMessage(
+                channel=operator_id,
+                text=text,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+            # Record AFTER successful send; if the send fails we'll retry
+            # the next time the same key fires (still throttled by the
+            # next attempt's failure cadence, not by this map).
+            self._alert_throttle[key] = now
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "slack.operator_alert_failed",
+                error=str(e), channel=channel, error_code=error_code,
+            )
 
     async def _post_update(
         self,
@@ -280,10 +534,13 @@ class DonnaSlackBot:
         thread_ts: str | None,
         text: str,
         tainted: bool,
-    ) -> bool:
+    ) -> PostResult:
         """Post a progress update or final answer. Long content goes via
         overflow-to-artifact (preserving v0.4.x security pattern); short
         content goes inline as Block Kit sections.
+
+        Returns PostResult with classification details on failure so the
+        drainer can route transient/terminal/unknown distinctly (V50-1).
         """
         cap = _OVERFLOW_TAINTED_MAX if tainted else _OVERFLOW_CLEAN_MAX
         if len(text) > cap:
@@ -310,10 +567,33 @@ class DonnaSlackBot:
                 )
                 if len(parts) > 1 and i < len(parts):
                     await asyncio.sleep(0.4)  # respect per-channel rate
-            return True
+            return PostResult(ok=True)
+        except SlackApiError as e:
+            code = extract_error_code(e)
+            cls = classify_error_code(code)
+            retry_after = (
+                extract_retry_after_seconds(e)
+                if cls is ErrorClass.TRANSIENT
+                else None
+            )
+            return PostResult(
+                ok=False,
+                error_code=code,
+                error_class=cls,
+                retry_after_s=retry_after,
+                error_msg=str(e)[:300],
+            )
         except Exception as e:  # noqa: BLE001
-            log.warning("slack.update_failed", error=str(e), job_id=job_id)
-            return False
+            # Network errors, asyncio timeouts, etc. — treat as unknown so
+            # the row gets dead-lettered after one attempt rather than
+            # spinning. asyncio.CancelledError is BaseException-derived in
+            # 3.8+ and propagates.
+            return PostResult(
+                ok=False,
+                error_code=None,
+                error_class=ErrorClass.UNKNOWN,
+                error_msg=str(e)[:300],
+            )
 
     async def _post_overflow_pointer(
         self,
@@ -323,7 +603,7 @@ class DonnaSlackBot:
         job_id: str,
         text: str,
         tainted: bool,
-    ) -> bool:
+    ) -> PostResult:
         """Save full text to an artifact, post short preview + pointer."""
         from ..memory import artifacts as artifacts_mod
 
@@ -354,7 +634,12 @@ class DonnaSlackBot:
                     unfurl_links=False,
                     unfurl_media=False,
                 )
-            return False
+            return PostResult(
+                ok=False,
+                error_code=None,
+                error_class=ErrorClass.UNKNOWN,
+                error_msg=f"artifact_save_failed: {e}"[:300],
+            )
 
         preview_raw = text[:_OVERFLOW_PREVIEW_LEN]
         for term in ("\n\n", ". ", "! ", "? ", "\n"):
@@ -390,13 +675,29 @@ class DonnaSlackBot:
                 unfurl_links=False,
                 unfurl_media=False,
             )
-            return True
-        except Exception as e:  # noqa: BLE001
-            log.warning(
-                "slack.overflow_pointer_failed",
-                error=str(e), job_id=job_id, artifact_id=artifact_id,
+            return PostResult(ok=True)
+        except SlackApiError as e:
+            code = extract_error_code(e)
+            cls = classify_error_code(code)
+            retry_after = (
+                extract_retry_after_seconds(e)
+                if cls is ErrorClass.TRANSIENT
+                else None
             )
-            return False
+            return PostResult(
+                ok=False,
+                error_code=code,
+                error_class=cls,
+                retry_after_s=retry_after,
+                error_msg=str(e)[:300],
+            )
+        except Exception as e:  # noqa: BLE001
+            return PostResult(
+                ok=False,
+                error_code=None,
+                error_class=ErrorClass.UNKNOWN,
+                error_msg=str(e)[:300],
+            )
 
     # ------------------------------------------------------------------
     # Outbox: questions (ask_user)

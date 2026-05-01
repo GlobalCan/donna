@@ -64,12 +64,13 @@ def test_splits_large_grounded_answer_shape() -> None:
     """Shape close to live grounded output: prose + citations + footer."""
     claim = "Huck says he can't stand civilization [#chk_1]. "
     body = claim * 80  # ~4000 chars
-    footer = "\n\n_✅ validated · sources: Huck Finn_"
+    # V50-7: glyph is OUTSIDE the italic span so Slack renders it cleanly.
+    footer = "\n\n✅ _validated · sources: Huck Finn_"
     text = body + footer
     parts = _split_for_slack(text)
     assert len(parts) >= 2
     assert all(len(p) <= _SLACK_SECTION_LIMIT for p in parts)
-    assert "✅ validated" in parts[-1]
+    assert "✅" in parts[-1] and "validated" in parts[-1]
 
 
 def test_splits_debate_transcript_shape() -> None:

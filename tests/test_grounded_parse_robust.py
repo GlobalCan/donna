@@ -230,4 +230,4 @@ def test_format_output_renders_prose_from_fenced_json() -> None:
     assert "```json" not in out
     assert '"claims"' not in out
     assert '"quoted_span"' not in out
-    assert "✅ validated" in out
+    assert "✅" in out and "validated" in out

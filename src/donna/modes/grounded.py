@@ -158,7 +158,13 @@ def _format_output(raw: str, validation, chunks) -> str:
     failure, appends the claim-by-claim issue breakdown so the operator can
     audit what the model did wrong.
     """
-    badge = "✅ validated" if validation.ok else "⚠️ partial validation"
+    # V50-7 (2026-05-01): emoji glyphs hoisted OUT of the italic span. When
+    # ⚠️ was inside `_..._` Slack's renderer mangled it to literal
+    # `:warning:` text adjacent to italic markers (operator-reported in
+    # v0.5.0 live smoke). Putting the glyph before the italic span keeps
+    # the badge readable in Slack while still rendering in botctl/CLI.
+    badge_glyph = "✅" if validation.ok else "⚠️"
+    badge_label = "validated" if validation.ok else "partial validation"
     sources = sorted({c.source_title or c.source_id for c in chunks})
 
     out = _extract_prose(raw) or raw
@@ -167,7 +173,10 @@ def _format_output(raw: str, validation, chunks) -> str:
             f"- {i.reason}: {i.claim[:120]}" for i in validation.issues[:10]
         )
         out += f"\n\n_Validation issues:_\n{issues}"
-    out += f"\n\n_{badge} · sources: {', '.join(sources[:10])}_"
+    out += (
+        f"\n\n{badge_glyph} _{badge_label} · "
+        f"sources: {', '.join(sources[:10])}_"
+    )
     return out
 
 
