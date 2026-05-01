@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.5.0] — 2026-05-01 — Slack adapter retool (live-validated)
+
+Promoted from rc1 → final after 4/4 critical paths validated live in
+operator's personal Slack workspace:
+
+| Test | Status |
+|---|---|
+| DM intake + reply | ✅ |
+| `/donna_ask` grounded mode (citations + validator footer + multi-part split) | ✅ |
+| `/donna_schedule` modal → form → scheduled DM delivery | ✅ |
+| Block Kit consent buttons (✅ Approve / ❌ Decline + `chat.update` edit + tool execution) | ✅ |
+
+### Issues surfaced during live deploy
+
+Tracked in `docs/KNOWN_ISSUES.md` "v0.5.0 follow-ups" table (V50-1 to V50-9):
+
+- **V50-1 (HIGH):** outbox drainer retries `not_in_channel` errors
+  every ~1.5s forever. Should detect non-retryable Slack errors and
+  dead-letter. v0.5.1 priority.
+- **V50-4:** Slack rejects bare slash command names (`/ask`,
+  `/status`, etc.) as "invalid name" even when no other app uses
+  them. Forced `/donna_*` prefix on all 12 commands. Acceptable
+  trade-off for solo-bot.
+- **V50-5:** Slack "Reinstall to Workspace" doesn't always rotate
+  the bot token. Real rotation requires "Revoke All OAuth Tokens"
+  → reinstall. Documented in WAKE_UP doc.
+- Channel-target scheduling and `@donna` mentions shipped but live-
+  untested (require channel invite via Integrations → Add apps).
+
+### Operator workflow notes
+
+- Tokens were leaked once during smoke (pasted into chat). Rotated
+  successfully via the explicit-revoke path.
+- Droplet's GitHub deploy key is read-only by design — secrets
+  commit on droplet is local-only. Runtime is fine (bind mount).
+  Pushing requires recreating the deploy key with write access.
+
 ## [0.5.0-rc1] — 2026-05-01 — Slack adapter retool
 
 Major platform migration: v0.4.x's Discord adapter is retired in favor

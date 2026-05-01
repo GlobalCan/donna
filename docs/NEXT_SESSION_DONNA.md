@@ -2,7 +2,7 @@
 
 > **Purpose:** paste this file's contents as the opening message of a brand-new
 > Claude Code session (cloud or local) to pick up Donna development cleanly
-> after the v0.4.0 release sign-off. No conversation history needed;
+> after the v0.5.0 release sign-off. No conversation history needed;
 > everything the new session requires is in this file + the repo docs.
 
 ---
@@ -10,54 +10,69 @@
 ## Who you are, what you're doing
 
 You're a Claude Code session working on `GlobalCan/donna` — a personal,
-always-on AI assistant bot running on a DigitalOcean droplet, Discord-facing,
-powered by Anthropic's Claude. The user is a solo operator who has been
-building this project across ~3 days in multiple session-stacks.
+always-on AI assistant bot running on a DigitalOcean droplet,
+**Slack-facing** (post-v0.5.0 retool from Discord), powered by Anthropic's
+Claude. The user is a solo operator who has been building this project
+across ~4 days in multiple session-stacks.
 
-**Crucially:** Donna just hit v0.4.0 release sign-off. Every mode (chat,
-grounded, speculative, debate) is live-validated end-to-end in production.
-293 tests green. You are NOT in a debugging loop — you're choosing what to
-build next.
+**Crucially:** Donna just hit v0.5.0 release sign-off. The Slack
+adapter is live in operator's personal Slack workspace; 4/4 critical
+paths validated end-to-end. 373 tests green. You are NOT in a debugging
+loop — you're choosing what to build next.
 
-## State snapshot (as of 2026-04-30 end-of-session)
+Pre-v0.5.0 history (Discord-shaped) preserved at git tag
+`legacy/v0.4.4-discord` for emergency revival.
 
-- **Branch:** `main`. Open PR `claude/v042-deploy-prep` (docs sync only)
-  pending merge — squash + tag v0.4.2 right after.
-- **Version:** `v0.4.2` (Bundle 1 — "feels like she works" production
-  fixes) — supersedes v0.4.1 (cross-vendor review action queue items
-  #1, #2, #7, #9, #11, #12, #13, #15) and v0.4.0 (unified mode delivery).
-- **Tests:** **359 passing**, Python 3.14 local / 3.12 CI, ruff clean.
-  Migrations head: `0005_outbox_tables`. No new schema since v0.4.0.
-- **Production droplet:** `159.203.34.165`, containers up, Huck Finn
-  corpus (402 chunks) loaded.
-- **Operator's pending action:** smoke-test the scheduler live per
-  `docs/SCHEDULER_SMOKE_TEST.md` after deploying v0.4.2. Then decide
-  what's next (see "What's queued" below).
-- **What shipped in v0.4.2 (Bundle 1, 2026-04-30):**
-  - Mobile-friendly Discord rendering (1400-char chunks +
-    `_normalize_for_mobile` collapse runs of blank lines, strip
-    trailing whitespace, tabs → 2 spaces; inline path only)
-  - Session memory in chat mode (`messages` table now written on
-    `JobContext.finalize` + read into `compose_system` via new
-    `session_history` kwarg; tainted jobs stripped to preserve trust
-    boundary)
-  - Scheduler discoverability (`/schedule` shows next-fire-time +
-    task preview; `/schedules` shows count + last-fired-at; new
-    `docs/SCHEDULER_SMOKE_TEST.md` runbook)
-  - `send_update` policy spec drift resolved (PLAN.md updated to
-    match the audit-flag-only design that the code already had)
-- **What shipped in v0.4.1 (cross-vendor review fixes, 2026-04-30):**
-  PR #37 (internal retrieval taint), #38 (eval ratchet), #39 (work_id
-  propagation), #40 (stale-worker FAILED-write owner guard +
-  attachment temp-file race), #41 (audit denied tool calls),
-  #42 (sanitizer cost attribution), #43 (CI ruff cleanup),
-  #44 (release notes consolidation).
+## State snapshot (as of 2026-05-01 end-of-session)
+
+- **Branch:** `main`. No open PRs.
+- **Version:** `v0.5.0` (Slack adapter retool, live-validated)
+  — supersedes v0.4.4 (tainted session memory: tag-and-render not skip),
+  v0.4.3 (scheduler delivery fix + plain-DM memory dedup +
+  entrypoint auto-migrate), and earlier.
+- **Tests:** **373 passing**, Python 3.14, ruff clean.
+  Migrations head: `0008_slack_schema_cleanup`.
+- **Production droplet:** `159.203.34.165`, containers up,
+  `ghcr.io/globalcan/donna:latest` running v0.5.0 Slack adapter.
+  Huck Finn corpus (402 chunks) loaded under scope `author_twain`.
+- **Operator's pending action:** none blocking. Optional cleanup:
+  push the local secrets commit (requires recreating the read-only
+  deploy key with write access — V50-9 in KNOWN_ISSUES).
+
+### Live-validated paths (4/4 green, 2026-05-01)
+
+1. **DM intake + reply** — plain text DM "hello" → job queued + chat reply
+2. **`/donna_ask` grounded mode** — `/donna_ask author_twain: walk through Huck's moral arc` returned a long Twain-voiced reply with `[#chunk_xxx]` citation markers and the validator footer
+3. **`/donna_schedule` modal** — `/donna_schedule` → modal form → submit → scheduled job → `• SCHED_OK` arrived in DM ~90s later
+4. **Block Kit consent buttons** — `run python: print(2+2)` triggered ✅/❌ buttons → click ✅ → `chat.update` removed buttons → `4` returned
+
+### What shipped in v0.5.0 (2026-05-01, this session)
+
+- **Migration 0008** — schema rename `discord_*` → platform-agnostic,
+  posted_*_id INTEGER→TEXT, add `target_channel_id` + `target_thread_ts`
+- **adapter/slack_adapter.py + adapter/slack_ux.py** — full rewrite
+  using `slack_bolt` Socket Mode, Block Kit rendering, button-based
+  consent, modal-based `/schedule`, per-channel rate limit
+- **Settings** — `DISCORD_*` removed; `SLACK_BOT_TOKEN`,
+  `SLACK_APP_TOKEN`, `SLACK_TEAM_ID`, `SLACK_ALLOWED_USER_ID` added
+- **Slash commands prefixed `/donna_*`** to avoid Slack's bare-name
+  reservation (`/ask`, `/status`, etc. were rejected as "invalid name")
+- **Codex (gpt-5.5-pro) review** — 9 of 10 corrections applied;
+  dual-field memory deferred to v0.5.1
+
+### What shipped in v0.4.3 + v0.4.4 (2026-04-30)
+
+PR #47 (scheduler thread_id fix — closed v0.2.0+ delivery bug),
+#48 (plain-DM memory dedup + entrypoint auto-migrate + docs),
+#49 (tainted session memory tag-and-render). Three latent shipping
+bugs surfaced by the first live scheduler smoke test.
 
 ## Read in this order, before writing any code
 
-1. `README.md` — current status section tells you what shipped (v0.4.2)
-2. `CHANGELOG.md` `[0.4.2]` and `[0.4.1]` sections — what just shipped
-3. `docs/SESSION_RESUME.md` — full context snapshot
+1. `README.md` — current status section tells you what shipped (v0.5.0)
+2. `CHANGELOG.md` `[0.5.0]` section — what just shipped (Slack retool)
+3. `docs/POST_COMPACTION_2026_05_01.md` — fresh-session bootstrap
+4. `docs/SESSION_RESUME.md` — full context snapshot
 4. `docs/REVIEW_SYNTHESIS_v0.4.0.md` — three-reviewer synthesis + the
    19-item action queue with shipped vs deferred status. **The right
    place to start when picking what's next.**

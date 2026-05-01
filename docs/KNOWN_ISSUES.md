@@ -454,6 +454,25 @@ that had been present since v0.2.0 and v0.4.2 respectively:
 fixed image; `• SCHED_OK` arrived in DM after the schedule was created
 via `/schedule * * * * *`. 366 tests pass, ruff clean.
 
+### v0.5.0 follow-ups — Slack adapter retool (2026-05-01)
+
+The platform migration from Discord to Slack shipped clean (4/4 critical
+smoke tests green) but surfaced or left several issues for v0.5.1:
+
+| # | Symptom / gap | Status | Notes |
+|---|---|---|---|
+| V50-1 | **`not_in_channel` infinite retry storm.** When the bot tries to deliver an outbox row to a channel it isn't a member of, `_post_update` returns False, the row stays, and the drainer retries every ~1.5s **forever**. Hit during smoke when a stale outbox row from a pre-rename `/ask` test couldn't deliver to its originating channel. Operator had to manually `DELETE FROM outbox_updates` to stop the spam. | Open | Should detect non-retryable Slack errors (`not_in_channel`, `channel_not_found`, `is_archived`, `account_inactive`) and either drop the row or move to a dead-letter table. v0.5.1. |
+| V50-2 | **Channel-target scheduling untested live.** Feature shipped (`schedules.target_channel_id` + modal channel selector) but only DM-target validated in the v0.5.0 smoke. | Open | Requires inviting Donna to a channel via Integrations → Add apps. Will validate when next adding a real `#morning-brief`-style channel. |
+| V50-3 | **`@donna` channel mentions untested live.** Same root cause (channel invite gate). The `app_mention` event handler is shipped but unexercised in prod. | Open | Validate alongside V50-2. |
+| V50-4 | **Slack reserves bare slash command names.** Workspace rejected `/ask`, `/status`, `/history`, etc. as "invalid name" even with no other apps installed. Forced `/donna_*` prefix on all 12 commands. | Worked-around | Slightly more typing for the operator. Acceptable trade-off for solo-bot. |
+| V50-5 | **Slack "Reinstall to Workspace" doesn't always rotate the bot token.** Operator hit this when trying to rotate after accidentally pasting tokens in chat. Real rotation requires "Revoke All OAuth Tokens" → reinstall. | Documented | Caught in WAKE_UP doc; operator successfully rotated via the explicit-revoke path. |
+| V50-6 | **Slack DM autocomplete only shows partial slash command list.** Operator's DM with Donna autocompletes `/donna_ask` only; channel autocomplete shows all 12. All commands work in DM regardless — Slack's UI just truncates the suggestions panel. Cosmetic. | Wontfix-by-Donna | Slack-side UX choice. |
+| V50-7 | **Validator footer renders `:warning:` as text in Slack.** The `⚠️ partial validation` badge sometimes shows as `:warning: partial validation` due to Slack's emoji shortcode handling adjacent to formatting. | Open | Cosmetic. Either substitute Unicode emoji directly or use Block Kit emoji elements explicitly. v0.5.1 polish. |
+| V50-8 | **Dual-field memory deferred.** Codex's recommended next iteration: persist `raw_content` (audit) + `safe_summary` (prompt-side rendering) for tainted assistant rows, instead of storing the raw and rendering with a wrapper as v0.4.4 does. | Deferred | v0.5.1 product work. |
+| V50-9 | **`secrets/prod.enc.yaml` updated on droplet but not pushed to GitHub.** Droplet's deploy key is read-only by design; sops edit committed locally but `git push` fails. | Documented | Operator can flip deploy key writable, push, flip back. Not blocking — runtime reads from local file via bind mount. |
+
+**Validation:** v0.5.0 smoke 4/4 green in operator's personal Slack workspace. DM intake, `/donna_ask` grounded with citations, `/donna_schedule` modal + delivery, Block Kit consent buttons all work. 373 tests pass, ruff clean.
+
 ### Market-research factual corrections
 
 Two items in the original brief that drove the market research pass

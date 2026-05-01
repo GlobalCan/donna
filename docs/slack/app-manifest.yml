@@ -62,54 +62,58 @@ features:
     always_online: true
 
   slash_commands:
-    # Phase 0 smoke test command — exercises slash routing + modal opening.
-    # Removed before v0.5.0 ship in favor of /ask, /schedule, etc.
-    - command: /donna_smoke
-      description: Run Donna's Phase 0 smoke test (dev only)
-      usage_hint: "(no args)"
+    # All commands are prefixed `/donna_*`. Operator's workspace
+    # rejected the bare names (`/ask`, `/status`, etc.) as "invalid
+    # name" during install — Slack reserves these even when no other
+    # app visibly registers them. Prefix sidesteps the conflict and
+    # disambiguates when other workspace apps share names. v0.5.0
+    # 2026-05-01 (KNOWN_ISSUES V50-4).
+    - command: /donna_ask
+      description: Scoped grounded question
       should_escape: false
 
-    # Real Donna commands — port from Discord (v0.4.4 surface).
-    # Slack sends everything after the command as one raw `text` field,
-    # so any structured input is collected via modals (see schedule_cmd).
-    - command: /ask
-      description: Ask a scoped agent a grounded question
-      usage_hint: "scope: question..."
+    - command: /donna_speculate
+      description: Speculate in scope's voice
       should_escape: false
 
-    - command: /schedule
-      description: Add a cron schedule (UTC) — opens a structured input form
-      usage_hint: "(no args; submit form)"
+    - command: /donna_debate
+      description: Debate two scopes
       should_escape: false
 
-    - command: /schedules
-      description: List active schedules
-      usage_hint: "(no args)"
+    - command: /donna_schedule
+      description: Add a cron schedule (modal)
       should_escape: false
 
-    - command: /history
+    - command: /donna_schedules
+      description: List schedules
+      should_escape: false
+
+    - command: /donna_history
       description: Recent jobs
-      usage_hint: "(optional: limit)"
       should_escape: false
 
-    - command: /budget
+    - command: /donna_budget
       description: Today's spend
-      usage_hint: "(no args)"
       should_escape: false
 
-    - command: /cancel
-      description: Cancel a running job
-      usage_hint: "job-id"
+    - command: /donna_cancel
+      description: Cancel a job
       should_escape: false
 
-    - command: /status
-      description: Check a job's status
-      usage_hint: "job-id"
+    - command: /donna_status
+      description: Job status
       should_escape: false
 
-    - command: /model
-      description: Set the model tier for this conversation
-      usage_hint: "fast | strong | heavy | clear"
+    - command: /donna_model
+      description: Set model tier
+      should_escape: false
+
+    - command: /donna_heuristics
+      description: List heuristics
+      should_escape: false
+
+    - command: /donna_approve_heuristic
+      description: Approve heuristic
       should_escape: false
 
 oauth_config:

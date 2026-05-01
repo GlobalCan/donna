@@ -25,13 +25,18 @@ Before anything else, read these files. Everything below assumes you have.
 
 ## 1 · Where we are
 
-**Donna v0.5.0-rc1 — Slack adapter retool (2026-05-01).** Discord
-adapter retired in favor of Slack via Socket Mode. Pre-v0.5.0 history
-preserved at git tag `legacy/v0.4.4-discord`. Operator's personal Slack
-workspace; all five modes (chat / grounded / speculative / debate /
-refusal) validated against the new adapter via Phase 0 smoke test
-(scripts/slack_smoke.py — see docs/slack/PHASE_0_RUNBOOK.md). 373 tests
-green; live smoke against real Slack pending operator wake-up.
+**Donna v0.5.0 — Slack adapter retool LIVE-VALIDATED (2026-05-01).**
+Discord adapter retired in favor of Slack via Socket Mode. Pre-v0.5.0
+history preserved at git tag `legacy/v0.4.4-discord`. Bot live in
+operator's personal Slack workspace; 4/4 critical paths validated
+end-to-end:
+
+- ✅ DM intake + reply
+- ✅ `/donna_ask` grounded mode (citations + validator footer + multi-part split)
+- ✅ `/donna_schedule` modal → form values → scheduled DM delivery
+- ✅ Block Kit consent buttons (✅/❌ → `chat.update` edit + tool execution)
+
+373 tests green; ruff clean.
 
 Slack-specific UX wins shipping with v0.5.0:
 - Block Kit message rendering (richer than Discord embeds)
