@@ -11,7 +11,9 @@ import contextlib
 import signal
 import sys
 
+from .agent.context import handle_safe_summary_backfill
 from .config import settings
+from .jobs.async_runner import AsyncTaskRunner
 from .jobs.runner import Worker
 from .jobs.scheduler import Scheduler
 from .logging import configure_logging, get_logger
@@ -32,6 +34,18 @@ async def _run() -> None:
 
     worker = Worker()
     scheduler = Scheduler()
+    # v0.6 #2: supervised async runner. Worker handles background tasks
+    # spawned by job finalize hooks (currently safe_summary backfill;
+    # future: morning brief composition, web monitor diff, etc.). Each
+    # row in `async_tasks` is durably persisted, leased, and retried —
+    # replacing v0.5.2's fire-and-forget asyncio.create_task pattern.
+    async_runner = AsyncTaskRunner(
+        worker_id="worker-async",
+        kinds=["safe_summary_backfill"],
+        handlers={
+            "safe_summary_backfill": handle_safe_summary_backfill,
+        },
+    )
 
     async def _graceful_shutdown() -> None:
         await worker.stop()
@@ -43,7 +57,7 @@ async def _run() -> None:
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, lambda: asyncio.create_task(_graceful_shutdown()))
 
-    await asyncio.gather(worker.run(), scheduler.run())
+    await asyncio.gather(worker.run(), scheduler.run(), async_runner.run())
 
 
 def main() -> None:

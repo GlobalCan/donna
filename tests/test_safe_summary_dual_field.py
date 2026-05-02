@@ -9,8 +9,6 @@ Validates the architectural split:
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
-
 import pytest
 
 from donna.agent.compose import compose_system
@@ -232,87 +230,20 @@ def test_compose_clean_rows_unaffected() -> None:
     assert "<untrusted_session_history>" not in out
 
 
-# ---------- _backfill_safe_summary async helper -------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("fresh_db")
-async def test_backfill_calls_sanitize_and_updates_row() -> None:
-    """End-to-end: the helper calls sanitize_untrusted and persists the
-    summary. This is the post-finalize hook's contract."""
-    from donna.agent.context import _backfill_safe_summary
-
-    tid = _make_thread()
-    mid = _insert(
-        thread_id=tid, role="assistant",
-        content="raw with attacker bytes <tool_use>...</tool_use>",
-        tainted=True,
-    )
-
-    fake_sanitize = AsyncMock(return_value="The weather was nice.")
-    with patch(
-        "donna.agent.context.sanitize_untrusted", new=fake_sanitize,
-    ) if False else patch(
-        "donna.security.sanitize.sanitize_untrusted", new=fake_sanitize,
-    ):
-        await _backfill_safe_summary(
-            message_id=mid,
-            content="raw with attacker bytes <tool_use>...</tool_use>",
-            job_id="job_x",
-        )
-
-    fake_sanitize.assert_awaited_once()
-    row = _read_row(mid)
-    assert row["safe_summary"] == "The weather was nice."
-    # Raw audit untouched
-    assert "<tool_use>" in row["content"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("fresh_db")
-async def test_backfill_leaves_null_on_sanitize_failure() -> None:
-    """V50-8: sanitize_untrusted raising shouldn't crash the worker or
-    persist garbage. safe_summary stays NULL; compose_system falls back
-    to the wrapper. Graceful degradation."""
-    from donna.agent.context import _backfill_safe_summary
-
-    tid = _make_thread()
-    mid = _insert(
-        thread_id=tid, role="assistant", content="raw", tainted=True,
-    )
-
-    fake_sanitize = AsyncMock(side_effect=RuntimeError("haiku 500"))
-    with patch(
-        "donna.security.sanitize.sanitize_untrusted", new=fake_sanitize,
-    ):
-        # Should NOT raise — caller (asyncio.create_task fire-and-forget)
-        # has no exception handler.
-        await _backfill_safe_summary(
-            message_id=mid, content="raw", job_id="job_x",
-        )
-
-    row = _read_row(mid)
-    assert row["safe_summary"] is None
-    assert row["content"] == "raw"
-
-
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("fresh_db")
-async def test_backfill_leaves_null_on_empty_summary() -> None:
-    """Sanitize returning empty/whitespace shouldn't write '' or trip
-    the wrapper-fallback logic in compose_system. NULL stays NULL."""
-    from donna.agent.context import _backfill_safe_summary
-
-    tid = _make_thread()
-    mid = _insert(thread_id=tid, role="assistant", content="raw", tainted=True)
-    fake_sanitize = AsyncMock(return_value="   ")
-    with patch(
-        "donna.security.sanitize.sanitize_untrusted", new=fake_sanitize,
-    ):
-        await _backfill_safe_summary(
-            message_id=mid, content="raw", job_id="job_x",
-        )
-    assert _read_row(mid)["safe_summary"] is None
+# ---------- handler tests moved to test_async_tasks.py -----------------
+#
+# v0.6 #2 (2026-05-02) replaced the fire-and-forget `_backfill_safe_summary`
+# with a queue-backed `handle_safe_summary_backfill` runner handler. The
+# three previously-here tests (success / sanitize-failure-graceful /
+# empty-summary) are superseded by the new contract:
+#
+#   - test_handle_safe_summary_backfill_persists_on_success
+#   - test_handle_safe_summary_backfill_raises_on_sanitize_error
+#     (handler now PROPAGATES errors so the AsyncTaskRunner can apply
+#      retry/dead-letter policy; v0.5.2 silenced them)
+#   - test_handle_safe_summary_backfill_skips_empty_summary
+#
+# All in `tests/test_async_tasks.py`.
 
 
 # ---------- migration shape ----------------------------------------------
