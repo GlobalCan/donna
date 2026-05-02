@@ -98,24 +98,26 @@ class JobContext:
                 # Auto-finalize if the mode set done=True
                 if ctx.state.done and not ctx.finalize():
                     raise LeaseLost(job_id)
-                # V50-8: tainted assistant rows get an async safe_summary
-                # backfill so the next chat job's prompt sees a sanitized
-                # paraphrase (rendered unwrapped) instead of the raw
-                # content (rendered wrapped). Fire-and-forget — if the
-                # task fails or the worker restarts before it completes,
-                # compose_system falls back to the v0.4.4 wrapped-raw
-                # render.
+                # V50-8 (v0.5.2): tainted assistant rows get an async
+                # safe_summary backfill so the next chat job's prompt sees
+                # a sanitized paraphrase (rendered unwrapped) instead of
+                # the raw content (rendered wrapped).
+                # v0.6 #2 (2026-05-02): enqueue to the durable async_tasks
+                # queue instead of asyncio.create_task. Pre-fix the task
+                # was lost on worker restart between finalize and Haiku
+                # completion; now it survives via DB persistence with
+                # retry/lease/dead-letter semantics.
                 if (
                     ctx.state.done
                     and ctx.state.tainted
                     and ctx.assistant_message_id
                     and ctx.assistant_content
                 ):
-                    asyncio.create_task(_backfill_safe_summary(
+                    _enqueue_safe_summary_backfill(
                         message_id=ctx.assistant_message_id,
                         content=ctx.assistant_content,
                         job_id=ctx.job.id,
-                    ))
+                    )
         except LeaseLost:
             log.error("agent.job.lease_lost_aborted", job_id=job_id, worker_id=worker_id)
         except JobCancelled:
@@ -474,45 +476,72 @@ class JobContext:
             conn.close()
 
 
-# ---------- V50-8 safe_summary backfill ------------------------------------
+# ---------- V50-8 safe_summary backfill (v0.6 #2: queue-backed) -----------
 
 
-async def _backfill_safe_summary(
+def _enqueue_safe_summary_backfill(
     *, message_id: str, content: str, job_id: str,
 ) -> None:
-    """Asynchronously sanitize a tainted assistant message and update its
-    safe_summary column. Fire-and-forget from JobContext.open's
-    post-finalize hook.
+    """Persist a safe_summary backfill request as an async_tasks row.
 
-    Failure modes:
-      - Sanitize call errors -> log + leave NULL. compose_system falls
-        back to wrapped-raw render. The next chat job pays a small cost
-        (more raw bytes in the model context) but the trust boundary
-        holds via the wrapper.
-      - Worker dies mid-sanitize -> same outcome; row stays NULL until
-        a future write triggers another backfill or an operator runs a
-        backfill script.
-      - Concurrent backfill attempts on the same row -> idempotent via
-        `update_safe_summary`'s WHERE safe_summary IS NULL guard.
+    Replaces v0.5.2's `asyncio.create_task(_backfill_safe_summary(...))`.
+    Survives worker restart, has lease/retry/dead-letter semantics, and
+    is observable via `botctl async-tasks list`. Worker's AsyncTaskRunner
+    picks it up and dispatches to `handle_safe_summary_backfill` below.
+    """
+    from ..memory import async_tasks as at_mod
+    from ..memory.db import connect, transaction
+
+    try:
+        conn = connect()
+        try:
+            with transaction(conn):
+                at_mod.enqueue(
+                    conn,
+                    kind="safe_summary_backfill",
+                    payload={
+                        "message_id": message_id,
+                        "content": content,
+                        "job_id": job_id,
+                    },
+                )
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        # Enqueue failure is non-fatal: compose_system falls back to
+        # wrapped-raw render on safe_summary IS NULL. Log so operators
+        # can spot DB pressure.
+        log.warning(
+            "safe_summary.enqueue_failed",
+            message_id=message_id, job_id=job_id, error=str(e),
+        )
+
+
+async def handle_safe_summary_backfill(payload: dict) -> None:
+    """AsyncTaskRunner handler for kind='safe_summary_backfill'.
+
+    Receives `{message_id, content, job_id}` from the queue. Calls the
+    Haiku sanitizer, then UPDATEs `messages.safe_summary` if non-empty.
+    Idempotent via `update_safe_summary`'s `WHERE safe_summary IS NULL`
+    guard — re-runs after retry don't clobber a successful prior write.
+
+    Raise on transient failure to trigger queue retry; suppress + log
+    on terminal failure (e.g. message no longer exists).
     """
     from ..memory import threads as threads_mod
     from ..memory.db import connect, transaction
     from ..security.sanitize import sanitize_untrusted
 
-    try:
-        summary = await sanitize_untrusted(
-            content,
-            artifact_id=f"msg:{message_id}",
-            source_url=None,
-            job_id=job_id,
-        )
-    except Exception as e:  # noqa: BLE001
-        log.warning(
-            "safe_summary.sanitize_failed",
-            message_id=message_id, job_id=job_id, error=str(e),
-        )
-        return
+    message_id = payload["message_id"]
+    content = payload["content"]
+    job_id = payload.get("job_id")
 
+    summary = await sanitize_untrusted(
+        content,
+        artifact_id=f"msg:{message_id}",
+        source_url=None,
+        job_id=job_id,
+    )
     if not summary or not summary.strip():
         log.info(
             "safe_summary.empty_summary_skipped",
@@ -532,11 +561,6 @@ async def _backfill_safe_summary(
                 message_id=message_id, job_id=job_id,
                 summary_chars=len(summary),
             )
-    except Exception as e:  # noqa: BLE001
-        log.warning(
-            "safe_summary.persist_failed",
-            message_id=message_id, job_id=job_id, error=str(e),
-        )
     finally:
         conn.close()
 

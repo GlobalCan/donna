@@ -33,9 +33,33 @@ app = typer.Typer(help="Donna ops CLI")
 schedule_app = typer.Typer(help="Schedule management")
 traces_app = typer.Typer(help="Trace / log management")
 heuristics_app = typer.Typer(help="Heuristic management: list / approve / retire")
+dead_letter_app = typer.Typer(
+    help=(
+        "outbox_dead_letter ops: list / show / retry / discard. "
+        "Shows rows the v0.5.1 Slack drainer routed off the live "
+        "outbox after terminal/unknown delivery errors."
+    ),
+)
+async_tasks_app = typer.Typer(
+    help=(
+        "async_tasks ops: list / show. v0.6 supervised work queue "
+        "(safe_summary backfill, future morning brief etc.)."
+    ),
+)
+retention_app = typer.Typer(
+    help=(
+        "Retention policy: status / purge. Auto-purges traces, "
+        "dead_letter, tool_calls, async_tasks, jobs older than the "
+        "policy horizons. Operator-content tables (artifacts, "
+        "knowledge_*, messages, cost_ledger) are NOT touched."
+    ),
+)
 app.add_typer(schedule_app, name="schedule")
 app.add_typer(traces_app, name="traces")
 app.add_typer(heuristics_app, name="heuristics")
+app.add_typer(dead_letter_app, name="dead-letter")
+app.add_typer(async_tasks_app, name="async-tasks")
+app.add_typer(retention_app, name="retention")
 
 console = Console()
 
@@ -570,6 +594,563 @@ def traces_prune(older_than_days: int = typer.Option(30, "--older-than-days")) -
     finally:
         conn.close()
     console.print(f"🗑️  pruned {n} trace rows older than {older_than_days}d")
+
+
+# ---- slack-doctor -----------------------------------------------------------
+#
+# Operator health check for Slack — every drift class in one command.
+# Codex's 2026-05-01 review flagged Slack permission drift as a real
+# silent-failure risk: scopes change, channel membership changes,
+# tokens get revoked, and Donna goes quiet without an obvious symptom.
+# slack-doctor surfaces every drift class in 5 seconds.
+#
+# Required scopes per the v0.5.0 manifest: chat:write, commands,
+# app_mentions:read, im:history, im:write. Anything missing is a
+# delivery-affecting bug that's worth flagging loud.
+
+
+_SLACK_REQUIRED_SCOPES = (
+    "chat:write",
+    "commands",
+    "app_mentions:read",
+    "im:history",
+    "im:write",
+)
+
+
+@app.command("slack-doctor")
+def slack_doctor(
+    delivery_channel: str = typer.Option(
+        None,
+        "--delivery-channel",
+        help=(
+            "Optional channel ID (C...) to probe with a one-line message. "
+            "If omitted, delivery test is skipped."
+        ),
+    ),
+) -> None:
+    """Slack health check: token, scopes, Socket Mode, allowlist,
+    optional delivery probe. Exit 0 = all green; exit 1 = at least
+    one red flag."""
+    from slack_sdk.errors import SlackApiError
+    from slack_sdk.web.client import WebClient
+
+    s = settings()
+    bot_token = s.slack_bot_token or ""
+    app_token = s.slack_app_token or ""
+    team_id = s.slack_team_id or ""
+    user_id = s.slack_allowed_user_id or ""
+
+    failures: list[str] = []
+
+    def _ok(msg: str) -> None:
+        console.print(f"[green]OK[/green]  {msg}")
+
+    def _warn(msg: str) -> None:
+        console.print(f"[yellow]WARN[/yellow]  {msg}")
+        # Warnings don't fail the command — caller decides if they care.
+
+    def _fail(msg: str) -> None:
+        console.print(f"[red]FAIL[/red]  {msg}")
+        failures.append(msg)
+
+    # 1. Config presence ---------------------------------------------------
+    console.print("[bold]config[/bold]")
+    if not bot_token.startswith("xoxb-"):
+        _fail(f"SLACK_BOT_TOKEN missing or wrong shape (got {bot_token[:5]!r}…)")
+    else:
+        _ok(f"SLACK_BOT_TOKEN present ({bot_token[:8]}…)")
+    if not app_token.startswith("xapp-"):
+        _fail(f"SLACK_APP_TOKEN missing or wrong shape (got {app_token[:5]!r}…)")
+    else:
+        _ok(f"SLACK_APP_TOKEN present ({app_token[:8]}…)")
+    if not team_id:
+        _fail("SLACK_TEAM_ID empty")
+    else:
+        _ok(f"SLACK_TEAM_ID = {team_id}")
+    if not user_id:
+        _fail("SLACK_ALLOWED_USER_ID empty")
+    else:
+        _ok(f"SLACK_ALLOWED_USER_ID = {user_id}")
+    if failures:
+        console.print(f"\n[red]slack-doctor: {len(failures)} fail(s); cannot proceed[/red]")
+        raise typer.Exit(1)
+
+    client = WebClient(token=bot_token)
+
+    # 2. Bot token + scopes ----------------------------------------------
+    console.print("\n[bold]bot token[/bold]")
+    try:
+        auth = client.auth_test()
+    except SlackApiError as e:
+        code = (
+            e.response.data.get("error")
+            if hasattr(e, "response") and isinstance(e.response.data, dict)
+            else "unknown"
+        )
+        _fail(f"auth.test rejected: {code}")
+        console.print("\n[red]slack-doctor: token invalid; aborting[/red]")
+        raise typer.Exit(1) from e
+    _ok(f"auth.test ok — bot user {auth.get('user_id')} ({auth.get('user')})")
+    if auth.get("team_id") != team_id:
+        _fail(
+            f"team_id from token ({auth.get('team_id')}) doesn't match "
+            f"SLACK_ALLOWED_USER_ID's team ({team_id}). Token-vs-allowlist "
+            f"mismatch silently drops every event."
+        )
+    else:
+        _ok("token's team matches SLACK_TEAM_ID")
+
+    scope_header = (
+        auth.headers.get("x-oauth-scopes", "")
+        if hasattr(auth, "headers") else ""
+    )
+    granted = {s.strip() for s in scope_header.split(",") if s.strip()}
+    missing = [sc for sc in _SLACK_REQUIRED_SCOPES if sc not in granted]
+    if missing:
+        _fail(f"missing required scopes: {', '.join(missing)}")
+    else:
+        _ok(f"all required scopes present ({len(_SLACK_REQUIRED_SCOPES)})")
+    extra = sorted(granted - set(_SLACK_REQUIRED_SCOPES))
+    if extra:
+        _warn(f"extra scopes granted (not required by v0.5.0): {', '.join(extra)}")
+
+    # 3. App-level token (Socket Mode) -----------------------------------
+    console.print("\n[bold]app-level token (Socket Mode)[/bold]")
+    app_client = WebClient(token=app_token)
+    try:
+        opened = app_client.apps_connections_open()
+        if opened.get("ok") and opened.get("url"):
+            _ok("apps.connections.open succeeded — Socket Mode reachable")
+        else:
+            _fail(f"apps.connections.open returned non-ok: {opened.data}")
+    except SlackApiError as e:
+        code = (
+            e.response.data.get("error")
+            if hasattr(e, "response") and isinstance(e.response.data, dict)
+            else "unknown"
+        )
+        _fail(f"apps.connections.open rejected: {code}")
+
+    # 4. Channels Donna is in ---------------------------------------------
+    console.print("\n[bold]bot channel membership[/bold]")
+    try:
+        chans = client.users_conversations(
+            user=auth.get("user_id"),
+            types="public_channel,private_channel,im",
+            limit=200,
+        )
+        members = chans.get("channels", []) or []
+        ims = [c for c in members if c.get("is_im")]
+        public = [c for c in members if c.get("is_channel") and not c.get("is_private")]
+        private = [c for c in members if c.get("is_private")]
+        _ok(
+            f"member of {len(members)} conversations "
+            f"({len(public)} public, {len(private)} private, {len(ims)} DMs)"
+        )
+        for c in public + private:
+            console.print(f"    - #{c.get('name')} ({c.get('id')})")
+    except SlackApiError as e:
+        code = (
+            e.response.data.get("error")
+            if hasattr(e, "response") and isinstance(e.response.data, dict)
+            else "unknown"
+        )
+        _fail(f"users.conversations failed: {code}")
+
+    # 5. Optional delivery probe ------------------------------------------
+    if delivery_channel:
+        console.print(f"\n[bold]delivery probe -> {delivery_channel}[/bold]")
+        try:
+            posted = client.chat_postMessage(
+                channel=delivery_channel,
+                text="🔍 slack-doctor probe — ignore",
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+            ts = posted.get("ts")
+            _ok(f"chat.postMessage delivered (ts={ts})")
+            # Clean up the probe so the channel doesn't accrete noise.
+            try:
+                client.chat_delete(channel=delivery_channel, ts=ts)
+                _ok("probe message deleted")
+            except SlackApiError as e:
+                _warn(f"probe sent but delete failed: {e.response.data.get('error', 'unknown')}")
+        except SlackApiError as e:
+            code = (
+                e.response.data.get("error")
+                if hasattr(e, "response") and isinstance(e.response.data, dict)
+                else "unknown"
+            )
+            _fail(f"chat.postMessage rejected: {code}")
+
+    # Summary -------------------------------------------------------------
+    console.print()
+    if failures:
+        console.print(
+            f"[red]slack-doctor: {len(failures)} red flag(s)[/red]"
+        )
+        for f in failures:
+            console.print(f"  - {f}")
+        raise typer.Exit(1)
+    console.print("[green]slack-doctor: all green[/green]")
+
+
+# ---- dead-letter ------------------------------------------------------------
+#
+# Operator UX for the v0.5.1 outbox_dead_letter table. Codex's 2026-05-01
+# review: "smoke alarm without a panel = noise." When the V50-1 classifier
+# routes a delivery failure to dead-letter, the operator gets a throttled
+# DM AND can come here to inspect / retry / discard.
+
+
+def _dl_age(moved_at: str | None) -> str:
+    if not moved_at:
+        return "?"
+    try:
+        dt = (
+            datetime.fromisoformat(moved_at)
+            if isinstance(moved_at, str) else moved_at
+        )
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        delta = datetime.now(UTC) - dt
+        if delta.days >= 1:
+            return f"{delta.days}d"
+        h = delta.seconds // 3600
+        if h:
+            return f"{h}h"
+        m = (delta.seconds % 3600) // 60
+        return f"{m}m"
+    except (TypeError, ValueError):
+        return "?"
+
+
+@dead_letter_app.command("list")
+def dead_letter_list(
+    since: str = typer.Option(
+        "all", help="'30m' | '3h' | '1d' | '1w' | 'all'",
+    ),
+    error_class: str = typer.Option(
+        None, "--class",
+        help="Filter by error_class: terminal | unknown",
+    ),
+    limit: int = 50,
+) -> None:
+    """Show recent dead-lettered outbox rows."""
+    delta = _parse_since(since)
+    where: list[str] = []
+    params: list = []
+    if delta is not None:
+        where.append("moved_at >= ?")
+        params.append(datetime.now(UTC) - delta)
+    if error_class:
+        where.append("error_class = ?")
+        params.append(error_class)
+    sql = "SELECT id, source_table, source_id, job_id, channel_id, " \
+          "error_code, error_class, attempt_count, moved_at " \
+          "FROM outbox_dead_letter"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY moved_at DESC LIMIT ?"
+    params.append(limit)
+    conn = connect()
+    try:
+        rows = conn.execute(sql, params).fetchall()
+        total = conn.execute(
+            "SELECT COUNT(*) c FROM outbox_dead_letter"
+        ).fetchone()["c"]
+    finally:
+        conn.close()
+    if not rows:
+        console.print("[dim]no dead-letter rows match[/dim]")
+        return
+    table = Table(title=f"Dead-letter ({len(rows)} of {total})")
+    table.add_column("dl id")
+    table.add_column("kind")
+    table.add_column("error")
+    table.add_column("class")
+    table.add_column("channel")
+    table.add_column("attempts", justify="right")
+    table.add_column("age")
+    for r in rows:
+        table.add_row(
+            r["id"], r["source_table"], r["error_code"], r["error_class"],
+            (r["channel_id"] or "")[:12], str(r["attempt_count"]),
+            _dl_age(r["moved_at"]),
+        )
+    console.print(table)
+
+
+@dead_letter_app.command("show")
+def dead_letter_show(dl_id: str) -> None:
+    """Full provenance + payload of one dead-letter row."""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM outbox_dead_letter WHERE id = ?", (dl_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        console.print(f"[red]dead-letter {dl_id} not found[/red]")
+        raise typer.Exit(1)
+    console.print(f"[bold]{dl_id}[/bold]")
+    for k in (
+        "source_table", "source_id", "job_id", "channel_id", "thread_ts",
+        "tainted", "error_code", "error_class", "attempt_count",
+        "first_attempt_at", "last_attempt_at", "moved_at",
+    ):
+        console.print(f"  {k}: {row[k]}")
+    payload = row["payload"] or ""
+    if len(payload) > 2000:
+        console.print(f"\n[dim]payload ({len(payload)} chars, first 2000):[/dim]")
+        console.print(payload[:2000])
+    else:
+        console.print(f"\n[dim]payload:[/dim]\n{payload}")
+
+
+@dead_letter_app.command("retry")
+def dead_letter_retry(
+    dl_id: str,
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Skip confirmation",
+    ),
+) -> None:
+    """Move a dead-letter row back to its source outbox table for one
+    more delivery attempt. Use after fixing the underlying issue
+    (re-invite Donna to the channel, restore archived channel, etc.).
+
+    Resets attempt_count on the source row so it gets a fresh count
+    against the v0.5.1 classifier's max-retries policy.
+    """
+    import uuid
+
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM outbox_dead_letter WHERE id = ?", (dl_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        console.print(f"[red]dead-letter {dl_id} not found[/red]")
+        raise typer.Exit(1)
+
+    if row["source_table"] != "outbox_updates":
+        # We currently only dead-letter from outbox_updates (v0.5.1).
+        # Future kinds would need their own retry path.
+        console.print(
+            f"[red]retry not supported for source_table="
+            f"{row['source_table']!r}[/red]"
+        )
+        raise typer.Exit(2)
+
+    console.print(f"[bold]{dl_id}[/bold]  -> outbox_updates")
+    console.print(f"  channel: {row['channel_id']}")
+    console.print(f"  job: {row['job_id']}")
+    console.print(f"  error: {row['error_code']} ({row['error_class']})")
+    console.print(f"  prior attempts: {row['attempt_count']}")
+
+    if not force:
+        confirmed = typer.confirm(
+            "Re-enqueue this row for delivery?", default=False,
+        )
+        if not confirmed:
+            console.print("[dim]aborted[/dim]")
+            raise typer.Exit(0)
+
+    new_id = f"upd_{uuid.uuid4().hex[:12]}"
+    conn = connect()
+    try:
+        with transaction(conn):
+            conn.execute(
+                "INSERT INTO outbox_updates "
+                "(id, job_id, text, tainted) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    new_id, row["job_id"], row["payload"] or "",
+                    int(row["tainted"]),
+                ),
+            )
+            conn.execute(
+                "DELETE FROM outbox_dead_letter WHERE id = ?", (dl_id,),
+            )
+    finally:
+        conn.close()
+    console.print(f"♻️  re-enqueued as {new_id}")
+
+
+@dead_letter_app.command("discard")
+def dead_letter_discard(
+    dl_id: str,
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Skip confirmation",
+    ),
+) -> None:
+    """Permanently delete a dead-letter row. No retry, no recovery."""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id, channel_id, error_code, attempt_count "
+            "FROM outbox_dead_letter WHERE id = ?",
+            (dl_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        console.print(f"[red]dead-letter {dl_id} not found[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[bold]{dl_id}[/bold]  channel={row['channel_id']}  "
+        f"error={row['error_code']}  attempts={row['attempt_count']}"
+    )
+    if not force:
+        confirmed = typer.confirm(
+            "Permanently discard?", default=False,
+        )
+        if not confirmed:
+            console.print("[dim]aborted[/dim]")
+            raise typer.Exit(0)
+    conn = connect()
+    try:
+        with transaction(conn):
+            conn.execute(
+                "DELETE FROM outbox_dead_letter WHERE id = ?", (dl_id,),
+            )
+    finally:
+        conn.close()
+    console.print(f"🗑️  discarded {dl_id}")
+
+
+# ---- async-tasks ------------------------------------------------------------
+#
+# Operator UX for the v0.6 supervised work queue. Mirrors dead-letter shape
+# but read-only (retry happens automatically per AsyncTaskRunner policy).
+
+
+@async_tasks_app.command("list")
+def async_tasks_list(
+    status: str = typer.Option(
+        None, "--status",
+        help="Filter: pending | running | done | failed",
+    ),
+    kind: str = typer.Option(None, "--kind"),
+    limit: int = 50,
+) -> None:
+    """Show recent async_tasks rows."""
+    from ..memory import async_tasks as at_mod
+    conn = connect()
+    try:
+        rows = at_mod.list_tasks(
+            conn, status=status, kind=kind, limit=limit,
+        )
+        counts = at_mod.count_by_status(conn)
+    finally:
+        conn.close()
+    summary = " · ".join(
+        f"{k}={v}" for k, v in sorted(counts.items())
+    ) or "empty"
+    if not rows:
+        console.print(f"[dim]no rows match · totals: {summary}[/dim]")
+        return
+    table = Table(title=f"async_tasks · totals: {summary}")
+    table.add_column("id")
+    table.add_column("kind")
+    table.add_column("status")
+    table.add_column("attempts", justify="right")
+    table.add_column("scheduled_for")
+    table.add_column("last_error")
+    for r in rows:
+        err = (r["last_error"] or "")[:60]
+        table.add_row(
+            r["id"], r["kind"], r["status"], str(r["attempts"]),
+            str(r["scheduled_for"])[:19], err,
+        )
+    console.print(table)
+
+
+@async_tasks_app.command("show")
+def async_tasks_show(task_id: str) -> None:
+    """Full row for one async_tasks entry."""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM async_tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        console.print(f"[red]async_task {task_id} not found[/red]")
+        raise typer.Exit(1)
+    console.print(f"[bold]{task_id}[/bold]")
+    for k in (
+        "kind", "status", "attempts", "scheduled_for",
+        "created_at", "started_at", "finished_at",
+        "locked_by", "locked_until", "last_error",
+    ):
+        console.print(f"  {k}: {row[k]}")
+    payload = row["payload"] or ""
+    if len(payload) > 2000:
+        console.print(f"\n[dim]payload ({len(payload)} chars, first 2000):[/dim]")
+        console.print(payload[:2000])
+    else:
+        console.print(f"\n[dim]payload:[/dim]\n{payload}")
+
+
+# ---- retention --------------------------------------------------------------
+
+
+@retention_app.command("status")
+def retention_status() -> None:
+    """Show per-table row totals and counts that auto-purge would
+    delete. Read-only; safe to run anytime."""
+    from ..memory import retention as ret_mod
+
+    conn = connect()
+    try:
+        report = ret_mod.status(conn)
+    finally:
+        conn.close()
+    table = Table("table", "total", "would purge", "policy (days)")
+    for name, info in report.items():
+        policy_days = ret_mod.RETENTION_DAYS.get(
+            name,
+            ret_mod.RETENTION_DAYS.get(f"{name}_terminal", "n/a"),
+        )
+        table.add_row(
+            name,
+            str(info.get("total", 0)),
+            str(info.get("would_purge", 0)),
+            str(policy_days),
+        )
+    console.print(table)
+
+
+@retention_app.command("purge")
+def retention_purge(
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Show counts without deleting (alias of `retention status`).",
+    ),
+) -> None:
+    """Apply retention policy: delete rows older than each table's
+    horizon. Idempotent — safe to run repeatedly."""
+    from ..memory import retention as ret_mod
+
+    conn = connect()
+    try:
+        with transaction(conn):
+            counts = ret_mod.purge_old(conn, dry_run=dry_run)
+    finally:
+        conn.close()
+    verb = "would purge" if dry_run else "purged"
+    table = Table("table", verb)
+    for name, n in counts.items():
+        table.add_row(name, str(n))
+    console.print(table)
+    total = sum(counts.values())
+    console.print(f"[dim]total rows {verb}: {total}[/dim]")
 
 
 if __name__ == "__main__":

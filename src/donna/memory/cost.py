@@ -95,3 +95,19 @@ def spend_today(conn: sqlite3.Connection) -> float:
         """
     ).fetchone()
     return float(row["total"])
+
+
+def spend_this_week(conn: sqlite3.Connection) -> float:
+    """Total spend over the last 7 calendar days (rolling).
+
+    Used by v0.6 #7 cost runaway guards. Rolling rather than calendar-
+    aligned so a Sunday spike doesn't reset on Monday morning.
+    """
+    row = conn.execute(
+        """
+        SELECT COALESCE(SUM(cost_usd), 0.0) AS total
+        FROM cost_ledger
+        WHERE created_at >= datetime('now', '-7 days')
+        """
+    ).fetchone()
+    return float(row["total"])

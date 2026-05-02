@@ -1,5 +1,195 @@
 # Changelog
 
+## [0.6.0] — 2026-05-02 — Ops consolidation bundle
+
+Codex 2026-05-01 review framed the problem: "Donna is on the right
+architectural path, but the last two weeks were a bootstrapping sprint,
+not a sustainable operating cadence. The debt is not 'bad code' debt.
+It is boundary, ops, and process debt caused by moving very fast across
+core infrastructure. Do the ops sprint before product."
+
+v0.6 is that ops sprint. Eight numbered items + two live-validations of
+v0.5.0 follow-ups (V50-2 channel-target schedule, V50-3 `@donna`
+mentions). 90 new tests; 504 total green; ruff clean.
+
+### #1 — Entrypoint race fix
+
+The v0.5.2 deploy on 2026-05-01 caught a real race: entrypoint.sh ran
+`alembic upgrade head` for both `bot` AND `worker` roles concurrently,
+claiming SQLite would serialize them. In practice they raced on DDL
+(both attempted `CREATE TABLE outbox_dead_letter`, one won, one
+crashed). Worse, the winner crashed before bumping `alembic_version`,
+leaving the new table created but the schema looking stale at 0008.
+
+Fix: only bot runs alembic. Worker waits via compose
+`depends_on: condition: service_healthy`. Bot's healthcheck watches
+for `/tmp/migrations_complete` (touched after a successful alembic
+run). Worker enters with the schema known-current and skips alembic
+entirely.
+
+### #2 — Supervised async pattern (`async_tasks` table + `AsyncTaskRunner`)
+
+Codex flagged the v0.5.2 `asyncio.create_task` fire-and-forget pattern
+as "architecturally sloppy — fire-and-forget is unacceptable in
+always-on infra." Two callers were affected: `JobContext.open`
+post-finalize hook (safe_summary backfill) and
+`slack_adapter._handle_update_result` (operator alert DM). Both lost
+work on worker/bot crash mid-task.
+
+Fix: durable work queue with lease/heartbeat/retry/dead-letter
+semantics, parallel to the `jobs` table but lighter (no agent loop, no
+checkpoints). New surfaces:
+- migration `0011_async_tasks.py` — table with `kind` discriminator
+- `memory.async_tasks` — enqueue / claim_one / complete / fail /
+  recover_stale / list / count_by_status
+- `jobs.async_runner.AsyncTaskRunner` — poll loop + handler registry
+- `worker.py` spawns the runner alongside Worker + Scheduler
+- safe_summary backfill migrated from `asyncio.create_task` to
+  `_enqueue_safe_summary_backfill` -> queue -> `handle_safe_summary_backfill`
+
+### #3 — `botctl dead-letter` + `botctl async-tasks`
+
+"You built the smoke alarm but not the panel." (Codex)
+
+```
+botctl dead-letter list [--since 1d|all] [--class terminal|unknown]
+botctl dead-letter show <dl_id>
+botctl dead-letter retry <dl_id> [--force]    # back to outbox_updates
+botctl dead-letter discard <dl_id> [--force]  # permanent delete
+
+botctl async-tasks list [--status pending|running|done|failed] [--kind X]
+botctl async-tasks show <task_id>
+```
+
+### #4 — `botctl slack-doctor`
+
+Codex: "Slack permission drift not modeled. If scopes or channel
+visibility change, Donna may silently lose delivery, over-deliver, or
+misclassify failure modes." slack-doctor surfaces every drift class in
+5 seconds:
+
+1. Config presence (token shape, team_id, allowlist user_id)
+2. Bot token validity (`auth.test`)
+3. Team-id mismatch (silently drops every event)
+4. Required scopes present (chat:write, commands, app_mentions:read,
+   im:history, im:write)
+5. Extra scopes warning
+6. Socket Mode reachable (`apps.connections.open`)
+7. Channel membership listing
+8. Optional `--delivery-channel C0...` end-to-end probe
+
+Exit 0 = all green; 1 = at least one red flag. Suitable as a
+periodic cron check or pre-deploy gate.
+
+### #5 — Retention policy + `botctl retention status/purge`
+
+Codex: "Traces, dead letters, tool calls, raw tainted content, and
+artifacts will grow forever."
+
+Policy as code (`memory.retention.RETENTION_DAYS`):
+
+| Table                  | Days |
+|------------------------|------|
+| traces                 |   30 |
+| outbox_dead_letter     |   90 |
+| tool_calls             |   90 |
+| async_tasks (terminal) |   30 |
+| jobs (terminal)        |   90 |
+
+Operator-content tables (artifacts, knowledge_*, messages, cost_ledger)
+NOT touched — those need explicit operator commands. `purge_old`
+honors FK direction (tool_calls before jobs) and terminal-only filters
+(running jobs, pending async_tasks NEVER purged).
+
+### #6 — Schema lifecycle policy doc + migration linter
+
+`docs/SCHEMA_LIFECYCLE.md` codifies the policy: forward-only,
+sequential 4-digit revision IDs, additive over destructive, every
+migration has a docstring. `tests/test_migrations_lint.py` enforces
+the structural parts. New migrations that violate fail CI before
+merge.
+
+### #7 — Cost runaway guards
+
+Codex: "Proactive jobs plus sanitizer plus retrieval can quietly
+multiply spend." Existing `BudgetWatcher` does soft alerts. v0.6 #7
+adds HARD caps via `DONNA_DAILY_HARD_CAP_USD` (default $20) and
+`DONNA_WEEKLY_HARD_CAP_USD` (default $100). When exceeded, all 5
+intake handlers (DM, app_mention, /donna_ask, /donna_speculate,
+/donna_debate) refuse new work with a polite reply; in-flight jobs
+continue uninterrupted.
+
+`memory.cost.spend_this_week` (rolling 7-day) added.
+`observability.cost_guard.CostStatus` is the pure-logic struct;
+`is_intake_blocked()` is the hot-path helper.
+
+### #8 — Integration spine
+
+Codex: "414 tests is strong but the shape is too unit-heavy. Add 8 to
+12 boring integration tests."
+
+`tests/test_integration_spine.py` adds 4 tests against the seams that
+have caused real prod bugs:
+
+1. Chat finalize -> outbox -> drainer -> chat.postMessage -> row deleted
+2. Terminal Slack error -> source row to outbox_dead_letter
+3. rate_limited with Retry-After -> per-channel cool-down respected
+4. Tainted finalize -> async_task enqueued -> AsyncTaskRunner ->
+   safe_summary persisted
+
+Real SQLite + real migrations + mocked Slack/Haiku. ~7s runtime.
+
+### #18 + #19 — Operational policy docs
+
+- `docs/RELEASE_SOAK_POLICY.md` — 24h soak after platform-level changes,
+  cadence targets, when to skip (real fires only).
+- `docs/slack/TOKEN_ROTATION_REHEARSAL.md` — quarterly dry-run against
+  a throwaway Slack app so the rotation runbook is muscle memory before
+  a real incident.
+
+### V50-2 + V50-3 live-validated (2026-05-02)
+
+Both v0.5.0 follow-ups validated end-to-end in the operator's Slack
+workspace:
+
+- **V50-3** `@donna` mention in #donna-test → `📌 queued` reply +
+  agent-loop response within 6 seconds. Validates the `app_mention`
+  event handler + Socket Mode + auth filter + chat-mode delivery
+  pipeline.
+- **V50-2** `/donna_schedule` modal targeting #donna-test → `SCHED_OK`
+  delivery on the next minute boundary. Validates the modal channel
+  selector + `target_channel_id` propagation through `Scheduler._fire`
+  + outbox drainer routing to a non-DM channel.
+
+### Deferred to v0.6.1 / v0.7
+
+- **#9 Prompt-version-compat at resume** — checkpoint validates against
+  current prompt hash. Deferred — current "tool not registered" error
+  path already handles the common case.
+- **#10 Eval realism (poisoned-corpora goldens)** — 4-5 nasty real
+  transcripts as goldens. Bigger eval-design work; deserves its own
+  release.
+- **#11 Operator fatigue (consent batching + alert digest)** — UX
+  redesign work; pairs naturally with morning brief.
+- **#15 Cost timing fix (sanitizer attribution after DONE)** — cosmetic
+  ledger-query weirdness; defer until it actually costs the operator.
+- **#16 JobContext extraction** — the big architectural cleanup.
+  ~2 days of focused refactor work; deserves a dedicated PR rather
+  than ballooning v0.6.
+- **#17 Auto-update timer** — needs the restore drill (#BLOCKED) to
+  pass first.
+
+### Blocked on operator action
+
+- Restore drill — needs $0.20 throwaway DO droplet approval.
+
+### Validation
+
+- 504 tests green (414 baseline + 90 new across the 8 numbered items)
+- Ruff clean
+- Live smokes: V50-2 + V50-3 green in production
+- Migration linter green on all 11 existing migrations
+
 ## [0.5.2] — 2026-05-01 — V50-8 dual-field memory
 
 V50-8 was deferred from v0.5.1 per Codex's hard timebox rule. With

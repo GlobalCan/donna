@@ -56,6 +56,19 @@ class Settings(BaseSettings):
     max_tool_calls_per_job: int = Field(default=60, alias="DONNA_MAX_TOOL_CALLS_PER_JOB")
     compact_every_n: int = Field(default=20, alias="DONNA_COMPACT_EVERY_N")
 
+    # v0.6 #7: HARD caps that gate new job intake. Soft alerts at
+    # daily_budget_alerts thresholds remain (they DM the operator).
+    # Hard caps go further: when exceeded, intake refuses new jobs with
+    # an explicit "spending paused" reply. Set to 0 to disable (keeps
+    # only the soft-alert behavior). Default values are conservative
+    # for solo-bot personal use; raise via env if you actually need to.
+    daily_hard_cap_usd: float = Field(
+        default=20.0, alias="DONNA_DAILY_HARD_CAP_USD",
+    )
+    weekly_hard_cap_usd: float = Field(
+        default=100.0, alias="DONNA_WEEKLY_HARD_CAP_USD",
+    )
+
     # OTel — default targets the local trace backend (jaeger all-in-one,
     # service name `jaeger` in docker-compose). Was `phoenix:4317` before
     # the 14.x breakage forced a swap. Keeping the OTLP-gRPC port at 4317
