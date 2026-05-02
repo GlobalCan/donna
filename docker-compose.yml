@@ -27,6 +27,18 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # v0.6: bot owns migrations exclusively. Healthcheck watches for the
+    # marker entrypoint.sh writes after `alembic upgrade head` succeeds;
+    # worker's depends_on gate below uses this to start with a known-
+    # current schema. Pre-v0.6 the worker also ran alembic and raced bot's
+    # migration step, leaving partial schema on failure (caught 2026-05-01
+    # during v0.5.2 deploy).
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/migrations_complete"]
+      interval: 2s
+      timeout: 1s
+      retries: 60
+      start_period: 5s
 
   worker:
     image: ${DONNA_IMAGE:-ghcr.io/globalcan/donna:latest}
@@ -50,6 +62,13 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # v0.6: gate worker startup on bot's migration completion. Eliminates
+    # the alembic race that wedged the v0.5.2 deploy. service_healthy
+    # waits for the bot's healthcheck above (which itself waits for
+    # /tmp/migrations_complete to appear).
+    depends_on:
+      bot:
+        condition: service_healthy
 
   # Observability — Jaeger all-in-one. Replaced Phoenix after the 14.x line
   # shipped broken upstream (`ModuleNotFoundError: No module named 'phoenix'`

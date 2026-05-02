@@ -63,27 +63,39 @@ fi
 
 # Apply pending alembic migrations before starting the service.
 #
-# Pre-fix (v0.4.2) this entrypoint just decrypted secrets and exec'd the
+# Pre-v0.4.3 this entrypoint just decrypted secrets and exec'd the
 # command, so migrations sat unapplied silently after every deploy until
-# an operator manually ran `alembic upgrade head`. Discovered 2026-04-30
-# during the v0.4.3 deploy when migration 0006 didn't take effect after a
-# routine `docker compose pull && up -d` — the new code shipped but the
-# DB schema didn't match, leading to "I deployed but nothing changed"
-# confusion.
+# an operator manually ran `alembic upgrade head`. v0.4.3 added the
+# auto-migrate. v0.5.2 deploy (2026-05-01) revealed a follow-up bug:
+# the original code ran alembic for BOTH bot AND worker, claiming SQLite
+# would serialize them. In practice they raced on DDL — both got past
+# the alembic_version check, both tried CREATE TABLE outbox_dead_letter,
+# one won, one crashed. Worse, the winner crashed before bumping
+# alembic_version, so the table existed but the schema looked stale.
+# Cleanup required manual SQL.
 #
-# Only the bot/worker roles run migrations — botctl invocations and any
-# other ad-hoc entrypoint use should not. Running for both bot AND worker
-# is safe: alembic locks via SQLite, and the second one to enter sees
-# "already at head" and no-ops in <1s.
+# Fix: ONLY the bot role runs migrations. Worker waits via compose
+# `depends_on: condition: service_healthy`. Bot's healthcheck watches
+# for /tmp/migrations_complete which we touch right after a successful
+# alembic run. Worker enters with the schema known-current and skips
+# alembic entirely.
+#
+# botctl invocations are unaffected — they don't have DONNA_PROCESS_ROLE.
 #
 # A migration failure here is fatal — better to crash the container with
 # a visible error than to start the service against a stale schema.
-if [[ "${DONNA_PROCESS_ROLE:-}" == "bot" || "${DONNA_PROCESS_ROLE:-}" == "worker" ]]; then
+if [[ "${DONNA_PROCESS_ROLE:-}" == "bot" ]]; then
     echo "[entrypoint] applying pending migrations (alembic upgrade head)"
     if ! alembic upgrade head; then
         echo "[entrypoint] FATAL: alembic upgrade head failed — refusing to start" >&2
         exit 1
     fi
+    # Marker file (tmpfs-backed, wipes on restart) gates the worker's
+    # depends_on healthcheck. Without this, worker could come up with a
+    # stale schema if it raced bot's migration step.
+    touch /tmp/migrations_complete
+elif [[ "${DONNA_PROCESS_ROLE:-}" == "worker" ]]; then
+    echo "[entrypoint] worker role — bot owns migrations, skipping alembic"
 fi
 
 exec "$@"
