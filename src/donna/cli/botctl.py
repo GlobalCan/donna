@@ -960,8 +960,6 @@ def dead_letter_retry(
     Resets attempt_count on the source row so it gets a fresh count
     against the v0.5.1 classifier's max-retries policy.
     """
-    import uuid
-
     conn = connect()
     try:
         row = conn.execute(
@@ -996,18 +994,16 @@ def dead_letter_retry(
             console.print("[dim]aborted[/dim]")
             raise typer.Exit(0)
 
-    new_id = f"upd_{uuid.uuid4().hex[:12]}"
+    # v0.7.2: extracted to memory.outbox.enqueue_update.
+    from ..memory import outbox as outbox_mod_
     conn = connect()
     try:
         with transaction(conn):
-            conn.execute(
-                "INSERT INTO outbox_updates "
-                "(id, job_id, text, tainted) "
-                "VALUES (?, ?, ?, ?)",
-                (
-                    new_id, row["job_id"], row["payload"] or "",
-                    int(row["tainted"]),
-                ),
+            new_id = outbox_mod_.enqueue_update(
+                conn,
+                job_id=row["job_id"],
+                text=row["payload"] or "",
+                tainted=bool(row["tainted"]),
             )
             conn.execute(
                 "DELETE FROM outbox_dead_letter WHERE id = ?", (dl_id,),

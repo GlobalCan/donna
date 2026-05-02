@@ -24,8 +24,8 @@ from typing import Any
 
 from ..config import settings
 from ..logging import get_logger
-from ..memory import ids as ids_mod
 from ..memory import jobs as jobs_mod
+from ..memory import outbox as outbox_mod
 from ..memory import tool_calls as tool_calls_mod
 from ..memory.db import connect, transaction
 from ..observability import otel
@@ -409,15 +409,15 @@ class JobContext:
                     # paragraph/sentence boundaries (see _post_update).
                     # A sanity cap is still prudent to bound DB storage
                     # and message-split cost; 20k chars ≈ 10 Discord messages.
-                    conn.execute(
-                        "INSERT INTO outbox_updates (id, job_id, text, tainted) "
-                        "VALUES (?, ?, ?, ?)",
-                        (
-                            ids_mod.new_id("upd"),
-                            self.state.job_id,
-                            text[:20000],
-                            1 if self.state.tainted else 0,
-                        ),
+                    # v0.7.2: extracted to memory.outbox.enqueue_update
+                    # so the SQL lives in one place and is independently
+                    # testable. Same semantics — caller's transaction
+                    # wraps this for atomicity with the DONE flip.
+                    outbox_mod.enqueue_update(
+                        conn,
+                        job_id=self.state.job_id,
+                        text=text,
+                        tainted=self.state.tainted,
                     )
                 # Session memory: persist the user task + assistant answer
                 # to `messages` for cross-job recall in the same Discord
