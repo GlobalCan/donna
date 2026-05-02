@@ -716,10 +716,15 @@ def slack_doctor(
         _warn(f"extra scopes granted (not required by v0.5.0): {', '.join(extra)}")
 
     # 3. App-level token (Socket Mode) -----------------------------------
+    # slack_sdk requires app_token as a keyword arg to
+    # apps_connections_open() *even when* the WebClient was constructed
+    # with that token. Constructing with the token sets the default for
+    # OTHER methods but apps.* methods enforce explicit pass-through
+    # because they're scoped to the app rather than the bot.
     console.print("\n[bold]app-level token (Socket Mode)[/bold]")
     app_client = WebClient(token=app_token)
     try:
-        opened = app_client.apps_connections_open()
+        opened = app_client.apps_connections_open(app_token=app_token)
         if opened.get("ok") and opened.get("url"):
             _ok("apps.connections.open succeeded — Socket Mode reachable")
         else:
@@ -731,6 +736,11 @@ def slack_doctor(
             else "unknown"
         )
         _fail(f"apps.connections.open rejected: {code}")
+    except Exception as e:  # noqa: BLE001
+        # Catch TypeError from API drift (kwarg requirements changing)
+        # and similar non-Slack-API failures so the doctor reports loud
+        # but doesn't crash mid-check.
+        _fail(f"apps.connections.open raised {type(e).__name__}: {e}")
 
     # 4. Channels Donna is in ---------------------------------------------
     console.print("\n[bold]bot channel membership[/bold]")
