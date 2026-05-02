@@ -3,10 +3,17 @@
 Polls the `schedules` table once a minute. For any schedule whose next_run_at
 has passed, enqueues a job (same `jobs` table as interactive requests — the
 worker processes both identically) and updates next_run_at.
+
+v0.7.0 adds kind-based dispatch:
+- kind='task' (default, legacy) — free-form scheduled task. Original
+  semantics; existing schedules continue to work unchanged.
+- kind='morning_brief' — proactive product workflow with topic-list
+  payload + idempotency via brief_runs(schedule_id, fire_key).
 """
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 from croniter import croniter
 
@@ -15,6 +22,7 @@ from ..memory import jobs as jobs_mod
 from ..memory import schedules as sched_mod
 from ..memory.db import connect, transaction
 from ..types import JobMode
+from . import morning_brief as brief_mod
 
 log = get_logger(__name__)
 
@@ -61,6 +69,37 @@ class Scheduler:
                     sched_mod.disable_schedule(conn, sched["id"])
             finally:
                 conn.close()
+            return
+
+        # v0.7.0: dispatch by kind. Existing 'task' kind (default for
+        # all pre-v0.7 rows) keeps the legacy free-form behavior. New
+        # 'morning_brief' kind goes through the brief module for its
+        # idempotency + payload semantics.
+        kind = sched.get("kind", "task")
+        if kind == "morning_brief":
+            try:
+                brief_mod.fire_morning_brief(
+                    sched=sched, fire_at=datetime.now(UTC),
+                )
+            except Exception as e:  # noqa: BLE001
+                log.exception(
+                    "scheduler.fire_failed",
+                    schedule_id=sched["id"], error=str(e),
+                )
+            finally:
+                # Mark the schedule's next_run regardless of whether
+                # this fire produced a brief (the dedup might have
+                # caught a duplicate within-minute tick — that's still
+                # a successful "run", we just deliver once).
+                conn = connect()
+                try:
+                    with transaction(conn):
+                        sched_mod.mark_ran(
+                            conn, schedule_id=sched["id"],
+                            cron_expr=sched["cron_expr"],
+                        )
+                finally:
+                    conn.close()
             return
 
         conn = connect()

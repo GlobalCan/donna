@@ -623,6 +623,208 @@ def register_handlers(bot: DonnaSlackBot) -> None:
         await ack(text="\n".join(lines))
 
     # --------------------------------------------------------------
+    # Slash: /donna_brief_setup (modal) + /donna_brief_run_now
+    # --------------------------------------------------------------
+
+    @app.command("/donna_brief_setup")
+    async def cmd_brief_setup(ack, body, client):
+        # v0.7.0: configure a daily morning brief. Modal collects
+        # cron + channel + topics list. Slash command must ack
+        # immediately and open the modal — no inline LLM work
+        # (Codex blind-spot rule for Slack handlers).
+        if not _is_allowed_command(body):
+            await ack(text="not authorized")
+            return
+        await ack()
+        try:
+            await client.views_open(
+                trigger_id=body["trigger_id"],
+                view=_brief_setup_modal_view(
+                    initial_channel=body.get("channel_id"),
+                ),
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("slack.brief_setup_modal_open_failed", error=str(e))
+
+    @app.view("brief_setup_modal")
+    async def on_brief_setup_submit(ack, body, view, client):
+        if not _is_allowed_command(_normalize_body_for_view(body)):
+            await ack(response_action="errors",
+                      errors={"cron_block": "not authorized"})
+            return
+        state = view.get("state", {}).get("values", {})
+        cron_expr = (
+            state.get("cron_block", {})
+                 .get("cron_input", {})
+                 .get("value", "")
+                 .strip()
+        )
+        topics_raw = (
+            state.get("topics_block", {})
+                 .get("topics_input", {})
+                 .get("value", "")
+                 .strip()
+        )
+        # Topics: one per line OR comma-separated. Both are common
+        # operator habits.
+        topics: list[str] = []
+        for chunk in topics_raw.replace(",", "\n").split("\n"):
+            t = chunk.strip(" -*•·").strip()
+            if t:
+                topics.append(t)
+
+        channel_state = (
+            state.get("channel_block", {})
+                 .get("channel_input", {})
+        )
+        target_channel_id = channel_state.get("selected_conversation")
+        if not target_channel_id:
+            target_channel_id = view.get("private_metadata") or None
+
+        tz = (
+            state.get("tz_block", {})
+                 .get("tz_input", {})
+                 .get("value", "")
+                 .strip()
+            or None
+        )
+        style = (
+            state.get("style_block", {})
+                 .get("style_input", {})
+                 .get("value", "")
+                 .strip()
+            or None
+        )
+
+        if not target_channel_id:
+            await ack(
+                response_action="errors",
+                errors={
+                    "channel_block": (
+                        "morning brief needs a target channel — pick "
+                        "where it should be delivered."
+                    ),
+                },
+            )
+            return
+
+        try:
+            conn = connect()
+            try:
+                with transaction(conn):
+                    tid = threads_mod.get_or_create_thread(
+                        conn,
+                        channel_id=target_channel_id,
+                        thread_external_id=None,
+                    )
+                    payload = {
+                        "topics": topics,
+                        "tz": tz,
+                        "style": style,
+                    }
+                    sid = sched_mod.insert_schedule(
+                        conn,
+                        cron_expr=cron_expr,
+                        task=(
+                            "Morning brief: see schedule.payload_json "
+                            "for topics + style."
+                        ),
+                        mode="chat",
+                        thread_id=tid,
+                        target_channel_id=target_channel_id,
+                        kind="morning_brief",
+                        payload=payload,
+                    )
+                    row = conn.execute(
+                        "SELECT next_run_at FROM schedules WHERE id = ?",
+                        (sid,),
+                    ).fetchone()
+            finally:
+                conn.close()
+        except ValueError as e:
+            stripped = cron_expr.strip()
+            hint = ""
+            if stripped and " " not in stripped:
+                hint = (
+                    " (cron needs 5 space-separated fields — e.g. "
+                    "`0 12 * * *` for daily 12:00 UTC)"
+                )
+            await ack(
+                response_action="errors",
+                errors={
+                    "cron_block": f"invalid cron `{cron_expr}` — {e}{hint}",
+                },
+            )
+            return
+
+        await ack()
+        next_run = row["next_run_at"] if row else "?"
+        try:
+            user_id = body.get("user", {}).get("id")
+            await client.chat_postMessage(
+                channel=user_id,
+                text=(
+                    f"📰 morning brief scheduled `{sid}` — "
+                    f"`{cron_expr}` UTC\n"
+                    f"   next fire: *{next_run} UTC*\n"
+                    f"   destination: <#{target_channel_id}>\n"
+                    f"   topics: "
+                    + (", ".join(topics) if topics else "(none — "
+                       "Donna will pick from your saved knowledge)")
+                    + "\n   dry-run any time with: "
+                      f"`/donna_brief_run_now {sid}`"
+                ),
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("slack.brief_setup_confirm_failed", error=str(e))
+
+    @app.command("/donna_brief_run_now")
+    async def cmd_brief_run_now(ack, body, client):
+        # v0.7.0: dry run a configured brief on demand. Useful for
+        # operator-driven validation right after /donna_brief_setup
+        # without waiting for the cron tick.
+        if not _is_allowed_command(body):
+            await ack(text="not authorized")
+            return
+        sid = (body.get("text") or "").strip()
+        if not sid:
+            await ack(
+                text=(
+                    "Usage: `/donna_brief_run_now <sch_...>` — "
+                    "list with `/donna_schedules`."
+                )
+            )
+            return
+        if not sid.startswith("sch_"):
+            await ack(
+                text=(
+                    f"`{sid[:20]}` is not a schedule id "
+                    "(must start with `sch_`)"
+                )
+            )
+            return
+        from ..jobs.morning_brief import fire_morning_brief_now
+
+        jid = fire_morning_brief_now(schedule_id=sid)
+        if jid is None:
+            await ack(
+                text=(
+                    f"`{sid[:20]}`: not found, not a morning_brief "
+                    "kind, or no destination configured. Check "
+                    "`/donna_schedules`."
+                )
+            )
+            return
+        await ack(
+            text=(
+                f"📰 brief running on demand — job `{jid[:18]}…`. "
+                "Will post to the configured channel when complete."
+            )
+        )
+
+    # --------------------------------------------------------------
     # Slash: /history /budget /cancel /status
     # --------------------------------------------------------------
 
@@ -1083,6 +1285,113 @@ def _schedule_modal_view(*, initial_channel: str | None = None) -> dict:
                          "text": {"type": "plain_text", "text": "speculative"}},
                     ],
                 },
+            },
+        ],
+    }
+
+
+def _brief_setup_modal_view(*, initial_channel: str | None = None) -> dict:
+    """v0.7.0: morning brief setup modal.
+
+    Collects cron + target channel + topics list (free-form, comma- or
+    newline-separated) + optional tz label and style hint. Persists as
+    a schedule with kind='morning_brief' and payload_json carrying the
+    topic list.
+    """
+    channel_input: dict = {
+        "type": "conversations_select",
+        "action_id": "channel_input",
+        "placeholder": {
+            "type": "plain_text",
+            "text": "Pick a channel for daily brief delivery",
+        },
+        "filter": {"include": ["public", "private", "im"]},
+    }
+    if initial_channel:
+        channel_input["initial_conversation"] = initial_channel
+
+    return {
+        "type": "modal",
+        "callback_id": "brief_setup_modal",
+        "title": {"type": "plain_text", "text": "Morning brief setup"},
+        "submit": {"type": "plain_text", "text": "Schedule brief"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "private_metadata": initial_channel or "",
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "cron_block",
+                "label": {
+                    "type": "plain_text",
+                    "text": "Cron expression (UTC)",
+                },
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "cron_input",
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": (
+                            "0 12 * * *  (daily 12:00 UTC = 8am EDT / "
+                            "7am EST)"
+                        ),
+                    },
+                },
+            },
+            {
+                "type": "input",
+                "block_id": "channel_block",
+                "label": {
+                    "type": "plain_text",
+                    "text": "Where should the brief go?",
+                },
+                "element": channel_input,
+            },
+            {
+                "type": "input",
+                "block_id": "topics_block",
+                "label": {
+                    "type": "plain_text",
+                    "text": "Topics (comma- or line-separated)",
+                },
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "topics_input",
+                    "multiline": True,
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": (
+                            "AI safety, rate limiting, personal-AI "
+                            "products, climate policy"
+                        ),
+                    },
+                },
+                "optional": True,
+            },
+            {
+                "type": "input",
+                "block_id": "tz_block",
+                "label": {
+                    "type": "plain_text",
+                    "text": "Your timezone label (display only, e.g. America/New_York)",
+                },
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "tz_input",
+                },
+                "optional": True,
+            },
+            {
+                "type": "input",
+                "block_id": "style_block",
+                "label": {
+                    "type": "plain_text",
+                    "text": "Style hint (optional, e.g. 'punchy bullets, no fluff')",
+                },
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "style_input",
+                },
+                "optional": True,
             },
         ],
     }

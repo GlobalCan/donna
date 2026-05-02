@@ -1,5 +1,103 @@
 # Changelog
 
+## [0.7.0] — 2026-05-02 — Morning brief vertical slice
+
+The first proactive product workflow. v0.6 was the ops consolidation
+sprint Codex called for. v0.7 starts shipping product on top.
+
+### Why this shape
+
+Codex's 2026-05-02 review on the overnight plan rewrote my proposed
+design. The implementation here follows that guidance verbatim:
+
+- **One source of truth for cron + destination.** `schedules` already
+  has cron, target_channel_id, and the scheduler poll loop. Don't
+  build a parallel `brief_configs` table with its own cron — discriminate
+  via a single `kind` column + payload_json.
+- **Idempotency before shipping.** Two scheduler ticks within the same
+  minute, or any retry from `recover_stale`, must produce exactly one
+  delivered brief. The `brief_runs(schedule_id, fire_key)` UNIQUE
+  constraint guarantees it at the SQL layer.
+- **Brief composition runs in the normal `jobs` / `JobContext` path,
+  NOT in `AsyncTaskRunner`.** AsyncTaskRunner has a 60s lease and no
+  heartbeat — fine for short fanouts (safe_summary backfill, alerts)
+  but wrong for a news+search+model+synthesis workflow that can run
+  several minutes. Brief jobs get full heartbeat + retry + cost
+  tracking via the established agent loop.
+- **Slash commands write config and return fast.** No inline LLM work
+  in the slash handler — Slack's 3s timeout is non-negotiable.
+- **Topic count + length caps in the parser.** Misconfigured payload
+  can't fan out to 50 search calls and burn the daily cost cap.
+- **Brief output is tainted.** Web/news tools mark the job tainted
+  via the existing taint-propagation; outbox renders with the
+  tainted-content wrapper.
+
+### Schema (migration 0013)
+
+- `schedules.kind` (default 'task') — discriminator for `Scheduler._fire`.
+- `schedules.payload_json` — kind-specific config. For 'morning_brief':
+  `{"topics": [...], "tz": "America/New_York", "style": "..."}`.
+- `brief_runs` table — `(schedule_id, fire_key, job_id, status)` with
+  `UNIQUE(schedule_id, fire_key)`. fire_key = UTC datetime of the
+  intended fire bucketed to the minute.
+
+Forward-only. Existing schedules get `kind='task'` via the default.
+Legacy free-form path is unchanged.
+
+### New code
+
+- `src/donna/memory/brief_runs.py` — `fire_key_for(when)`,
+  `claim_brief_run(...)` (atomic INSERT ... ON CONFLICT DO NOTHING),
+  `list_recent_runs`, `update_status`.
+- `src/donna/jobs/morning_brief.py` — `_parse_payload` with
+  `MAX_TOPICS=8` and `TOPIC_CHAR_LIMIT=80` caps; `compose_brief_seed_prompt`
+  for the agent's task seed; `fire_morning_brief(sched, fire_at)` and
+  `fire_morning_brief_now(schedule_id)`.
+- `Scheduler._fire` dispatches by kind. The legacy 'task' branch is
+  unchanged.
+
+### Slack UX
+
+- `/donna_brief_setup` — modal with cron, target channel, topics list
+  (comma- or newline-separated), tz label (display only), style hint.
+- `/donna_brief_run_now <sch_...>` — operator-triggered dry run. Uses
+  the same fire path with `fire_at=now`, so it has its own fire_key
+  and won't conflict with the regular schedule.
+- Manifest updated for both commands.
+
+### Operator panel
+
+- `botctl brief-runs list [--limit N]` — shows recent fires with
+  schedule, fire_key, job, status. "Did the brief actually fire today?"
+  is now one command instead of grepping logs.
+
+### Tests
+
+19 new tests in `test_morning_brief.py`:
+
+- `fire_key` bucketing (3 tests)
+- payload parsing + caps (5)
+- `fire_morning_brief` end-to-end + dedup (4)
+- `fire_morning_brief_now` happy path + wrong kind + unknown id (3)
+- `Scheduler._fire` dispatches by kind (2)
+- `claim_brief_run` race-safety at SQL layer (1)
+- `botctl brief-runs list` rendering (1) + empty state (1)
+
+542 total tests green (523 v0.6.3 baseline + 19 new). Ruff clean.
+Migration linter green on 13 migrations.
+
+### Deferred from v0.7.0 (follow-ups, not blockers)
+
+- Brief job status reflected on brief_runs.status. Currently brief_runs
+  starts at 'queued'. Tying job state transitions back to brief_runs
+  rows is observability nice-to-have; defer until operator hits the
+  ambiguity in real usage.
+- Brief job rendering style (e.g. Block Kit headers per topic). Current
+  implementation produces prose via the agent loop; visual hierarchy
+  comes naturally from markdown rendering.
+- Re-summarization across multiple briefs (weekly digest). This is a
+  v0.7.x or v0.8 feature.
+
 ## [0.6.3] — 2026-05-02 — Canonical target_channel_id resolver
 
 Codex's 2026-05-02 review on the overnight plan flagged that
