@@ -54,12 +54,21 @@ retention_app = typer.Typer(
         "knowledge_*, messages, cost_ledger) are NOT touched."
     ),
 )
+brief_runs_app = typer.Typer(
+    help=(
+        "Morning brief runs (v0.7.0): list recent fires + their job "
+        "ids. fire_key is the UTC datetime bucketed to the minute; "
+        "the UNIQUE(schedule_id, fire_key) constraint dedupes "
+        "duplicate scheduler ticks."
+    ),
+)
 app.add_typer(schedule_app, name="schedule")
 app.add_typer(traces_app, name="traces")
 app.add_typer(heuristics_app, name="heuristics")
 app.add_typer(dead_letter_app, name="dead-letter")
 app.add_typer(async_tasks_app, name="async-tasks")
 app.add_typer(retention_app, name="retention")
+app.add_typer(brief_runs_app, name="brief-runs")
 
 console = Console()
 
@@ -1178,6 +1187,46 @@ def retention_purge(
     console.print(table)
     total = sum(counts.values())
     console.print(f"[dim]total rows {verb}: {total}[/dim]")
+
+
+# ---- brief-runs (v0.7.0) ----------------------------------------------------
+#
+# Operator visibility for morning brief fires. Codex's "smoke alarm
+# without a panel" rule: every kind-specific workflow that uses an
+# idempotency log should expose it via botctl so the operator can
+# answer "did the brief actually fire today?" without grepping logs.
+
+
+@brief_runs_app.command("list")
+def brief_runs_list(
+    limit: int = typer.Option(
+        25, "--limit", help="Newest N runs (default 25).",
+    ),
+) -> None:
+    """List recent morning brief schedule fires."""
+    from ..memory import brief_runs as br_mod
+
+    conn = connect()
+    try:
+        runs = br_mod.list_recent_runs(conn, limit=limit)
+    finally:
+        conn.close()
+    if not runs:
+        console.print("[dim]no brief runs yet[/dim]")
+        return
+    table = Table(
+        "run_id", "schedule", "fire_key", "job", "status", "created_at",
+    )
+    for r in runs:
+        table.add_row(
+            r["id"][:18],
+            r["schedule_id"][:18],
+            str(r["fire_key"])[:25],
+            r["job_id"][:18],
+            r["status"],
+            str(r["created_at"])[:19],
+        )
+    console.print(table)
 
 
 if __name__ == "__main__":

@@ -6,11 +6,16 @@ operator's DM. Set via the `/schedule` modal's channel-select input.
 When NULL, replies go to the originating thread (the channel from
 which `/schedule` was invoked).
 
+v0.7.0 adds `kind` + `payload_json` to discriminate the existing
+free-form `task` schedules from kind-specific workflows like the
+`morning_brief`. Scheduler._fire dispatches by kind.
+
 `target_thread_ts` is reserved for replying inside an existing thread;
 not yet wired through `/schedule` UX.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime
 
@@ -29,6 +34,8 @@ def insert_schedule(
     thread_id: str | None = None,
     target_channel_id: str | None = None,
     target_thread_ts: str | None = None,
+    kind: str = "task",
+    payload: dict | None = None,
 ) -> str:
     """Insert a schedule row.
 
@@ -36,20 +43,31 @@ def insert_schedule(
     fix). `target_channel_id` overrides delivery to a specific channel
     when present; otherwise replies use the originating thread's
     channel.
+
+    `kind` (v0.7.0) is the dispatch discriminator for Scheduler._fire.
+    Default 'task' preserves existing free-form scheduled-task
+    semantics. New kinds: 'morning_brief'.
+
+    `payload` (v0.7.0) is kind-specific config serialized to JSON.
+    For 'morning_brief': {"topics": [...], "tz": "America/New_York",
+    "max_topics": 5}.
     """
     _validate_cron(cron_expr)
     sid = ids.schedule_id()
     next_run = croniter(cron_expr, datetime.now(UTC)).get_next(datetime)
+    payload_json = json.dumps(payload) if payload is not None else None
     conn.execute(
         """
         INSERT INTO schedules
             (id, agent_scope, cron_expr, task, mode, next_run_at,
-             thread_id, target_channel_id, target_thread_ts)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             thread_id, target_channel_id, target_thread_ts,
+             kind, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             sid, agent_scope, cron_expr, task, mode, next_run,
             thread_id, target_channel_id, target_thread_ts,
+            kind, payload_json,
         ),
     )
     return sid

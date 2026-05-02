@@ -104,6 +104,14 @@ features:
       description: Disable a schedule (sch_...) so it stops firing
       should_escape: false
 
+    - command: /donna_brief_setup
+      description: Set up a daily morning brief (modal)
+      should_escape: false
+
+    - command: /donna_brief_run_now
+      description: Dry-run a configured morning brief immediately
+      should_escape: false
+
     - command: /donna_status
       description: Job status
       should_escape: false
