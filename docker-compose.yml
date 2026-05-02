@@ -33,8 +33,12 @@ services:
     # current schema. Pre-v0.6 the worker also ran alembic and raced bot's
     # migration step, leaving partial schema on failure (caught 2026-05-01
     # during v0.5.2 deploy).
+    #
+    # Use CMD-SHELL form so we go through `/bin/sh -c` which has `test`
+    # as a builtin. The bare `["CMD", "test", ...]` form requires
+    # `/usr/bin/test` to exist, which isn't guaranteed in -slim images.
     healthcheck:
-      test: ["CMD", "test", "-f", "/tmp/migrations_complete"]
+      test: ["CMD-SHELL", "test -f /tmp/migrations_complete"]
       interval: 2s
       timeout: 1s
       retries: 60
