@@ -81,6 +81,13 @@ class Scheduler:
                     agent_scope=sched.get("agent_scope", "orchestrator"),
                     mode=mode,
                     thread_id=sched.get("thread_id"),
+                    # v0.6.3: back-link the job to its schedule so the
+                    # Slack adapter resolver can prefer
+                    # schedules.target_channel_id over thread.channel_id.
+                    # Without this, every scheduled job resolved via the
+                    # thread path even when the operator had explicitly
+                    # set a different target_channel_id (silent drift).
+                    schedule_id=sched["id"],
                 )
                 sched_mod.mark_ran(conn, schedule_id=sched["id"], cron_expr=sched["cron_expr"])
             log.info(
