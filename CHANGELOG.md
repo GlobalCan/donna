@@ -1,5 +1,74 @@
 # Changelog
 
+## [0.6.1] — 2026-05-02 — Two deploy hotfixes + slack-doctor kwarg
+
+Two small fixes after the v0.6.0 droplet deploy surfaced production-only
+issues:
+
+### Hotfix #1 — bot healthcheck uses CMD-SHELL (was deploy-blocking)
+
+v0.6.0 deploy stuck — `docker compose up` hung at "Container donna-bot
+Waiting", never reaching `Up (healthy)`. Worker refused to start with
+`dependency failed to start: container donna-bot is unhealthy`.
+
+Root cause: the healthcheck used bare `["CMD", "test", "-f", ...]`
+form, which invokes `/usr/bin/test` directly. `python:3.14-slim`
+strips coreutils aggressively enough that `/usr/bin/test` is missing.
+Healthcheck failed forever -> worker waited forever via
+`depends_on: condition: service_healthy`.
+
+Fix: `["CMD-SHELL", "test -f /tmp/migrations_complete"]` invokes
+through `/bin/sh -c` which has `test` as a builtin. Works regardless
+of which coreutils binaries ship in the image.
+
+### Hotfix #2 — slack-doctor passes app_token kwarg
+
+`botctl slack-doctor` crashed mid-run with:
+
+```
+TypeError: WebClient.apps_connections_open() missing 1 required
+keyword-only argument: 'app_token'
+```
+
+slack_sdk requires `app_token` as a keyword arg to
+`apps.connections.open()` even when the WebClient was constructed
+with that token. apps.* methods are scoped to the app rather than
+the bot, so they enforce explicit pass-through.
+
+Fix: `app_client.apps_connections_open(app_token=app_token)`. Plus
+a generic Exception catch around the call so future API drift reports
+loud but doesn't crash botctl mid-check.
+
+### Tests + validation
+
+- 503 tests green (501 v0.6.0 baseline + 2 new in slack-doctor for
+  kwarg + TypeError catch)
+- Ruff clean
+- Both hotfixes deploy-validated on the droplet:
+  - Bot reaches `Up (healthy)` within ~6s of `up -d`
+  - Worker comes up cleanly after bot's healthcheck passes
+  - Migration 0011 (async_tasks) auto-applies via the entrypoint
+  - alembic_version = 0011
+
+### Lessons
+
+Two consecutive deploy hotfixes — both "tests pass, prod breaks" cases:
+
+- **CMD vs CMD-SHELL** isn't unit-testable without spinning up the
+  actual container (would need a docker-in-docker integration test).
+  Codex's "integration spine" item caught V50-1-class bugs but not
+  this class. Lesson: integration tests should also exercise the
+  Dockerfile/compose stack, not just the Python code.
+
+- **slack_sdk kwarg requirements** weren't caught because the unit
+  tests mock WebClient methods with MagicMock, which accepts any
+  kwargs. The real slack_sdk enforces signatures. Lesson: for
+  diagnostics like slack-doctor, write at least one test against a
+  realistic stub (not raw MagicMock) that mimics the actual
+  slack_sdk method signatures.
+
+Both lessons logged in brain notes for the next session.
+
 ## [0.6.0] — 2026-05-02 — Ops consolidation bundle
 
 Codex 2026-05-01 review framed the problem: "Donna is on the right

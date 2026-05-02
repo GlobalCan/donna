@@ -25,6 +25,23 @@ Before anything else, read these files. Everything below assumes you have.
 
 ## 1 · Where we are
 
+**Donna v0.6.1 — Ops consolidation bundle SHIPPED (2026-05-02).**
+Live in production; bot healthy, worker up, schema at alembic 0011.
+8 numbered ops items + V50-2 channel-target schedule + V50-3 @donna
+mentions all live-validated. Two deploy hotfixes (CMD-SHELL healthcheck,
+slack-doctor app_token kwarg) caught and fixed. 503 tests green.
+
+Codex's 2026-05-01 holistic review framed v0.6 as the "ops consolidation"
+phase before product work. That phase is now done. Next per Codex's
+roadmap: v0.7 first real product workflow (morning briefing recommended).
+
+See `docs/POST_COMPACTION_2026_05_02.md` for the post-compaction
+bootstrap prompt.
+
+---
+
+## 1.legacy · Pre-v0.6 historical (preserved for context)
+
 **Donna v0.5.0 — Slack adapter retool LIVE-VALIDATED (2026-05-01).**
 Discord adapter retired in favor of Slack via Socket Mode. Pre-v0.5.0
 history preserved at git tag `legacy/v0.4.4-discord`. Bot live in

@@ -472,6 +472,33 @@ smoke tests green) but surfaced or left several issues for v0.5.1:
 | V50-9 | **`secrets/prod.enc.yaml` updated on droplet but not pushed to GitHub.** Droplet's deploy key is read-only by design; sops edit committed locally but `git push` fails. | **RESOLVED** | Operator flipped deploy key writable, pushed v0.5.0 secrets commit, flipped back. Token rotation runbook now documents the dance. |
 | **NEW v0.5.1** | **Backup verifier was blind to migration 0008 schema changes.** `donna-verify-backup.sh` did `integrity_check` + row counts but didn't verify INTEGER→TEXT type changes from migration 0008 or the new outbox_dead_letter additions from 0009. A pre-0008 backup would silently "pass" but break `posted_message_id` deserialization on restore. | **FIXED v0.5.1** | Verifier now asserts `alembic_version >= 0008`, all Slack-shaped columns are TEXT, and 0009 dead-letter additions exist when applicable. Codex 2026-05-01 review caught the gap. |
 
+### v0.6 follow-ups — ops consolidation bundle (2026-05-02)
+
+v0.6.0 shipped clean (4/4 v0.5 follow-ups closed, 8 numbered items)
+but the deploy surfaced two production-only bugs:
+
+| # | Symptom / gap | Status | Notes |
+|---|---|---|---|
+| V60-1 | **Bot healthcheck used bare `CMD` form.** `["CMD", "test", "-f", ...]` invokes `/usr/bin/test` which isn't shipped in `python:3.14-slim`. Healthcheck failed forever; worker stuck on `depends_on: condition: service_healthy`. v0.6.0 deploy hung. | **FIXED v0.6.0-hotfix** | `CMD-SHELL` form invokes through `/bin/sh -c` which has `test` as a builtin. Brain note: `docker-compose-healthcheck-cmd-vs-cmd-shell.md`. |
+| V60-2 | **slack-doctor crashed mid-run.** `WebClient.apps_connections_open()` requires `app_token=` kwarg explicitly even when WebClient was constructed with that token. apps.* methods enforce app-scoped pass-through. | **FIXED v0.6.1** | Pass `app_token=app_token` explicitly. Plus generic Exception catch so future kwarg drift logs loud but doesn't crash. Brain note: `slack-sdk-apps-connections-open-requires-app-token-kwarg.md`. |
+| V60-3 | **Two consecutive deploy hotfixes.** Both "tests pass, prod breaks" — neither caught by unit tests because they require real Docker/slack_sdk integration. | Lesson logged | Future integration spine should include a "deploy-shaped" test (docker-in-docker if practical) and a slack-doctor test against a slack_sdk-realistic stub (not raw MagicMock). Defer until the next production deploy hotfix forces the issue. |
+| V60-4 | **slack-doctor over-fails on `users.conversations: missing_scope`.** Donna's manifest deliberately doesn't grant `channels:read` (Codex review: "would let bot read all channel chat, not just mentions. Privacy + token blast radius"). slack-doctor's "list member channels" probe needs that scope and throws missing_scope. Bot is functionally healthy regardless. | Open — v0.6.2 fix | Demote `missing_scope` on the channel-listing path to a warning ("scope not granted; channel listing skipped") rather than a fail. Bot operates fine without channels:read; the listing is operator situational awareness, not a runtime requirement. |
+
+### v0.6 deferred items (deliberate punts, all tracked for v0.6.x or v0.7)
+
+Per Codex's 2026-05-01 holistic review, these were intentionally
+not in v0.6:
+
+| Item | Why deferred | Target |
+|---|---|---|
+| #9 Prompt-version-compat at resume | Current "tool not registered" error path covers the common case | v0.6.1 / v0.7 |
+| #10 Eval realism (poisoned-corpora goldens) | Bigger eval-design work; deserves its own release | v0.7 |
+| #11 Operator fatigue (consent batching + alert digest) | UX redesign; pairs naturally with morning brief | v0.7 |
+| #15 Cost timing fix (sanitizer attribution after DONE) | Cosmetic ledger weirdness; not actually costing the operator | When it bites |
+| #16 JobContext extraction | 2 days of focused refactor; deserves dedicated PR rather than ballooning v0.6 | v0.7 (before/after morning brief) |
+| #17 Auto-update timer | Needs restore drill to pass first | After restore drill |
+| #14 Speculative/debate live smoke | Operator-driven via /donna_speculate, /donna_debate slash commands | Whenever operator runs them |
+
 **Validation:** v0.5.0 smoke 4/4 green in operator's personal Slack workspace. DM intake, `/donna_ask` grounded with citations, `/donna_schedule` modal + delivery, Block Kit consent buttons all work. 373 tests pass, ruff clean.
 
 ### Market-research factual corrections
