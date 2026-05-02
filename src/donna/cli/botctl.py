@@ -743,6 +743,15 @@ def slack_doctor(
         _fail(f"apps.connections.open raised {type(e).__name__}: {e}")
 
     # 4. Channels Donna is in ---------------------------------------------
+    # V60-4 (v0.6.2): users.conversations needs `channels:read` (and
+    # `groups:read` for private). The v0.5.0 manifest deliberately omits
+    # both per Codex's privacy review ("would let bot read all channel
+    # chat, not just mentions. Privacy + token blast radius."). Channel
+    # listing is operator situational awareness, NOT a runtime
+    # requirement — the bot delivers via the channels it's been
+    # explicitly invited to regardless. Demote `missing_scope` here to
+    # WARN so slack-doctor exits 0 on a healthy-but-minimally-scoped
+    # bot.
     console.print("\n[bold]bot channel membership[/bold]")
     try:
         chans = client.users_conversations(
@@ -766,7 +775,15 @@ def slack_doctor(
             if hasattr(e, "response") and isinstance(e.response.data, dict)
             else "unknown"
         )
-        _fail(f"users.conversations failed: {code}")
+        if code == "missing_scope":
+            _warn(
+                "users.conversations: missing_scope (channels:read / "
+                "groups:read deliberately not granted per v0.5.0 "
+                "security review). Channel listing skipped; bot still "
+                "delivers to invited channels normally."
+            )
+        else:
+            _fail(f"users.conversations failed: {code}")
 
     # 5. Optional delivery probe ------------------------------------------
     if delivery_channel:
