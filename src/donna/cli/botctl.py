@@ -33,9 +33,24 @@ app = typer.Typer(help="Donna ops CLI")
 schedule_app = typer.Typer(help="Schedule management")
 traces_app = typer.Typer(help="Trace / log management")
 heuristics_app = typer.Typer(help="Heuristic management: list / approve / retire")
+dead_letter_app = typer.Typer(
+    help=(
+        "outbox_dead_letter ops: list / show / retry / discard. "
+        "Shows rows the v0.5.1 Slack drainer routed off the live "
+        "outbox after terminal/unknown delivery errors."
+    ),
+)
+async_tasks_app = typer.Typer(
+    help=(
+        "async_tasks ops: list / show. v0.6 supervised work queue "
+        "(safe_summary backfill, future morning brief etc.)."
+    ),
+)
 app.add_typer(schedule_app, name="schedule")
 app.add_typer(traces_app, name="traces")
 app.add_typer(heuristics_app, name="heuristics")
+app.add_typer(dead_letter_app, name="dead-letter")
+app.add_typer(async_tasks_app, name="async-tasks")
 
 console = Console()
 
@@ -570,6 +585,308 @@ def traces_prune(older_than_days: int = typer.Option(30, "--older-than-days")) -
     finally:
         conn.close()
     console.print(f"🗑️  pruned {n} trace rows older than {older_than_days}d")
+
+
+# ---- dead-letter ------------------------------------------------------------
+#
+# Operator UX for the v0.5.1 outbox_dead_letter table. Codex's 2026-05-01
+# review: "smoke alarm without a panel = noise." When the V50-1 classifier
+# routes a delivery failure to dead-letter, the operator gets a throttled
+# DM AND can come here to inspect / retry / discard.
+
+
+def _dl_age(moved_at: str | None) -> str:
+    if not moved_at:
+        return "?"
+    try:
+        dt = (
+            datetime.fromisoformat(moved_at)
+            if isinstance(moved_at, str) else moved_at
+        )
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        delta = datetime.now(UTC) - dt
+        if delta.days >= 1:
+            return f"{delta.days}d"
+        h = delta.seconds // 3600
+        if h:
+            return f"{h}h"
+        m = (delta.seconds % 3600) // 60
+        return f"{m}m"
+    except (TypeError, ValueError):
+        return "?"
+
+
+@dead_letter_app.command("list")
+def dead_letter_list(
+    since: str = typer.Option(
+        "all", help="'30m' | '3h' | '1d' | '1w' | 'all'",
+    ),
+    error_class: str = typer.Option(
+        None, "--class",
+        help="Filter by error_class: terminal | unknown",
+    ),
+    limit: int = 50,
+) -> None:
+    """Show recent dead-lettered outbox rows."""
+    delta = _parse_since(since)
+    where: list[str] = []
+    params: list = []
+    if delta is not None:
+        where.append("moved_at >= ?")
+        params.append(datetime.now(UTC) - delta)
+    if error_class:
+        where.append("error_class = ?")
+        params.append(error_class)
+    sql = "SELECT id, source_table, source_id, job_id, channel_id, " \
+          "error_code, error_class, attempt_count, moved_at " \
+          "FROM outbox_dead_letter"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY moved_at DESC LIMIT ?"
+    params.append(limit)
+    conn = connect()
+    try:
+        rows = conn.execute(sql, params).fetchall()
+        total = conn.execute(
+            "SELECT COUNT(*) c FROM outbox_dead_letter"
+        ).fetchone()["c"]
+    finally:
+        conn.close()
+    if not rows:
+        console.print("[dim]no dead-letter rows match[/dim]")
+        return
+    table = Table(title=f"Dead-letter ({len(rows)} of {total})")
+    table.add_column("dl id")
+    table.add_column("kind")
+    table.add_column("error")
+    table.add_column("class")
+    table.add_column("channel")
+    table.add_column("attempts", justify="right")
+    table.add_column("age")
+    for r in rows:
+        table.add_row(
+            r["id"], r["source_table"], r["error_code"], r["error_class"],
+            (r["channel_id"] or "")[:12], str(r["attempt_count"]),
+            _dl_age(r["moved_at"]),
+        )
+    console.print(table)
+
+
+@dead_letter_app.command("show")
+def dead_letter_show(dl_id: str) -> None:
+    """Full provenance + payload of one dead-letter row."""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM outbox_dead_letter WHERE id = ?", (dl_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        console.print(f"[red]dead-letter {dl_id} not found[/red]")
+        raise typer.Exit(1)
+    console.print(f"[bold]{dl_id}[/bold]")
+    for k in (
+        "source_table", "source_id", "job_id", "channel_id", "thread_ts",
+        "tainted", "error_code", "error_class", "attempt_count",
+        "first_attempt_at", "last_attempt_at", "moved_at",
+    ):
+        console.print(f"  {k}: {row[k]}")
+    payload = row["payload"] or ""
+    if len(payload) > 2000:
+        console.print(f"\n[dim]payload ({len(payload)} chars, first 2000):[/dim]")
+        console.print(payload[:2000])
+    else:
+        console.print(f"\n[dim]payload:[/dim]\n{payload}")
+
+
+@dead_letter_app.command("retry")
+def dead_letter_retry(
+    dl_id: str,
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Skip confirmation",
+    ),
+) -> None:
+    """Move a dead-letter row back to its source outbox table for one
+    more delivery attempt. Use after fixing the underlying issue
+    (re-invite Donna to the channel, restore archived channel, etc.).
+
+    Resets attempt_count on the source row so it gets a fresh count
+    against the v0.5.1 classifier's max-retries policy.
+    """
+    import uuid
+
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM outbox_dead_letter WHERE id = ?", (dl_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        console.print(f"[red]dead-letter {dl_id} not found[/red]")
+        raise typer.Exit(1)
+
+    if row["source_table"] != "outbox_updates":
+        # We currently only dead-letter from outbox_updates (v0.5.1).
+        # Future kinds would need their own retry path.
+        console.print(
+            f"[red]retry not supported for source_table="
+            f"{row['source_table']!r}[/red]"
+        )
+        raise typer.Exit(2)
+
+    console.print(f"[bold]{dl_id}[/bold]  -> outbox_updates")
+    console.print(f"  channel: {row['channel_id']}")
+    console.print(f"  job: {row['job_id']}")
+    console.print(f"  error: {row['error_code']} ({row['error_class']})")
+    console.print(f"  prior attempts: {row['attempt_count']}")
+
+    if not force:
+        confirmed = typer.confirm(
+            "Re-enqueue this row for delivery?", default=False,
+        )
+        if not confirmed:
+            console.print("[dim]aborted[/dim]")
+            raise typer.Exit(0)
+
+    new_id = f"upd_{uuid.uuid4().hex[:12]}"
+    conn = connect()
+    try:
+        with transaction(conn):
+            conn.execute(
+                "INSERT INTO outbox_updates "
+                "(id, job_id, text, tainted) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    new_id, row["job_id"], row["payload"] or "",
+                    int(row["tainted"]),
+                ),
+            )
+            conn.execute(
+                "DELETE FROM outbox_dead_letter WHERE id = ?", (dl_id,),
+            )
+    finally:
+        conn.close()
+    console.print(f"♻️  re-enqueued as {new_id}")
+
+
+@dead_letter_app.command("discard")
+def dead_letter_discard(
+    dl_id: str,
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Skip confirmation",
+    ),
+) -> None:
+    """Permanently delete a dead-letter row. No retry, no recovery."""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id, channel_id, error_code, attempt_count "
+            "FROM outbox_dead_letter WHERE id = ?",
+            (dl_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        console.print(f"[red]dead-letter {dl_id} not found[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[bold]{dl_id}[/bold]  channel={row['channel_id']}  "
+        f"error={row['error_code']}  attempts={row['attempt_count']}"
+    )
+    if not force:
+        confirmed = typer.confirm(
+            "Permanently discard?", default=False,
+        )
+        if not confirmed:
+            console.print("[dim]aborted[/dim]")
+            raise typer.Exit(0)
+    conn = connect()
+    try:
+        with transaction(conn):
+            conn.execute(
+                "DELETE FROM outbox_dead_letter WHERE id = ?", (dl_id,),
+            )
+    finally:
+        conn.close()
+    console.print(f"🗑️  discarded {dl_id}")
+
+
+# ---- async-tasks ------------------------------------------------------------
+#
+# Operator UX for the v0.6 supervised work queue. Mirrors dead-letter shape
+# but read-only (retry happens automatically per AsyncTaskRunner policy).
+
+
+@async_tasks_app.command("list")
+def async_tasks_list(
+    status: str = typer.Option(
+        None, "--status",
+        help="Filter: pending | running | done | failed",
+    ),
+    kind: str = typer.Option(None, "--kind"),
+    limit: int = 50,
+) -> None:
+    """Show recent async_tasks rows."""
+    from ..memory import async_tasks as at_mod
+    conn = connect()
+    try:
+        rows = at_mod.list_tasks(
+            conn, status=status, kind=kind, limit=limit,
+        )
+        counts = at_mod.count_by_status(conn)
+    finally:
+        conn.close()
+    summary = " · ".join(
+        f"{k}={v}" for k, v in sorted(counts.items())
+    ) or "empty"
+    if not rows:
+        console.print(f"[dim]no rows match · totals: {summary}[/dim]")
+        return
+    table = Table(title=f"async_tasks · totals: {summary}")
+    table.add_column("id")
+    table.add_column("kind")
+    table.add_column("status")
+    table.add_column("attempts", justify="right")
+    table.add_column("scheduled_for")
+    table.add_column("last_error")
+    for r in rows:
+        err = (r["last_error"] or "")[:60]
+        table.add_row(
+            r["id"], r["kind"], r["status"], str(r["attempts"]),
+            str(r["scheduled_for"])[:19], err,
+        )
+    console.print(table)
+
+
+@async_tasks_app.command("show")
+def async_tasks_show(task_id: str) -> None:
+    """Full row for one async_tasks entry."""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM async_tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        console.print(f"[red]async_task {task_id} not found[/red]")
+        raise typer.Exit(1)
+    console.print(f"[bold]{task_id}[/bold]")
+    for k in (
+        "kind", "status", "attempts", "scheduled_for",
+        "created_at", "started_at", "finished_at",
+        "locked_by", "locked_until", "last_error",
+    ):
+        console.print(f"  {k}: {row[k]}")
+    payload = row["payload"] or ""
+    if len(payload) > 2000:
+        console.print(f"\n[dim]payload ({len(payload)} chars, first 2000):[/dim]")
+        console.print(payload[:2000])
+    else:
+        console.print(f"\n[dim]payload:[/dim]\n{payload}")
 
 
 if __name__ == "__main__":
