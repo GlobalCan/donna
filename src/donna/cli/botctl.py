@@ -46,11 +46,20 @@ async_tasks_app = typer.Typer(
         "(safe_summary backfill, future morning brief etc.)."
     ),
 )
+retention_app = typer.Typer(
+    help=(
+        "Retention policy: status / purge. Auto-purges traces, "
+        "dead_letter, tool_calls, async_tasks, jobs older than the "
+        "policy horizons. Operator-content tables (artifacts, "
+        "knowledge_*, messages, cost_ledger) are NOT touched."
+    ),
+)
 app.add_typer(schedule_app, name="schedule")
 app.add_typer(traces_app, name="traces")
 app.add_typer(heuristics_app, name="heuristics")
 app.add_typer(dead_letter_app, name="dead-letter")
 app.add_typer(async_tasks_app, name="async-tasks")
+app.add_typer(retention_app, name="retention")
 
 console = Console()
 
@@ -1087,6 +1096,61 @@ def async_tasks_show(task_id: str) -> None:
         console.print(payload[:2000])
     else:
         console.print(f"\n[dim]payload:[/dim]\n{payload}")
+
+
+# ---- retention --------------------------------------------------------------
+
+
+@retention_app.command("status")
+def retention_status() -> None:
+    """Show per-table row totals and counts that auto-purge would
+    delete. Read-only; safe to run anytime."""
+    from ..memory import retention as ret_mod
+
+    conn = connect()
+    try:
+        report = ret_mod.status(conn)
+    finally:
+        conn.close()
+    table = Table("table", "total", "would purge", "policy (days)")
+    for name, info in report.items():
+        policy_days = ret_mod.RETENTION_DAYS.get(
+            name,
+            ret_mod.RETENTION_DAYS.get(f"{name}_terminal", "n/a"),
+        )
+        table.add_row(
+            name,
+            str(info.get("total", 0)),
+            str(info.get("would_purge", 0)),
+            str(policy_days),
+        )
+    console.print(table)
+
+
+@retention_app.command("purge")
+def retention_purge(
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Show counts without deleting (alias of `retention status`).",
+    ),
+) -> None:
+    """Apply retention policy: delete rows older than each table's
+    horizon. Idempotent — safe to run repeatedly."""
+    from ..memory import retention as ret_mod
+
+    conn = connect()
+    try:
+        with transaction(conn):
+            counts = ret_mod.purge_old(conn, dry_run=dry_run)
+    finally:
+        conn.close()
+    verb = "would purge" if dry_run else "purged"
+    table = Table("table", verb)
+    for name, n in counts.items():
+        table.add_row(name, str(n))
+    console.print(table)
+    total = sum(counts.values())
+    console.print(f"[dim]total rows {verb}: {total}[/dim]")
 
 
 if __name__ == "__main__":
