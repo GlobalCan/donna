@@ -34,6 +34,13 @@ async def run_job(job_id: str, worker_id: str, **_ignored) -> None:
         elif mode == JobMode.DEBATE:
             from ..modes.debate import run_debate_in_context
             await run_debate_in_context(ctx)
+        elif mode == JobMode.VALIDATE:
+            # v0.7.1: URL-bounded grounded critique. Single URL only;
+            # SSRF-safe fetch; ephemeral chunks (not persisted to
+            # knowledge_chunks); GROUNDED_RESPONSE_SCHEMA + verbatim
+            # quoted_span validator on the output.
+            from ..modes.validate import run_validate
+            await run_validate(ctx)
         else:  # CHAT and default
             await _run_chat(ctx)
 

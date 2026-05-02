@@ -35,6 +35,7 @@ class JobMode(StrEnum):
     GROUNDED = "grounded"
     SPECULATIVE = "speculative"
     DEBATE = "debate"
+    VALIDATE = "validate"        # v0.7.1 URL-bounded grounded critique
 
 
 @dataclass

@@ -112,6 +112,10 @@ features:
       description: Dry-run a configured morning brief immediately
       should_escape: false
 
+    - command: /donna_validate
+      description: Validate a URL with verbatim citations + SSRF safety
+      should_escape: false
+
     - command: /donna_status
       description: Job status
       should_escape: false

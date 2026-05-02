@@ -623,6 +623,76 @@ def register_handlers(bot: DonnaSlackBot) -> None:
         await ack(text="\n".join(lines))
 
     # --------------------------------------------------------------
+    # Slash: /donna_validate <url> [claim]
+    # --------------------------------------------------------------
+
+    @app.command("/donna_validate")
+    async def cmd_validate(ack, body, client):
+        # v0.7.1: URL-bounded grounded critique. Operator pastes a URL
+        # (and optional claim to evaluate); Donna fetches with SSRF
+        # protection, chunks ephemerally, and runs grounded validation.
+        # Slash handler must ack within Slack's 3s timeout — the actual
+        # work runs in the worker.
+        if not _is_allowed_command(body):
+            await ack(text="not authorized")
+            return
+        raw = (body.get("text") or "").strip()
+        if not raw:
+            await ack(
+                text=(
+                    "Usage: `/donna_validate <url> [optional claim]` "
+                    "— I'll fetch the URL safely (no localhost / "
+                    "private IPs / cloud metadata), chunk it, and "
+                    "produce a critique with verbatim citations."
+                )
+            )
+            return
+
+        # Pre-flight URL safety so the operator gets fast feedback on a
+        # malformed/unsafe URL instead of waiting for the worker.
+        from ..security.url_safety import UnsafeURL, assert_safe_url
+        url, _, claim = raw.partition(" ")
+        url = url.strip()
+        claim = claim.strip() or None
+        try:
+            assert_safe_url(url)
+        except UnsafeURL as e:
+            await ack(text=f"unsafe URL: {e.reason}")
+            return
+
+        channel_id = body.get("channel_id")
+        try:
+            conn = connect()
+            try:
+                with transaction(conn):
+                    tid = threads_mod.get_or_create_thread(
+                        conn, channel_id=channel_id,
+                        thread_external_id=None,
+                    )
+                    # Compose task in the format run_validate expects.
+                    task = (
+                        url if claim is None
+                        else f"{url}\n---\nclaim: {claim}"
+                    )
+                    jid = jobs_mod.insert_job(
+                        conn, task=task, mode=JobMode.VALIDATE,
+                        thread_id=tid,
+                    )
+            finally:
+                conn.close()
+        except Exception as e:  # noqa: BLE001
+            log.warning("slack.validate_enqueue_failed", error=str(e))
+            await ack(text=f"failed to queue validation: {e}")
+            return
+
+        await ack(
+            text=(
+                f"📑 validating `{url[:60]}` — job `{jid[:18]}…`. "
+                "I'll post the critique here when complete."
+            )
+        )
+
+    # --------------------------------------------------------------
     # Slash: /donna_brief_setup (modal) + /donna_brief_run_now
     # --------------------------------------------------------------
 
