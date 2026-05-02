@@ -230,12 +230,19 @@ def register_handlers(bot: DonnaSlackBot) -> None:
             return
 
         # Otherwise, treat as a new chat-mode task.
-        job_id = await _enqueue_dm_task(
-            content=content,
-            channel_id=channel_id,
-            thread_ts=thread_ts,
-            external_msg_id=event.get("ts"),
-        )
+        try:
+            job_id = await _enqueue_dm_task(
+                content=content,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                external_msg_id=event.get("ts"),
+            )
+        except CostCapExceeded as e:
+            await _post_cost_cap_refusal(
+                client, channel_id=channel_id,
+                thread_ts=thread_ts, reason=e.reason,
+            )
+            return
         await client.chat_postMessage(
             channel=channel_id,
             thread_ts=thread_ts,
@@ -264,12 +271,19 @@ def register_handlers(bot: DonnaSlackBot) -> None:
         # In-thread reply: use the mention's own ts as thread_ts so the
         # reply lands in a thread instead of cluttering the channel.
         thread_ts = event.get("thread_ts") or event.get("ts")
-        job_id = await _enqueue_dm_task(
-            content=content,
-            channel_id=channel_id,
-            thread_ts=thread_ts,
-            external_msg_id=event.get("ts"),
-        )
+        try:
+            job_id = await _enqueue_dm_task(
+                content=content,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                external_msg_id=event.get("ts"),
+            )
+        except CostCapExceeded as e:
+            await _post_cost_cap_refusal(
+                client, channel_id=channel_id,
+                thread_ts=thread_ts, reason=e.reason,
+            )
+            return
         await client.chat_postMessage(
             channel=channel_id,
             thread_ts=thread_ts,
@@ -316,12 +330,16 @@ def register_handlers(bot: DonnaSlackBot) -> None:
                      "`/ask author_twain: walk through Huck's moral arc`"
             )
             return
-        jid = await _enqueue_slash_task(
-            body=body,
-            content=question,
-            agent_scope=scope,
-            mode=JobMode.GROUNDED,
-        )
+        try:
+            jid = await _enqueue_slash_task(
+                body=body,
+                content=question,
+                agent_scope=scope,
+                mode=JobMode.GROUNDED,
+            )
+        except CostCapExceeded as e:
+            await ack(text=f":warning: cost cap engaged ({e.reason}) — try again later")
+            return
         await ack(
             text=f"📌 Job `{jid[:18]}…` queued · scope `{scope}` · "
                  f"mode `grounded`",
@@ -337,10 +355,14 @@ def register_handlers(bot: DonnaSlackBot) -> None:
         if not question:
             await ack(text="Usage: `/speculate <scope>: <question>`")
             return
-        jid = await _enqueue_slash_task(
-            body=body, content=question, agent_scope=scope,
-            mode=JobMode.SPECULATIVE,
-        )
+        try:
+            jid = await _enqueue_slash_task(
+                body=body, content=question, agent_scope=scope,
+                mode=JobMode.SPECULATIVE,
+            )
+        except CostCapExceeded as e:
+            await ack(text=f":warning: cost cap engaged ({e.reason}) — try again later")
+            return
         await ack(text=f"📌 Job `{jid[:18]}…` queued · mode `speculative`")
 
     @app.command("/donna_debate")
@@ -372,10 +394,14 @@ def register_handlers(bot: DonnaSlackBot) -> None:
             "topic": topic.strip(),
             "rounds": rounds,
         })
-        jid = await _enqueue_slash_task(
-            body=body, content=task, agent_scope="orchestrator",
-            mode=JobMode.DEBATE,
-        )
+        try:
+            jid = await _enqueue_slash_task(
+                body=body, content=task, agent_scope="orchestrator",
+                mode=JobMode.DEBATE,
+            )
+        except CostCapExceeded as e:
+            await ack(text=f":warning: cost cap engaged ({e.reason}) — try again later")
+            return
         await ack(text=f"📌 Debate job `{jid[:18]}…` queued · {rounds} rounds")
 
     # --------------------------------------------------------------
@@ -731,6 +757,16 @@ def _normalize_body_for_view(body: dict) -> dict:
     return _normalize_body_for_button(body)
 
 
+class CostCapExceeded(Exception):
+    """v0.6 #7: raised by intake helpers when the daily/weekly hard cap
+    is exceeded. Caller catches it and posts a refusal reply instead of
+    creating a job."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 async def _enqueue_dm_task(
     *,
     content: str,
@@ -742,7 +778,13 @@ async def _enqueue_dm_task(
 
     Does NOT write the user message to `messages` at intake — that's
     `JobContext.finalize`'s responsibility (v0.4.3 dedup fix).
+
+    v0.6 #7: raises CostCapExceeded if the daily/weekly hard cap is hit.
     """
+    from ..observability import cost_guard
+    status = cost_guard.current_status()
+    if status.blocked:
+        raise CostCapExceeded(status.reason())
     conn = connect()
     try:
         with transaction(conn):
@@ -764,7 +806,14 @@ async def _enqueue_slash_task(
     *, body: dict, content: str, agent_scope: str, mode: JobMode,
 ) -> str:
     """Insert a job for a slash command. Captures the originating
-    channel as the destination thread."""
+    channel as the destination thread.
+
+    v0.6 #7: raises CostCapExceeded if the daily/weekly hard cap is hit.
+    """
+    from ..observability import cost_guard
+    status = cost_guard.current_status()
+    if status.blocked:
+        raise CostCapExceeded(status.reason())
     channel_id = body.get("channel_id") or ""
     conn = connect()
     try:
@@ -784,6 +833,30 @@ async def _enqueue_slash_task(
     finally:
         conn.close()
     return jid
+
+
+async def _post_cost_cap_refusal(
+    client, *, channel_id: str, thread_ts: str | None, reason: str,
+) -> None:
+    """Polite refusal posted when intake hits the hard cap. Same message
+    shape across all intake paths (DM, app_mention, slash command)."""
+    text = (
+        ":warning: Donna's cost cap is engaged — refusing new work.\n"
+        f"_{reason}_\n"
+        "Operator: clear with `botctl cost` and raise "
+        "`DONNA_DAILY_HARD_CAP_USD` / `DONNA_WEEKLY_HARD_CAP_USD` if "
+        "needed, or wait until the rolling window slides."
+    )
+    try:
+        await client.chat_postMessage(
+            channel=channel_id, thread_ts=thread_ts, text=text,
+            unfurl_links=False, unfurl_media=False,
+        )
+    except Exception as e:  # noqa: BLE001
+        from ..logging import get_logger
+        get_logger(__name__).warning(
+            "slack.cost_cap_refusal_failed", error=str(e),
+        )
 
 
 async def _resolve_consent(body: dict, client, *, approved: int) -> None:

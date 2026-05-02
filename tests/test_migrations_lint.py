@@ -74,7 +74,7 @@ def test_every_migration_has_required_attributes(
 ) -> None:
     """alembic needs revision / down_revision / branch_labels /
     depends_on at module top-level."""
-    for rev, m, path in migrations:
+    for _rev, m, path in migrations:
         for attr in ("revision", "down_revision", "branch_labels", "depends_on"):
             assert hasattr(m, attr), (
                 f"{path.name}: missing module attribute `{attr}`"
@@ -84,7 +84,7 @@ def test_every_migration_has_required_attributes(
 def test_revision_ids_are_4_digit_zero_padded(migrations: list) -> None:
     """Zero-padding lets `version >= '0008'` string-compare correctly
     in the backup verifier and other policy gates."""
-    for rev, m, path in migrations:
+    for rev, _m, path in migrations:
         assert isinstance(rev, str), (
             f"{path.name}: revision must be a str (got {type(rev).__name__})"
         )
@@ -95,7 +95,7 @@ def test_revision_ids_are_4_digit_zero_padded(migrations: list) -> None:
 
 def test_revision_id_matches_filename_prefix(migrations: list) -> None:
     """Filename `NNNN_*.py` and `revision = 'NNNN'` must agree."""
-    for rev, m, path in migrations:
+    for rev, _m, path in migrations:
         prefix = path.name[:4]
         assert prefix == rev, (
             f"{path.name}: filename prefix {prefix!r} != revision {rev!r}"
@@ -106,7 +106,7 @@ def test_no_branch_labels(migrations: list) -> None:
     """We don't use alembic branches. Setting branch_labels is a footgun
     — alembic gets opinions about merge directives that the project
     doesn't need."""
-    for rev, m, path in migrations:
+    for _rev, m, path in migrations:
         assert m.branch_labels is None, (
             f"{path.name}: branch_labels = {m.branch_labels!r}; must be None"
         )
@@ -160,7 +160,7 @@ def test_no_duplicate_revision_ids(migrations: list) -> None:
 
 
 def test_every_migration_has_upgrade_and_downgrade(migrations: list) -> None:
-    for rev, m, path in migrations:
+    for _rev, m, path in migrations:
         assert callable(getattr(m, "upgrade", None)), (
             f"{path.name}: upgrade() missing or not callable"
         )
@@ -172,7 +172,7 @@ def test_every_migration_has_upgrade_and_downgrade(migrations: list) -> None:
 def test_module_has_non_empty_docstring(migrations: list) -> None:
     """Every migration must explain WHY in its docstring. Short
     one-liners are acceptable but blank is not."""
-    for rev, m, path in migrations:
+    for _rev, m, path in migrations:
         doc = (m.__doc__ or "").strip()
         assert doc, f"{path.name}: missing module docstring (the WHY)"
         assert len(doc) > 20, (
