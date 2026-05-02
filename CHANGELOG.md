@@ -1,5 +1,87 @@
 # Changelog
 
+## [0.6.2] — 2026-05-02 — Incident response: runaway schedule, slack-doctor demote
+
+Two fixes triggered by a 2026-05-02 production incident: a `* * * * *`
+test schedule fired SCHED_OK every minute into #donna-test for ~30
+minutes before the operator escalated. Pre-fix the operator had **no
+Slack-callable way to stop it** — `/donna_cancel sch_...` silently
+no-op'd because the underlying SQL targeted the wrong table.
+
+### V60-5 — Slack-callable schedule disable + smart `/donna_cancel`
+
+**Root cause.** Pre-fix `/donna_cancel` always called
+`jobs_mod.set_status` against the `jobs` table. Schedule IDs (`sch_...`)
+miss every row, but `set_status` runs `UPDATE jobs WHERE id = ?` and
+returns True regardless of rowcount when `worker_id` is None. The slash
+command's `await ack(text=f"cancelled \`{job_id[:20]}\`")` always
+succeeded textually even when nothing was actually cancelled. Operator
+hit this twice during the incident — clicked through "cancelled"
+confirmations while SCHED_OK kept firing.
+
+**Fix.** Smart-route `/donna_cancel` by ID prefix:
+
+- `sch_...` → `disable_schedule(conn, sid)` with existence check
+- otherwise → `jobs_mod.set_status(conn, jid, CANCELLED)` with existence
+  check via `get_job` so non-existent IDs report "not found" instead of
+  silent success
+
+Plus a new explicit `/donna_schedule_disable <sid>` for muscle memory
+("disable the schedule, not just one fire of it"). Manifest updated.
+
+**Helpers refactored to module level** (`_route_cancel_or_disable`,
+`_disable_schedule_by_id`, `_cancel_job_by_id`) so the routing is
+unit-testable without spinning up a slack_bolt App. 10 regression tests
+in `test_slack_ux_cancel_routing.py` covering: smart-route schedule
+path, smart-route job path, idempotency on already-disabled schedules,
+not-found feedback for both ID kinds, the explicit `/donna_schedule_disable`
+command's prefix validation.
+
+**UX details:**
+
+- `/donna_cancel` usage: accepts either job ID or schedule ID;
+  feedback differentiates ("disabled schedule …" vs "cancelled job …")
+- Already-disabled schedules report "already disabled" (no double-side-effect)
+- Missing IDs report "not found" with a hint about prefixes
+- Both commands work without channels:read scope
+
+### V60-4 — slack-doctor demotes `users.conversations: missing_scope` to WARN
+
+`users.conversations` requires `channels:read` (or `groups:read`). The
+v0.5.0 manifest deliberately omits both per Codex's privacy review:
+"would let bot read all channel chat, not just mentions. Privacy +
+token blast radius."
+
+Channel listing is operator situational awareness, NOT a runtime
+requirement — Donna delivers to invited channels regardless. Pre-fix
+slack-doctor exited 1 on this path, so a healthy minimally-scoped bot
+appeared broken on every routine check.
+
+Fix: demote `missing_scope` to WARN with explanation. Other Slack
+errors on the same path (rate_limited, account_inactive, …) still
+fail loud. 2 regression tests in `test_botctl_slack_doctor.py`.
+
+### Tests + validation
+
+- 515 tests green (503 v0.6.1 baseline + 12 new V60-4/V60-5 tests)
+- Ruff clean
+- Manifest updated for `/donna_schedule_disable`
+
+### Operator notes
+
+The DM I sent during the incident still applies for the running
+schedule until the v0.6.2 image is deployed:
+
+```bash
+ssh bot@<droplet>
+cd /opt/donna
+docker compose exec bot /entrypoint.sh botctl schedule list
+docker compose exec bot /entrypoint.sh botctl schedule disable <sch_id>
+```
+
+After v0.6.2 deploys, the next incident is one slash command:
+`/donna_schedule_disable <sch_id>` (or `/donna_cancel <sch_id>`).
+
 ## [0.6.1] — 2026-05-02 — Two deploy hotfixes + slack-doctor kwarg
 
 Two small fixes after the v0.6.0 droplet deploy surfaced production-only

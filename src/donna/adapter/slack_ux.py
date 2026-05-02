@@ -151,6 +151,62 @@ def job_blocks(job) -> list[dict]:
 # ============================================================================
 
 
+def _disable_schedule_by_id(conn, sid: str) -> str:
+    """V60-5 (v0.6.2): shared helper for disabling a schedule by ID.
+
+    Returns user-facing feedback for slash-command ack(). Handles the
+    three cases:
+    - schedule not found
+    - already disabled
+    - newly disabled (success)
+    """
+    row = conn.execute(
+        "SELECT enabled FROM schedules WHERE id = ?", (sid,),
+    ).fetchone()
+    if row is None:
+        return f"schedule `{sid[:20]}` not found"
+    if not row["enabled"]:
+        return f"schedule `{sid[:20]}` already disabled"
+    with transaction(conn):
+        sched_mod.disable_schedule(conn, sid)
+    return f"🔕 disabled schedule `{sid[:20]}` (no further fires)"
+
+
+def _cancel_job_by_id(conn, jid: str) -> str:
+    """V60-5 (v0.6.2): shared helper for cancelling a job by ID.
+
+    Existence check before set_status so a typo'd / non-existent ID
+    doesn't silently succeed (pre-fix `jobs_mod.set_status` returned
+    True regardless of rowcount when worker_id was None).
+    """
+    job = jobs_mod.get_job(conn, jid)
+    if job is None:
+        return (
+            f"`{jid[:20]}` not found "
+            "(no matching job; schedule IDs start with `sch_`)"
+        )
+    with transaction(conn):
+        jobs_mod.set_status(conn, jid, JobStatus.CANCELLED)
+    return f"cancelled job `{jid[:20]}`"
+
+
+def _route_cancel_or_disable(target_id: str) -> str:
+    """V60-5 (v0.6.2): smart-route a /donna_cancel target by ID prefix.
+
+    - sch_... -> disable_schedule
+    - other   -> cancel job
+
+    Returns the user-facing feedback message.
+    """
+    conn = connect()
+    try:
+        if target_id.startswith("sch_"):
+            return _disable_schedule_by_id(conn, target_id)
+        return _cancel_job_by_id(conn, target_id)
+    finally:
+        conn.close()
+
+
 def _is_allowed_command(body: dict) -> bool:
     """Verify the slash command came from the allowlisted user/team."""
     s = settings()
@@ -611,20 +667,61 @@ def register_handlers(bot: DonnaSlackBot) -> None:
 
     @app.command("/donna_cancel")
     async def cmd_cancel(ack, body, client):
+        # V60-5 (v0.6.2): smart-route by ID prefix.
+        #
+        # Pre-fix this command silently no-op'd when given a schedule
+        # ID (sch_...) because jobs_mod.set_status executes
+        # `UPDATE jobs WHERE id = ?` and returns True regardless of
+        # rowcount. Operator hit this 2026-05-02 trying to stop a
+        # `* * * * *` test schedule — `/donna_cancel sch_...` returned
+        # "cancelled" twice but the schedule kept firing every minute.
         if not _is_allowed_command(body):
             await ack(text="not authorized")
             return
-        job_id = (body.get("text") or "").strip()
-        if not job_id:
-            await ack(text="Usage: `/cancel <job-id>`")
+        target_id = (body.get("text") or "").strip()
+        if not target_id:
+            await ack(
+                text=(
+                    "Usage: `/donna_cancel <id>` — accepts a job id "
+                    "(`job_...`) or schedule id (`sch_...`)."
+                )
+            )
+            return
+        await ack(text=_route_cancel_or_disable(target_id))
+
+    @app.command("/donna_schedule_disable")
+    async def cmd_schedule_disable(ack, body, client):
+        # V60-5 (v0.6.2): explicit semantics for stopping a runaway
+        # schedule from Slack. /donna_cancel smart-routes to the same
+        # path, but this exists so the operator never has to wonder
+        # whether `/donna_cancel sch_...` cancels a single fire or the
+        # whole schedule.
+        if not _is_allowed_command(body):
+            await ack(text="not authorized")
+            return
+        sid = (body.get("text") or "").strip()
+        if not sid:
+            await ack(
+                text=(
+                    "Usage: `/donna_schedule_disable <sch_...>` — "
+                    "list with `/donna_schedules`."
+                )
+            )
+            return
+        if not sid.startswith("sch_"):
+            await ack(
+                text=(
+                    f"`{sid[:20]}` is not a schedule id "
+                    "(must start with `sch_`)"
+                )
+            )
             return
         conn = connect()
         try:
-            with transaction(conn):
-                jobs_mod.set_status(conn, job_id, JobStatus.CANCELLED)
+            msg = _disable_schedule_by_id(conn, sid)
         finally:
             conn.close()
-        await ack(text=f"cancelled `{job_id[:20]}`")
+        await ack(text=msg)
 
     @app.command("/donna_status")
     async def cmd_status(ack, body, client):

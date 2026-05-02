@@ -386,3 +386,63 @@ def test_slack_doctor_lists_member_channels() -> None:
     assert "1 DMs" in result.output
     assert "donna-test" in result.output
     assert "morning-brief" in result.output
+
+
+# ---------- V60-4: missing_scope on channel listing is WARN, not FAIL ----
+
+
+@pytest.mark.usefixtures("fresh_db")
+def test_slack_doctor_demotes_users_conversations_missing_scope() -> None:
+    """V60-4 (v0.6.2): the v0.5.0 manifest deliberately omits
+    `channels:read` and `groups:read` per Codex's privacy review.
+    `users.conversations` requires those scopes for channel listing,
+    so it returns missing_scope on a healthy minimally-scoped bot.
+
+    Pre-fix slack-doctor exited 1 on this -> operator chasing a
+    non-existent failure on every routine check. Demote to WARN so
+    a healthy bot reports all-green.
+    """
+    bot_client = MagicMock()
+    bot_client.auth_test.return_value = _ok_auth_test()
+    bot_client.users_conversations.side_effect = _slack_error(
+        "missing_scope",
+    )
+    app_client = MagicMock()
+    app_client.apps_connections_open.return_value = _ok_connections_open()
+
+    def _make_client(token: str):
+        return app_client if token.startswith("xapp-") else bot_client
+
+    with patch(
+        "slack_sdk.web.client.WebClient", side_effect=_make_client,
+    ):
+        result = runner.invoke(app, ["slack-doctor"])
+    assert result.exit_code == 0, result.output
+    assert "WARN" in result.output
+    assert "missing_scope" in result.output
+    assert "Channel listing skipped" in result.output
+    assert "all green" in result.output
+
+
+@pytest.mark.usefixtures("fresh_db")
+def test_slack_doctor_other_users_conversations_errors_still_fail() -> None:
+    """V60-4 demote applies ONLY to missing_scope. Other Slack errors
+    on users.conversations (rate_limited, account_inactive, ...) are
+    still real problems that should fail loud."""
+    bot_client = MagicMock()
+    bot_client.auth_test.return_value = _ok_auth_test()
+    bot_client.users_conversations.side_effect = _slack_error(
+        "account_inactive",
+    )
+    app_client = MagicMock()
+    app_client.apps_connections_open.return_value = _ok_connections_open()
+
+    def _make_client(token: str):
+        return app_client if token.startswith("xapp-") else bot_client
+
+    with patch(
+        "slack_sdk.web.client.WebClient", side_effect=_make_client,
+    ):
+        result = runner.invoke(app, ["slack-doctor"])
+    assert result.exit_code == 1, result.output
+    assert "users.conversations failed: account_inactive" in result.output

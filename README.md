@@ -76,7 +76,7 @@ src/donna/
 
 ## Status
 
-**v0.6.1** · Python 3.14 · 503 tests green · **Slack adapter live in production with V50-1 dead-letter routing + V50-2 channel-target schedules + V50-3 @-mentions live-validated**, grounded mode end-to-end validated, modal-based `/schedule` validated, Block Kit consent buttons validated, scheduler delivery validated, dual-field session memory, **supervised async work queue** (`async_tasks` table + `AsyncTaskRunner`), **cost runaway guards** (daily/weekly hard caps + intake refusal), **retention policy** (traces / dead-letter / tool_calls / async_tasks / terminal jobs auto-purged), **migration linter + schema lifecycle policy**, three-layer backups (verifier schema-aware), Jaeger traces, overflow-to-artifact security pattern.
+**v0.6.2** · Python 3.14 · 515 tests green · **Slack adapter live in production with V50-1 dead-letter routing + V50-2 channel-target schedules + V50-3 @-mentions live-validated**, grounded mode end-to-end validated, modal-based `/schedule` validated, Block Kit consent buttons validated, scheduler delivery validated, **Slack-callable schedule disable** (V60-5: `/donna_cancel` smart-routes by ID prefix; new `/donna_schedule_disable`), dual-field session memory, **supervised async work queue** (`async_tasks` table + `AsyncTaskRunner`), **cost runaway guards** (daily/weekly hard caps + intake refusal), **retention policy** (traces / dead-letter / tool_calls / async_tasks / terminal jobs auto-purged), **migration linter + schema lifecycle policy**, three-layer backups (verifier schema-aware), Jaeger traces, overflow-to-artifact security pattern.
 
 - Foundation built and survived four Codex review passes (defect, adversarial
   challenge, Hermes comparison, round-2 same-class hunt) plus one self-run

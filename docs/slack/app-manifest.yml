@@ -97,7 +97,11 @@ features:
       should_escape: false
 
     - command: /donna_cancel
-      description: Cancel a job
+      description: Cancel a job (or schedule with sch_ prefix)
+      should_escape: false
+
+    - command: /donna_schedule_disable
+      description: Disable a schedule (sch_...) so it stops firing
       should_escape: false
 
     - command: /donna_status
