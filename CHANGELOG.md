@@ -1,5 +1,83 @@
 # Changelog
 
+## [0.7.1] — 2026-05-02 — `/donna_validate <url>` with SSRF protection
+
+URL-bounded grounded critique. Operator pastes a URL (and optional
+claim to evaluate); Donna fetches with SSRF guards, chunks ephemerally
+(NOT persisted to knowledge_chunks), and runs the existing grounded
+validator against verbatim quoted_span citations from the raw content.
+
+### Codex's design corrections (adopted verbatim)
+
+My initial sketch was wrong on two points and Codex pushed back hard:
+
+- **Sanitized summary alone cannot support `quoted_span` citations.**
+  Sanitization paraphrases — citing against it would either fail the
+  validator or, worse, "succeed" with paraphrased spans that don't
+  match the source. Use the RAW (markdownified) content as the
+  citation substrate.
+- **Single URL only for MVP.** Don't add multi-URL until a real use
+  case demands it.
+
+### SSRF protection
+
+`src/donna/security/url_safety.py` exposes `assert_safe_url(url)` which
+refuses:
+
+- Wrong scheme (only `http`/`https` allowed)
+- Hostname blocklist (`localhost`, IPv6 loopback, GCP/Azure metadata
+  hostnames)
+- IP literals in private RFC1918 ranges, link-local (incl. AWS/Azure/
+  GCP cloud metadata `169.254.169.254`), loopback, multicast, reserved
+- DNS resolution: any returned IP failing the same checks → refuse
+  (DNS rebinding protection)
+
+Two checkpoints:
+
+1. **Pre-flight in the slash handler** — operator gets fast feedback
+   on a malformed/unsafe URL.
+2. **Post-redirect re-check inside the fetcher** — public-to-internal
+   redirect is the classic SSRF; we re-validate the final URL after
+   `follow_redirects=True` resolves.
+
+### Validate mode
+
+New `JobMode.VALIDATE` + `src/donna/modes/validate.py` handler:
+
+- Parse `(url, claim?)` from job task — slash format
+  `URL\n---\nclaim: <text>`, also tolerant of `URL <claim>` on one
+  line for direct CLI calls.
+- SSRF-safe fetch (1MB cap, 30s timeout, content-type guard).
+- Save raw as tainted artifact tagged `validate,tainted`.
+- Markdownify HTML → chunk via `chunk_text` (~500 tokens, ~80 overlap).
+- Wrap chunks in `Chunk` dataclass with synthetic IDs `<artifact_id>#<n>`
+  so the validator can reference them.
+- Reuse `compose_system(mode=GROUNDED, retrieved_chunks=chunks)` +
+  `GROUNDED_RESPONSE_SCHEMA` so the same JSON contract + verbatim
+  `quoted_span` validator applies.
+- Validate-jobs are ALWAYS tainted (even on refusal — URL itself is
+  operator input we don't trust).
+- Refusal paths return clear single-line `[validate · refused]`
+  messages: unsafe URL, fetch failure, content-type, empty content.
+
+### Slack UX
+
+- `/donna_validate <url> [optional claim]` — slash command.
+- Pre-flight URL safety in the handler so the operator sees the
+  refusal before queuing a job.
+- Manifest updated.
+
+### Tests
+
+- 31 in `test_url_safety.py` covering scheme blocking, localhost,
+  RFC1918, link-local, cloud metadata, DNS rebinding, malformed
+  input, multi-IP resolution.
+- 10 in `test_validate_mode.py` covering task parsing variants,
+  chunk wrapping with synthetic IDs, refusal paths (localhost,
+  metadata, disallowed scheme), resume short-circuit.
+
+583 total tests green (542 v0.7.0 baseline + 41 new). Ruff clean.
+
 ## [0.7.0] — 2026-05-02 — Morning brief vertical slice
 
 The first proactive product workflow. v0.6 was the ops consolidation
