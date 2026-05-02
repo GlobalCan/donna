@@ -25,18 +25,61 @@ Before anything else, read these files. Everything below assumes you have.
 
 ## 1 · Where we are
 
-**Donna v0.6.1 — Ops consolidation bundle SHIPPED (2026-05-02).**
-Live in production; bot healthy, worker up, schema at alembic 0011.
-8 numbered ops items + V50-2 channel-target schedule + V50-3 @donna
-mentions all live-validated. Two deploy hotfixes (CMD-SHELL healthcheck,
-slack-doctor app_token kwarg) caught and fixed. 503 tests green.
+**Donna v0.7.2 — Overnight push SHIPPED (2026-05-02 → 2026-05-03).**
 
-Codex's 2026-05-01 holistic review framed v0.6 as the "ops consolidation"
-phase before product work. That phase is now done. Next per Codex's
-roadmap: v0.7 first real product workflow (morning briefing recommended).
+Five releases shipped overnight in response to a Slack incident +
+operator's "do it all" + "continue overnight" directive:
 
-See `docs/POST_COMPACTION_2026_05_02.md` for the post-compaction
-bootstrap prompt.
+- **v0.6.2** (incident response) — V60-4 slack-doctor `missing_scope`
+  demote; V60-5 Slack-callable schedule disable (smart-route
+  `/donna_cancel sch_...` + new `/donna_schedule_disable`).
+- **v0.6.3** — V60-6 canonical `target_channel_id` resolver. Migration
+  0012 adds `jobs.schedule_id` back-link; `_resolve_channel_for_job`
+  now honestly prefers `schedules.target_channel_id` over the
+  thread.channel_id fallback.
+- **v0.7.0** — Morning brief vertical slice. `schedules.kind` +
+  `payload_json`; `brief_runs(schedule_id, fire_key)` idempotency;
+  `/donna_brief_setup` modal; `/donna_brief_run_now` dry run; brief
+  composition runs on the normal jobs / JobContext path (NOT
+  AsyncTaskRunner per Codex's 60s-lease warning).
+- **v0.7.1** — `/donna_validate <url>`. New `JobMode.VALIDATE` +
+  `src/donna/security/url_safety.py` SSRF guards (scheme blocking,
+  RFC1918, link-local, cloud metadata, DNS rebinding). Reuses
+  `GROUNDED_RESPONSE_SCHEMA` + `validate_grounded` against raw
+  (markdownified) chunks; validate jobs always tainted.
+- **v0.7.2** — OutboxService extraction (JobContext refactor phase 1).
+  `memory.outbox.enqueue_update` / `enqueue_ask` consolidate 4
+  duplicated INSERT callsites. Other 3 services explicitly deferred
+  with reasoning (already extracted or risky to bundle).
+
+**591 tests green** (was 503 at v0.6.1). Ruff clean. 13 migrations.
+
+Codex's 2026-05-02 review on the overnight plan rewrote significant
+parts of my original design — adopted verbatim:
+- Morning brief BEFORE JobContext extraction (refactor only when API
+  blocks the product; here it didn't).
+- 4 services not 3 (added SessionMemoryService).
+- Brief composition runs in `jobs` table not `async_tasks` (60s lease,
+  no heartbeat → wrong tool).
+- /validate uses raw chunks not sanitized (sanitization paraphrases
+  → breaks quoted_span).
+- /validate needs SSRF guards even for solo-user.
+- Idempotency via `brief_runs(schedule_id, fire_key)` UNIQUE before
+  shipping.
+
+**Live state on the droplet:** at the time of overnight push, droplet
+was still running v0.6.0 + CMD-SHELL hotfix. Operator needs to deploy
+v0.7.2 image (`docker compose pull bot worker && up -d`) to pick up
+all overnight changes — including V60-5 (the Slack-callable schedule
+disable that would have prevented the runaway-schedule incident).
+
+**Open**: V70-1 (brief_runs.status), V70-2 (validate chunk substrate
+edge cases), V70-3 (integration spine for brief + validate),
+V70-4 (ToolExecutionService extraction), plus the v0.6 deferred items
+still in `KNOWN_ISSUES.md`.
+
+See `docs/POST_COMPACTION_2026_05_02.md` for the prior
+post-compaction bootstrap (frozen at v0.6.1 state).
 
 ---
 

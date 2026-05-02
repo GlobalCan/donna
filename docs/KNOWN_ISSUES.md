@@ -491,15 +491,24 @@ but the deploy surfaced two production-only bugs:
 Per Codex's 2026-05-01 holistic review, these were intentionally
 not in v0.6:
 
-| Item | Why deferred | Target |
-|---|---|---|
-| #9 Prompt-version-compat at resume | Current "tool not registered" error path covers the common case | v0.6.1 / v0.7 |
-| #10 Eval realism (poisoned-corpora goldens) | Bigger eval-design work; deserves its own release | v0.7 |
-| #11 Operator fatigue (consent batching + alert digest) | UX redesign; pairs naturally with morning brief | v0.7 |
-| #15 Cost timing fix (sanitizer attribution after DONE) | Cosmetic ledger weirdness; not actually costing the operator | When it bites |
-| #16 JobContext extraction | 2 days of focused refactor; deserves dedicated PR rather than ballooning v0.6 | v0.7 (before/after morning brief) |
-| #17 Auto-update timer | Needs restore drill to pass first | After restore drill |
-| #14 Speculative/debate live smoke | Operator-driven via /donna_speculate, /donna_debate slash commands | Whenever operator runs them |
+| Item | Why deferred | Target | Status |
+|---|---|---|---|
+| #9 Prompt-version-compat at resume | Current "tool not registered" error path covers the common case | v0.6.1 / v0.7 | open |
+| #10 Eval realism (poisoned-corpora goldens) | Bigger eval-design work; deserves its own release | v0.7 | open |
+| #11 Operator fatigue (consent batching + alert digest) | UX redesign; pairs naturally with morning brief | v0.7 | open |
+| #15 Cost timing fix (sanitizer attribution after DONE) | Cosmetic ledger weirdness; not actually costing the operator | When it bites | open |
+| #16 JobContext extraction | 4-service split per Codex review | v0.7.x | **partial — v0.7.2 OutboxService done; Lifecycle/Tool/Session deferred (already extracted or risky to bundle, see CHANGELOG)** |
+| #17 Auto-update timer | Needs restore drill to pass first | After restore drill | open |
+| #14 Speculative/debate live smoke | Operator-driven via /donna_speculate, /donna_debate slash commands | Whenever operator runs them | open |
+
+### v0.7 follow-ups (post-overnight 2026-05-02)
+
+| # | Item | Status | Notes |
+|---|---|---|---|
+| V70-1 | **brief_runs.status not driven by job state transitions.** Status starts at 'queued' in the brief_runs row when fire_morning_brief inserts. There's no current path that flips it to 'running' / 'done' / 'failed' as the underlying job progresses. Observability nice-to-have. | Open — v0.7.x | Tie via JobContext.finalize hook (when state.done && job.schedule_id), or via a worker-side post-finalize callback. |
+| V70-2 | **Validate mode runs against MARKDOWNIFIED chunks.** quoted_span citations are validated against the chunk text — which is the markdownified version of HTML. If the model quotes from rendered prose that has been transformed by markdownify, the verbatim check could fail spuriously on edge cases (markdown escaping, link rewriting). Live testing will tell us if this is real. | Open — observe | Live data needed. Fix would be to chunk the raw HTML/text directly when source is non-HTML, only markdownify for display. |
+| V70-3 | **Morning brief and /validate need integration spine tests.** v0.6 #8 added 4 integration tests. v0.7 added morning-brief and /validate paths that haven't been hit by the integration spine. A "scheduled brief fires → outbox → drainer delivers" + "/donna_validate <url> → fetch → chunk → grounded → outbox" pair would close the loop. | Open — v0.7.x | Worth ~2 hours when energy is fresh. |
+| V70-4 | **JobContext.tool_step extraction (ToolExecutionService).** Codex-recommended refactor; tightly coupled to ctx.state. Risky to bundle into autonomous work without a focused design pass. v0.7.2 explicitly defers. | Deferred | Pick up in a dedicated session with full design first. |
 
 **Validation:** v0.5.0 smoke 4/4 green in operator's personal Slack workspace. DM intake, `/donna_ask` grounded with citations, `/donna_schedule` modal + delivery, Block Kit consent buttons all work. 373 tests pass, ruff clean.
 
