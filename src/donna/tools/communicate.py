@@ -11,9 +11,14 @@ import asyncio
 from typing import Any
 
 from ..logging import get_logger
-from ..memory import ids as ids_mod
+from ..memory import outbox as outbox_mod
 from ..memory.db import connect, transaction
 from .registry import tool
+
+# send_update keeps its terse cap — these are progress pings, not
+# job-final answers. The shared outbox helper has a 20k char cap;
+# we truncate first.
+_SEND_UPDATE_TEXT_CAP = 1500
 
 log = get_logger(__name__)
 
@@ -39,13 +44,14 @@ async def send_update(
 ) -> dict[str, Any]:
     if job_id is None:
         return {"error": "send_update requires job_id context"}
-    uid = ids_mod.new_id("upd")
     conn = connect()
     try:
         with transaction(conn):
-            conn.execute(
-                "INSERT INTO outbox_updates (id, job_id, text, tainted) VALUES (?, ?, ?, ?)",
-                (uid, job_id, text[:1500], 1 if tainted else 0),
+            uid = outbox_mod.enqueue_update(
+                conn,
+                job_id=job_id,
+                text=text[:_SEND_UPDATE_TEXT_CAP],
+                tainted=tainted,
             )
     finally:
         conn.close()
@@ -63,13 +69,11 @@ async def send_update(
 async def ask_user(question: str, job_id: str | None = None) -> dict[str, Any]:
     if job_id is None:
         return {"error": "ask_user requires job_id context"}
-    aid = ids_mod.new_id("ask")
     conn = connect()
     try:
         with transaction(conn):
-            conn.execute(
-                "INSERT INTO outbox_asks (id, job_id, question) VALUES (?, ?, ?)",
-                (aid, job_id, question),
+            aid = outbox_mod.enqueue_ask(
+                conn, job_id=job_id, question=question,
             )
     finally:
         conn.close()

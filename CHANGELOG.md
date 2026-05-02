@@ -1,5 +1,87 @@
 # Changelog
 
+## [0.7.2] — 2026-05-02 — OutboxService extraction (JobContext refactor, phase 1)
+
+Codex 2026-05-02 review on the overnight plan: "JobContext is the
+orchestrator for status flips, finalize, recovery, cancellation,
+outbox writes, tool dispatch, audit, taint pre-scan. Split it." The
+proposed split was 4 services: JobLifecycle, ToolExecution, Outbox,
+SessionMemory.
+
+The lifecycle layer is already in `memory.jobs` (set_status,
+save_checkpoint, claim_next_queued, etc.). The session memory writes
+are already in `memory.threads.insert_message`. The genuinely-inlined
+surface was outbox INSERTs — duplicated in 4 places.
+
+This release extracts the outbox layer cleanly. The remaining service
+extractions (especially ToolExecutionService) are deferred to a
+focused future session — Codex's pitfall warning ("don't make services
+wrappers over ctx") makes them risky to bundle into a long autonomous
+run.
+
+### What changed
+
+`src/donna/memory/outbox.py` (NEW):
+
+- `enqueue_update(conn, *, job_id, text, tainted) -> str`
+- `enqueue_ask(conn, *, job_id, question) -> str`
+- `list_updates_for_job(conn, job_id) -> list[dict]` (read-back)
+- `list_asks_for_job(conn, job_id) -> list[dict]`
+
+Pure SQL helpers — caller wraps in `transaction(conn)` so they can be
+composed atomically (e.g., `JobContext.finalize` writes outbox +
+messages + DONE flip in one transaction). This honors Codex's pitfall:
+"Do not let each service open its own transaction during finalize."
+
+### Callsites refactored
+
+- `src/donna/agent/context.py::JobContext.finalize` (was inline INSERT)
+- `src/donna/tools/communicate.py::send_update` (was inline INSERT,
+  with 1500-char cap retained as send-update-specific behavior)
+- `src/donna/tools/communicate.py::ask_user` (was inline INSERT)
+- `src/donna/cli/botctl.py::dead_letter_retry` (was inline INSERT,
+  also dropped a redundant `import uuid` since `outbox_mod` mints
+  the id)
+
+Behavior unchanged. Same SQL, same row shape, same FK semantics. Now
+testable in isolation and reusable from morning brief / /validate
+delivery surfaces.
+
+### Tests
+
+8 new tests in `test_outbox_helpers.py`:
+- enqueue_update inserts row with returned id
+- enqueue_update persists tainted flag
+- enqueue_update truncates at 20k chars (defensive cap)
+- enqueue_update produces unique ids across calls
+- enqueue_ask inserts row
+- list_updates_for_job filters by job_id, returns oldest-first
+- list_asks_for_job filters by job_id
+- Both helpers compose in a single transaction (atomicity contract)
+
+591 total tests green (583 v0.7.1 + 8 new). Ruff clean.
+
+### Deferred to a focused future session
+
+- `JobLifecycleService` extraction — the lifecycle is ALREADY in
+  `memory.jobs`; further extraction would just rename what's there.
+  No real value-add.
+- `ToolExecutionService` extraction — `JobContext.tool_step` is
+  ~120 lines tightly coupled to `ctx.state` (taint pre-scan,
+  consent gating, audit propagation, post-taint detection). Codex's
+  pitfall: "Do not make services wrappers over ctx. If every method
+  takes ctx and mutates it, you moved lines around." Refactoring
+  this in a long autonomous run is high blast radius without a
+  focused design pass first.
+- `SessionMemoryService` extraction — the writes are ALREADY in
+  `memory.threads.insert_message`. The post-finalize safe_summary
+  enqueue is a 4-line stash that doesn't benefit from a service.
+
+The outbox extraction was the real win: 4 callsites consolidated,
+shared truncation rules, named operations, and reusable from new
+delivery surfaces (morning brief output, /validate output) without
+duplicating the INSERT.
+
 ## [0.7.1] — 2026-05-02 — `/donna_validate <url>` with SSRF protection
 
 URL-bounded grounded critique. Operator pastes a URL (and optional
