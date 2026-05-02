@@ -587,6 +587,206 @@ def traces_prune(older_than_days: int = typer.Option(30, "--older-than-days")) -
     console.print(f"🗑️  pruned {n} trace rows older than {older_than_days}d")
 
 
+# ---- slack-doctor -----------------------------------------------------------
+#
+# Operator health check for Slack — every drift class in one command.
+# Codex's 2026-05-01 review flagged Slack permission drift as a real
+# silent-failure risk: scopes change, channel membership changes,
+# tokens get revoked, and Donna goes quiet without an obvious symptom.
+# slack-doctor surfaces every drift class in 5 seconds.
+#
+# Required scopes per the v0.5.0 manifest: chat:write, commands,
+# app_mentions:read, im:history, im:write. Anything missing is a
+# delivery-affecting bug that's worth flagging loud.
+
+
+_SLACK_REQUIRED_SCOPES = (
+    "chat:write",
+    "commands",
+    "app_mentions:read",
+    "im:history",
+    "im:write",
+)
+
+
+@app.command("slack-doctor")
+def slack_doctor(
+    delivery_channel: str = typer.Option(
+        None,
+        "--delivery-channel",
+        help=(
+            "Optional channel ID (C...) to probe with a one-line message. "
+            "If omitted, delivery test is skipped."
+        ),
+    ),
+) -> None:
+    """Slack health check: token, scopes, Socket Mode, allowlist,
+    optional delivery probe. Exit 0 = all green; exit 1 = at least
+    one red flag."""
+    from slack_sdk.errors import SlackApiError
+    from slack_sdk.web.client import WebClient
+
+    s = settings()
+    bot_token = s.slack_bot_token or ""
+    app_token = s.slack_app_token or ""
+    team_id = s.slack_team_id or ""
+    user_id = s.slack_allowed_user_id or ""
+
+    failures: list[str] = []
+
+    def _ok(msg: str) -> None:
+        console.print(f"[green]OK[/green]  {msg}")
+
+    def _warn(msg: str) -> None:
+        console.print(f"[yellow]WARN[/yellow]  {msg}")
+        # Warnings don't fail the command — caller decides if they care.
+
+    def _fail(msg: str) -> None:
+        console.print(f"[red]FAIL[/red]  {msg}")
+        failures.append(msg)
+
+    # 1. Config presence ---------------------------------------------------
+    console.print("[bold]config[/bold]")
+    if not bot_token.startswith("xoxb-"):
+        _fail(f"SLACK_BOT_TOKEN missing or wrong shape (got {bot_token[:5]!r}…)")
+    else:
+        _ok(f"SLACK_BOT_TOKEN present ({bot_token[:8]}…)")
+    if not app_token.startswith("xapp-"):
+        _fail(f"SLACK_APP_TOKEN missing or wrong shape (got {app_token[:5]!r}…)")
+    else:
+        _ok(f"SLACK_APP_TOKEN present ({app_token[:8]}…)")
+    if not team_id:
+        _fail("SLACK_TEAM_ID empty")
+    else:
+        _ok(f"SLACK_TEAM_ID = {team_id}")
+    if not user_id:
+        _fail("SLACK_ALLOWED_USER_ID empty")
+    else:
+        _ok(f"SLACK_ALLOWED_USER_ID = {user_id}")
+    if failures:
+        console.print(f"\n[red]slack-doctor: {len(failures)} fail(s); cannot proceed[/red]")
+        raise typer.Exit(1)
+
+    client = WebClient(token=bot_token)
+
+    # 2. Bot token + scopes ----------------------------------------------
+    console.print("\n[bold]bot token[/bold]")
+    try:
+        auth = client.auth_test()
+    except SlackApiError as e:
+        code = (
+            e.response.data.get("error")
+            if hasattr(e, "response") and isinstance(e.response.data, dict)
+            else "unknown"
+        )
+        _fail(f"auth.test rejected: {code}")
+        console.print("\n[red]slack-doctor: token invalid; aborting[/red]")
+        raise typer.Exit(1) from e
+    _ok(f"auth.test ok — bot user {auth.get('user_id')} ({auth.get('user')})")
+    if auth.get("team_id") != team_id:
+        _fail(
+            f"team_id from token ({auth.get('team_id')}) doesn't match "
+            f"SLACK_ALLOWED_USER_ID's team ({team_id}). Token-vs-allowlist "
+            f"mismatch silently drops every event."
+        )
+    else:
+        _ok("token's team matches SLACK_TEAM_ID")
+
+    scope_header = (
+        auth.headers.get("x-oauth-scopes", "")
+        if hasattr(auth, "headers") else ""
+    )
+    granted = {s.strip() for s in scope_header.split(",") if s.strip()}
+    missing = [sc for sc in _SLACK_REQUIRED_SCOPES if sc not in granted]
+    if missing:
+        _fail(f"missing required scopes: {', '.join(missing)}")
+    else:
+        _ok(f"all required scopes present ({len(_SLACK_REQUIRED_SCOPES)})")
+    extra = sorted(granted - set(_SLACK_REQUIRED_SCOPES))
+    if extra:
+        _warn(f"extra scopes granted (not required by v0.5.0): {', '.join(extra)}")
+
+    # 3. App-level token (Socket Mode) -----------------------------------
+    console.print("\n[bold]app-level token (Socket Mode)[/bold]")
+    app_client = WebClient(token=app_token)
+    try:
+        opened = app_client.apps_connections_open()
+        if opened.get("ok") and opened.get("url"):
+            _ok("apps.connections.open succeeded — Socket Mode reachable")
+        else:
+            _fail(f"apps.connections.open returned non-ok: {opened.data}")
+    except SlackApiError as e:
+        code = (
+            e.response.data.get("error")
+            if hasattr(e, "response") and isinstance(e.response.data, dict)
+            else "unknown"
+        )
+        _fail(f"apps.connections.open rejected: {code}")
+
+    # 4. Channels Donna is in ---------------------------------------------
+    console.print("\n[bold]bot channel membership[/bold]")
+    try:
+        chans = client.users_conversations(
+            user=auth.get("user_id"),
+            types="public_channel,private_channel,im",
+            limit=200,
+        )
+        members = chans.get("channels", []) or []
+        ims = [c for c in members if c.get("is_im")]
+        public = [c for c in members if c.get("is_channel") and not c.get("is_private")]
+        private = [c for c in members if c.get("is_private")]
+        _ok(
+            f"member of {len(members)} conversations "
+            f"({len(public)} public, {len(private)} private, {len(ims)} DMs)"
+        )
+        for c in public + private:
+            console.print(f"    - #{c.get('name')} ({c.get('id')})")
+    except SlackApiError as e:
+        code = (
+            e.response.data.get("error")
+            if hasattr(e, "response") and isinstance(e.response.data, dict)
+            else "unknown"
+        )
+        _fail(f"users.conversations failed: {code}")
+
+    # 5. Optional delivery probe ------------------------------------------
+    if delivery_channel:
+        console.print(f"\n[bold]delivery probe -> {delivery_channel}[/bold]")
+        try:
+            posted = client.chat_postMessage(
+                channel=delivery_channel,
+                text="🔍 slack-doctor probe — ignore",
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+            ts = posted.get("ts")
+            _ok(f"chat.postMessage delivered (ts={ts})")
+            # Clean up the probe so the channel doesn't accrete noise.
+            try:
+                client.chat_delete(channel=delivery_channel, ts=ts)
+                _ok("probe message deleted")
+            except SlackApiError as e:
+                _warn(f"probe sent but delete failed: {e.response.data.get('error', 'unknown')}")
+        except SlackApiError as e:
+            code = (
+                e.response.data.get("error")
+                if hasattr(e, "response") and isinstance(e.response.data, dict)
+                else "unknown"
+            )
+            _fail(f"chat.postMessage rejected: {code}")
+
+    # Summary -------------------------------------------------------------
+    console.print()
+    if failures:
+        console.print(
+            f"[red]slack-doctor: {len(failures)} red flag(s)[/red]"
+        )
+        for f in failures:
+            console.print(f"  - {f}")
+        raise typer.Exit(1)
+    console.print("[green]slack-doctor: all green[/green]")
+
+
 # ---- dead-letter ------------------------------------------------------------
 #
 # Operator UX for the v0.5.1 outbox_dead_letter table. Codex's 2026-05-01
