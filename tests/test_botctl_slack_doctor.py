@@ -190,6 +190,59 @@ def test_slack_doctor_flags_missing_scopes() -> None:
     assert "im:write" in result.output
 
 
+# ---------- Socket Mode kwarg passed through ----------------------------
+
+
+@pytest.mark.usefixtures("fresh_db")
+def test_slack_doctor_passes_app_token_kwarg_to_connections_open() -> None:
+    """v0.6.1 hotfix: slack_sdk requires app_token kwarg on
+    apps.connections.open() even when the WebClient was constructed
+    with that token. Pre-fix slack-doctor crashed with TypeError mid-run."""
+    bot_client = MagicMock()
+    bot_client.auth_test.return_value = _ok_auth_test()
+    bot_client.users_conversations.return_value = _ok_users_conversations()
+    app_client = MagicMock()
+    app_client.apps_connections_open.return_value = _ok_connections_open()
+
+    def _make_client(token: str):
+        return app_client if token.startswith("xapp-") else bot_client
+
+    with patch(
+        "slack_sdk.web.client.WebClient", side_effect=_make_client,
+    ):
+        result = runner.invoke(app, ["slack-doctor"])
+    assert result.exit_code == 0
+    # The fix: kwarg must be present
+    call = app_client.apps_connections_open.call_args
+    assert "app_token" in call.kwargs
+    assert call.kwargs["app_token"].startswith("xapp-")
+
+
+@pytest.mark.usefixtures("fresh_db")
+def test_slack_doctor_catches_typeerror_from_kwarg_drift() -> None:
+    """Defensive: if slack_sdk changes its API surface and another
+    keyword arg becomes required, slack-doctor should report the
+    failure loud rather than crashing mid-check (v0.6.1 hotfix)."""
+    bot_client = MagicMock()
+    bot_client.auth_test.return_value = _ok_auth_test()
+    bot_client.users_conversations.return_value = _ok_users_conversations()
+    app_client = MagicMock()
+    app_client.apps_connections_open.side_effect = TypeError(
+        "missing 1 required keyword-only argument: 'frobnicator'",
+    )
+
+    def _make_client(token: str):
+        return app_client if token.startswith("xapp-") else bot_client
+
+    with patch(
+        "slack_sdk.web.client.WebClient", side_effect=_make_client,
+    ):
+        result = runner.invoke(app, ["slack-doctor"])
+    assert result.exit_code == 1
+    assert "TypeError" in result.output
+    assert "frobnicator" in result.output
+
+
 # ---------- Socket Mode failure -----------------------------------------
 
 
