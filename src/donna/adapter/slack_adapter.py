@@ -876,11 +876,19 @@ class DonnaSlackBot:
     ) -> str | None:
         """Return the Slack channel ID this job should deliver to.
 
-        Priority:
-        1. If the job's owning schedule has target_channel_id, use that
-           (channel-target scheduling).
-        2. Otherwise, use the job's thread's channel_id (the originating
-           channel of the slash command or DM).
+        Priority (v0.6.3, made canonical for scheduled jobs):
+        1. If the job has `schedule_id` set AND that schedule has
+           `target_channel_id` set, return target_channel_id. This is
+           the canonical path for scheduler-fired jobs (V50-2 channel-
+           target schedules + future morning brief).
+        2. Otherwise, fall back to threads.channel_id via job.thread_id
+           (existing behavior for DM / app_mention origin).
+
+        Pre-v0.6.3 every scheduled job resolved via the thread path
+        because the modal flow co-set target_channel_id and a thread
+        with the matching channel_id. That worked for V50-2 live
+        validation but quietly ignored target_channel_id changes.
+        Documented as half-wired by Codex 2026-05-02.
 
         Returns None if no destination can be resolved — drainer leaves
         the row in place rather than dropping the message.
@@ -888,7 +896,20 @@ class DonnaSlackBot:
         conn = connect()
         try:
             job = jobs_mod.get_job(conn, job_id)
-            if not job or not job.thread_id:
+            if not job:
+                return None
+            # Priority 1: schedule's target_channel_id.
+            schedule_id = getattr(job, "schedule_id", None)
+            if schedule_id:
+                row = conn.execute(
+                    "SELECT target_channel_id FROM schedules WHERE id = ?",
+                    (schedule_id,),
+                ).fetchone()
+                if row and row["target_channel_id"]:
+                    return row["target_channel_id"]
+            # Priority 2: thread.channel_id (interactive origin or
+            # legacy scheduled job without schedule_id propagation).
+            if not job.thread_id:
                 return None
             row = conn.execute(
                 "SELECT channel_id FROM threads WHERE id = ?",

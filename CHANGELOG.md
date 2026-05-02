@@ -1,5 +1,70 @@
 # Changelog
 
+## [0.6.3] — 2026-05-02 — Canonical target_channel_id resolver
+
+Codex's 2026-05-02 review on the overnight plan flagged that
+`schedules.target_channel_id` was "semantically half-wired":
+
+- The column was set by the modal (`/donna_schedule` view-submit) and
+  CLI (`botctl schedule add --discord-channel`).
+- The Slack adapter's `_resolve_channel_for_job` ignored it. It read
+  `threads.channel_id` via `jobs.thread_id`.
+- V50-2 (channel-target schedules) live-validated correctly because
+  the modal flow co-set both fields. But operator
+  `UPDATE schedules SET target_channel_id = 'C_NEW'` was a silent
+  no-op — runtime path used the stale thread.
+- Worse: the docstring on `_resolve_channel_for_job` claimed
+  "priority 1: schedule.target_channel_id" while the implementation
+  did no such thing. Documented contract drifted from reality.
+
+Morning brief (v0.7.0) would have compounded this: the operator will
+want to redirect briefs at runtime without re-creating the schedule.
+
+### Fix
+
+**Migration 0012 — `jobs.schedule_id`.** New nullable column +
+covering index. Forward-only per `docs/SCHEMA_LIFECYCLE.md`. Adds a
+back-link from the job row to its originating schedule. Existing job
+rows get NULL (legacy fallback path preserves their behavior).
+
+**`Scheduler._fire` propagation.** Now writes `schedule_id=sched["id"]`
+when calling `insert_job`. Pre-fix the column was always NULL; post-fix
+every scheduler-fired job carries the link.
+
+**`_resolve_channel_for_job` honest priority.**
+
+```
+1. If job.schedule_id set AND that schedule has target_channel_id set,
+   return target_channel_id (canonical for scheduled jobs).
+2. Otherwise, fall back to threads.channel_id via job.thread_id
+   (interactive origin or legacy scheduled job before 0012).
+```
+
+Docstring updated to match implementation.
+
+**`Job` dataclass + `_row_to_job`.** Added `schedule_id` field with
+defensive `KeyError`-safe extraction to handle pre-migration rows
+(belt-and-suspenders even though 0012 is forward-only).
+
+**`insert_job` signature.** New `schedule_id: str | None = None`
+keyword.
+
+### Tests
+
+8 new tests in `test_target_channel_id_resolver.py` covering:
+
+- target == thread (V50-2 happy path)
+- target diverged from thread (the half-wired bug)
+- target NULL, thread set (legacy path)
+- interactive job (no schedule_id)
+- target set, thread NULL (CLI-created schedule)
+- scheduler propagation (jobs.schedule_id populated by _fire)
+- no destination at all (returns None)
+- legacy scheduled job without back-link (fallback works)
+
+523 total tests green (+8 over v0.6.2). Ruff clean. Migration linter
+green on 12 migrations.
+
 ## [0.6.2] — 2026-05-02 — Incident response: runaway schedule, slack-doctor demote
 
 Two fixes triggered by a 2026-05-02 production incident: a `* * * * *`

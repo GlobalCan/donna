@@ -17,15 +17,25 @@ def insert_job(
     agent_scope: str = "orchestrator",
     mode: JobMode = JobMode.CHAT,
     thread_id: str | None = None,
+    schedule_id: str | None = None,
     priority: int = 5,
 ) -> str:
+    """Insert a queued job row.
+
+    `schedule_id` (v0.6.3) back-links to the originating schedule for
+    scheduler-fired jobs. Lets the Slack adapter's
+    `_resolve_channel_for_job` prefer `schedules.target_channel_id` over
+    the (potentially stale) thread.channel_id when delivering scheduled
+    output. NULL for interactive jobs (DM, /donna_ask, app_mention).
+    """
     jid = ids.job_id()
     conn.execute(
         """
-        INSERT INTO jobs (id, thread_id, agent_scope, task, mode, status, priority)
-        VALUES (?, ?, ?, ?, ?, 'queued', ?)
+        INSERT INTO jobs
+            (id, thread_id, schedule_id, agent_scope, task, mode, status, priority)
+        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)
         """,
-        (jid, thread_id, agent_scope, task, mode.value, priority),
+        (jid, thread_id, schedule_id, agent_scope, task, mode.value, priority),
     )
     return jid
 
@@ -210,6 +220,11 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         tier_override = row["model_tier_override"]
     except (KeyError, IndexError):
         tier_override = None
+    # schedule_id is optional — only present after migration 0012 (v0.6.3)
+    try:
+        sched_id = row["schedule_id"]
+    except (KeyError, IndexError):
+        sched_id = None
     return Job(
         id=row["id"],
         agent_scope=row["agent_scope"],
@@ -229,6 +244,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         finished_at=_dt(row["finished_at"]),
         error=row["error"],
         model_tier_override=tier_override,
+        schedule_id=sched_id,
     )
 
 

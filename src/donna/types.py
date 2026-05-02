@@ -124,6 +124,7 @@ class Job:
     finished_at: datetime | None
     error: str | None
     model_tier_override: str | None = None   # v1.1 /model command support
+    schedule_id: str | None = None           # v0.6.3 schedule back-link
 
 
 @dataclass
