@@ -33,6 +33,7 @@ from ..memory import schedules as sched_mod
 from ..memory import threads as threads_mod
 from ..memory.db import connect, transaction
 from ..security import consent as consent_mod
+from ..security import consent_batch as consent_batch_mod
 from ..types import JobMode, JobStatus
 
 if TYPE_CHECKING:
@@ -105,6 +106,102 @@ def consent_blocks(req: consent_mod.ConsentRequest) -> list[dict]:
             ],
         },
     ]
+
+
+def batch_consent_blocks(
+    *, batch_id: str, tainted: bool, members: list[tuple[str, dict, bool]],
+) -> list[dict]:
+    """v0.7.3: render a multi-tool consent prompt as Block Kit.
+
+    `members` is a list of (tool_name, arguments, tool_tainted) triples in
+    the order the agent emitted them. The prompt collapses N per-tool
+    prompts into one with three actions:
+
+      - Approve all  → cascades approved=1 to every linked pending row
+      - Decline all  → cascades approved=0
+      - Show details → flips the batch to "individual mode"; each tool
+                       reverts to its own single-tool prompt (the legacy
+                       drainer takes over)
+
+    All three buttons carry `batch_id` as their `value`. Action handlers
+    call `consent_batch.resolve_batch` / `expand_batch` accordingly.
+    """
+    icon = "🔮" if tainted else "⚠️"
+    summary_lines = []
+    for i, (tool_name, args, tool_tainted) in enumerate(members, start=1):
+        marker = "🔮" if tool_tainted else "•"
+        args_summary = json.dumps(args, default=str)[:200]
+        summary_lines.append(
+            f"{marker} `{i}.` `{tool_name}` — `{args_summary}`"
+        )
+
+    body = (
+        f"{icon} *Approve {len(members)} tool calls?*\n"
+        f"_Multi-tool turn — review and decide for the whole batch, or "
+        f"hit *Show details* to decide each one separately._"
+    )
+    blocks: list[dict] = [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": body},
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "\n".join(summary_lines)[:2900],
+            },
+        },
+        {
+            "type": "actions",
+            "block_id": "batch_consent_actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "action_id": "batch_consent_approve_all",
+                    "text": {
+                        "type": "plain_text",
+                        "text": f"✅ Approve all ({len(members)})",
+                    },
+                    "value": batch_id,
+                    "style": "primary",
+                },
+                {
+                    "type": "button",
+                    "action_id": "batch_consent_decline_all",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "❌ Decline all",
+                    },
+                    "value": batch_id,
+                    "style": "danger",
+                },
+                {
+                    "type": "button",
+                    "action_id": "batch_consent_show_details",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "📋 Show details",
+                    },
+                    "value": batch_id,
+                },
+            ],
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": (
+                        "_Decide for the whole batch above. "
+                        "*Show details* expands into one prompt per tool. "
+                        "Times out in 30 min._"
+                    ),
+                },
+            ],
+        },
+    ]
+    return blocks
 
 
 def job_blocks(job) -> list[dict]:
@@ -395,6 +492,31 @@ def register_handlers(bot: DonnaSlackBot) -> None:
         if not _is_allowed_command(_normalize_body_for_button(body)):
             return
         await _resolve_consent(body, client, approved=0)
+
+    # --------------------------------------------------------------
+    # Batched consent buttons (v0.7.3)
+    # --------------------------------------------------------------
+
+    @app.action("batch_consent_approve_all")
+    async def on_batch_consent_approve_all(ack, body, client):
+        await ack()
+        if not _is_allowed_command(_normalize_body_for_button(body)):
+            return
+        await _resolve_batch_consent(body, client, approved=1)
+
+    @app.action("batch_consent_decline_all")
+    async def on_batch_consent_decline_all(ack, body, client):
+        await ack()
+        if not _is_allowed_command(_normalize_body_for_button(body)):
+            return
+        await _resolve_batch_consent(body, client, approved=0)
+
+    @app.action("batch_consent_show_details")
+    async def on_batch_consent_show_details(ack, body, client):
+        await ack()
+        if not _is_allowed_command(_normalize_body_for_button(body)):
+            return
+        await _expand_batch_consent(body, client)
 
     # --------------------------------------------------------------
     # Slash: /ask — scoped grounded query
@@ -1121,6 +1243,88 @@ def register_handlers(bot: DonnaSlackBot) -> None:
             conn.close()
         await ack(text=f"✅ approved {hid}")
 
+    # --------------------------------------------------------------
+    # Slash: /donna_alert_settings (v0.7.3)
+    # --------------------------------------------------------------
+
+    @app.command("/donna_alert_settings")
+    async def cmd_alert_settings(ack, body, client):
+        """v0.7.3: inspect / change the alert digest interval at runtime.
+
+        Operator runs `/donna_alert_settings` to see the current state,
+        or `/donna_alert_settings <minutes>` to flip the digest on/off.
+        Setting `0` reverts to immediate-DM behavior; positive integers
+        opt in to a digest of that cadence. Persists for the lifetime
+        of the bot process; permanent changes go in env via
+        `DONNA_ALERT_DIGEST_INTERVAL_MIN`.
+        """
+        from ..observability import alert_digest as ad_mod
+        if not _is_allowed_command(body):
+            await ack(text="not authorized")
+            return
+        raw = (body.get("text") or "").strip()
+        s = settings()
+        if not raw:
+            queued = ad_mod.queued_count()
+            current = s.alert_digest_interval_min
+            mode = (
+                f"queued (every {current} min)" if current > 0
+                else "immediate DM (digest disabled)"
+            )
+            await ack(
+                text=(
+                    f"📬 *Alert digest settings*\n"
+                    f"• Mode: *{mode}*\n"
+                    f"• Queued (undelivered): `{queued}`\n"
+                    f"\n"
+                    f"Change with: "
+                    f"`/donna_alert_settings <minutes>` "
+                    f"— `0` for immediate, positive int for digest."
+                )
+            )
+            return
+        try:
+            new_min = int(raw)
+        except ValueError:
+            await ack(
+                text=(
+                    f"`{raw[:20]}` is not an integer. "
+                    "Usage: `/donna_alert_settings <minutes>`"
+                )
+            )
+            return
+        if new_min < 0 or new_min > 1440:
+            await ack(
+                text=(
+                    f"`{new_min}` out of range — must be 0..1440 "
+                    "(24h). 0 = immediate, recommended 30."
+                )
+            )
+            return
+        # Mutate the cached Settings instance directly. Pydantic v2
+        # forbids assignment by default; use object.__setattr__ to
+        # bypass the model validator, mirroring what model_construct
+        # would do post-init.
+        object.__setattr__(s, "alert_digest_interval_min", new_min)
+        if new_min == 0:
+            await ack(
+                text=(
+                    "✅ digest disabled — alerts will DM you "
+                    "immediately again. (Permanent: set "
+                    "`DONNA_ALERT_DIGEST_INTERVAL_MIN=0` in env.)"
+                )
+            )
+        else:
+            await ack(
+                text=(
+                    f"✅ digest enabled — one merged DM every "
+                    f"{new_min} min when there's anything queued. "
+                    "(Permanent: set "
+                    f"`DONNA_ALERT_DIGEST_INTERVAL_MIN={new_min}` "
+                    "in env.)"
+                )
+            )
+
 
 # ============================================================================
 # Helpers
@@ -1255,6 +1459,110 @@ async def _post_cost_cap_refusal(
         from ..logging import get_logger
         get_logger(__name__).warning(
             "slack.cost_cap_refusal_failed", error=str(e),
+        )
+
+
+async def _resolve_batch_consent(
+    body: dict, client, *, approved: int,
+) -> None:
+    """v0.7.3: apply Approve-all / Decline-all to a consent batch.
+
+    Idempotent: a double-click resolves the first time and chat.update
+    edits the message to remove buttons. The second click finds
+    `approved IS NOT NULL` and the underlying `resolve_batch` returns
+    False, so we skip the chat.update and bail.
+    """
+    actions = body.get("actions") or []
+    if not actions:
+        return
+    batch_id = actions[0].get("value")
+    if not batch_id:
+        return
+    # Snapshot the message coords before mutating state — the batch row
+    # gets `decided_at` set by resolve_batch and we want to be sure we
+    # update the right ts even if a second invocation is racing us.
+    batch = consent_batch_mod.get_batch(batch_id)
+    if batch is None:
+        return
+    if not consent_batch_mod.resolve_batch(
+        batch_id=batch_id, approved=approved,
+    ):
+        return  # already decided; skip the chat.update
+    icon = "✅" if approved else "❌"
+    label = (
+        "Approved all tool calls"
+        if approved
+        else "Declined all tool calls"
+    )
+    if not batch.get("posted_message_id"):
+        return
+    try:
+        await client.chat_update(
+            channel=batch["posted_channel_id"],
+            ts=batch["posted_message_id"],
+            text=f"{icon} {label} (batch)",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"{icon} *{label}* (batch).",
+                    },
+                }
+            ],
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning(
+            "slack.consent_batch_chat_update_failed",
+            error=str(e), batch_id=batch_id,
+        )
+
+
+async def _expand_batch_consent(body: dict, client) -> None:
+    """v0.7.3: operator hit "Show details" — drop the batch link from
+    every member row so the legacy drainer posts each tool individually.
+
+    Edits the original batch message to acknowledge the expansion. Each
+    tool then gets its own ✅/❌ prompt as if no batch had ever existed.
+    """
+    actions = body.get("actions") or []
+    if not actions:
+        return
+    batch_id = actions[0].get("value")
+    if not batch_id:
+        return
+    batch = consent_batch_mod.get_batch(batch_id)
+    if batch is None:
+        return
+    if not consent_batch_mod.expand_batch(batch_id=batch_id):
+        return
+    # Hint the operator that per-tool prompts are inbound. We don't
+    # block — the standard drainer cycle will re-post each row within
+    # one DRAIN_POLL_S cycle (~1s).
+    if not batch.get("posted_message_id"):
+        return
+    try:
+        await client.chat_update(
+            channel=batch["posted_channel_id"],
+            ts=batch["posted_message_id"],
+            text="📋 Expanding batch — per-tool prompts incoming.",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            "📋 *Expanded batch.* Per-tool prompts will "
+                            "appear shortly — decide each one separately."
+                        ),
+                    },
+                }
+            ],
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning(
+            "slack.consent_batch_expand_update_failed",
+            error=str(e), batch_id=batch_id,
         )
 
 

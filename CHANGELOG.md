@@ -1,11 +1,15 @@
 # Changelog
 
-## [0.7.3] — 2026-05-03 — V70-1 brief_runs.status mirrors job state + V70-3 integration spine for v0.7 surfaces
+## [0.7.3] — 2026-05-04 — Post-incident hardening trio: V70-1 + V70-3 + #11 operator fatigue
 
-Two parallel tracks landed together as the first post-v0.7.2 release.
-Both are post-incident hardening per Codex's 2026-05-02 review on the
+Three parallel tracks landed together as the post-v0.7.2 hardening
+release. All are direct execution of Codex's 2026-05-02 review on the
 overnight plan ("during the 24h soak window: restore drill, V70-3
 integration spine, V70-1 brief_runs.status, #11 operator fatigue").
+Spawned as 3 background agents in isolated worktrees, merged in order
+once each was rebased + CI green.
+
+Test count: 591 (v0.7.2) → **639** (+10 V70-1, +5 V70-3, +33 #11).
 
 ### V70-1 — brief_runs.status mirrors job state
 
@@ -98,6 +102,139 @@ scenario.
 
 606 total green (591 v0.7.2 baseline + 10 V70-1 + 5 V70-3). Ruff
 clean. Migration linter green on 13 migrations.
+=======
+## [0.7.3] — 2026-05-02 — Operator fatigue: consent batching + alert digest (Codex #11)
+
+Codex 2026-05-01 holistic review flagged "operator fatigue" as a UX
+problem: too many consent prompts when the agent does a multi-tool
+job (each `save_artifact` / web-fetch / etc. fires its own ✅/❌
+button), and too many one-off alert DMs (rate-limit, dead-letter,
+stuck-job, budget) cluttering the operator's DM. This release ships
+the two-half fix: consent batching for multi-tool turns, and an
+opt-in alert digest for ops chatter.
+
+### Half 1: Consent batching
+
+When `JobContext.tool_step` finds 2+ fresh consent-required tools in
+the same model turn, those N prompts collapse into ONE merged Block
+Kit message with `Approve all` / `Decline all` / `Show details`
+actions. Single-tool turns and tools auto-approved via existing
+job-scope grants are unaffected — backwards-compatible by design.
+
+- New `src/donna/security/consent_batch.py`:
+  - `create_batch` (owner-guarded; same lease check as `_persist_pending`)
+  - `resolve_batch` (cascades approve/decline to all linked rows)
+  - `expand_batch` (operator hits "Show details" → batch is unlinked
+    so legacy single-tool drainer takes over)
+  - `list_unposted_batches`, `load_batch_members`, `mark_batch_posted`,
+    `get_batch`
+- New `consent_mod.wait_for_pending`: poll an already-inserted
+  `pending_consents` row (used by the batched path; per-tool callers
+  unchanged).
+- `JobContext.tool_step` adds a `_maybe_create_batch` pre-scan that
+  filters fresh tool_uses and creates a batch only when 2+ need a
+  fresh prompt. Single-tool path and once-per-job grants stay on the
+  legacy single-prompt code path.
+- Slack drainer: new `_drain_batch_prompts` runs each tick; legacy
+  `_drain_consent` skips rows with `batch_id IS NOT NULL`.
+- New Block Kit renderer `slack_ux.batch_consent_blocks` and three
+  new action handlers: `batch_consent_approve_all`,
+  `batch_consent_decline_all`, `batch_consent_show_details`.
+
+### Half 2: Alert digest (opt-in)
+
+Default behavior unchanged (immediate DM). Operator opts in by
+setting `DONNA_ALERT_DIGEST_INTERVAL_MIN > 0` or via the new
+`/donna_alert_settings <minutes>` slash command; alerts queue in
+`alert_digest_queue` and a background flusher posts ONE merged DM per
+interval if anything is queued.
+
+- New `src/donna/observability/alert_digest.py`:
+  - `route_alert(notifier, *, kind, message, severity, dedup_key)` —
+    the single entry point. Immediate DM when interval = 0; enqueue
+    otherwise. Falls back to immediate DM if enqueue fails so alerts
+    aren't silently lost.
+  - `flush_due_now(notifier, interval_min=None)` — post-then-mark
+    semantics; rows stay queued if the DM fails (next flush retries).
+  - `render_digest` — sort oldest-first, dedup by `dedup_key`,
+    severity emoji prefix.
+  - `AlertDigestFlusher.loop(poll_seconds=60)` — long-running task.
+  - `queued_count`, `is_enabled` helpers (read settings live so
+    `/donna_alert_settings` flips behavior without restart).
+- Producers wired through `route_alert`:
+  - `BudgetWatcher.tick`
+  - `Watchdog._alert_once`
+  - `slack_adapter._maybe_alert_operator` (delivery dead-letter)
+- New slash command `/donna_alert_settings`:
+  - No args: shows current mode + queued count
+  - `<minutes>`: 0 = disabled / immediate, 1..1440 = digest cadence
+
+### Schema (migration 0014)
+
+- `pending_consents.batch_id` (TEXT, nullable, indexed). When non-null
+  the row participates in a batch; the bot routes posting through the
+  batched path. Backwards-compat: existing rows have `batch_id IS
+  NULL` and continue through the legacy code path.
+- New `consent_batches` table (id, job_id, worker_id, tainted,
+  approved, posted_channel_id, posted_message_id, decided_at,
+  created_at). `approved` state machine: NULL pending → 1 approve-all
+  → 0 decline-all → 2 expanded-to-individual.
+- New `alert_digest_queue` table (id, kind, severity, message,
+  dedup_key, created_at, delivered_at). Partial index on
+  `(delivered_at, created_at) WHERE delivered_at IS NULL` for the
+  flusher's hot-path query.
+
+### Config
+
+- New env var `DONNA_ALERT_DIGEST_INTERVAL_MIN` (default `0` =
+  immediate DM, preserving v0.7.x soak behavior). Recommended after
+  soak: `30`.
+
+### Tests
+
+- 18 new tests in `test_consent_batch.py`: schema, create_batch
+  owner-guard, resolve_batch cascade, expand_batch unlink, JobContext
+  pre-scan filtering (NEVER mode skipped, ONCE_PER_JOB grant skipped,
+  legacy single-tool path preserved).
+- 15 new tests in `test_alert_digest.py`: schema + index, route_alert
+  immediate vs enqueue paths, flush_due_now window/dedup/idempotency,
+  render_digest severity prefixes + chronological order, queued_count
+  + is_enabled live-read.
+
+Total test count delta: +33.
+
+### Backwards-compatibility guarantees
+
+1. `consent.check` legacy path unchanged for single-tool turns. No
+   batch row created for N=1 consent-required tools.
+2. Taint propagation through batches matches per-tool semantics: the
+   batch's `tainted` flag = OR of (job tainted at batch time, any
+   member tool's `taints_job`). The Slack prompt uses the more
+   conservative icon.
+3. Stale workers cannot create batches (same lease guard as
+   `_persist_pending`). A stale `create_batch` returns None and
+   `_execute_one`'s subsequent `consent.check` returns
+   `lease_lost` cleanly.
+4. Default `alert_digest_interval_min = 0` keeps every existing
+   alert path firing an immediate DM. The digest is opt-in so v0.7.x
+   soak isn't disrupted.
+
+### Known gaps / follow-ups
+
+- The "Show details" overflow flow re-posts each tool individually
+  via the legacy drainer — N posts in sequence rather than a single
+  ephemeral with N inline buttons. This matches the legacy code path
+  exactly so it's safer to ship; replacing it with an ephemeral
+  follow-up is a future tightening.
+- `flush_due_now` reads the digest interval at call time, so changing
+  it via `/donna_alert_settings` takes effect at the next flusher
+  tick (within ~60s). No mid-tick interruption.
+- The slash command mutates the cached `Settings` instance via
+  `object.__setattr__` to bypass Pydantic v2's frozen-by-default
+  semantics. Permanent changes still go through env. A small
+  follow-up: persist the setting in DB so it survives restart
+  without env edits.
+>>>>>>> 9d5b521 (v0.7.3: operator fatigue fixes — consent batching + alert digest (Codex #11))
 
 ## [0.7.2] — 2026-05-02 — OutboxService extraction (JobContext refactor, phase 1)
 

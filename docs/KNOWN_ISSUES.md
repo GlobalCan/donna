@@ -495,7 +495,7 @@ not in v0.6:
 |---|---|---|---|
 | #9 Prompt-version-compat at resume | Current "tool not registered" error path covers the common case | v0.6.1 / v0.7 | open |
 | #10 Eval realism (poisoned-corpora goldens) | Bigger eval-design work; deserves its own release | v0.7 | open |
-| #11 Operator fatigue (consent batching + alert digest) | UX redesign; pairs naturally with morning brief | v0.7 | open |
+| #11 Operator fatigue (consent batching + alert digest) | UX redesign; pairs naturally with morning brief | v0.7 | **FIXED — v0.7.3** (consent batching for multi-tool turns + opt-in alert digest with `/donna_alert_settings`; default behavior unchanged) |
 | #15 Cost timing fix (sanitizer attribution after DONE) | Cosmetic ledger weirdness; not actually costing the operator | When it bites | open |
 | #16 JobContext extraction | 4-service split per Codex review | v0.7.x | **partial — v0.7.2 OutboxService done; Lifecycle/Tool/Session deferred (already extracted or risky to bundle, see CHANGELOG)** |
 | #17 Auto-update timer | Needs restore drill to pass first | After restore drill | open |
@@ -509,6 +509,8 @@ not in v0.6:
 | V70-2 | **Validate mode runs against MARKDOWNIFIED chunks.** quoted_span citations are validated against the chunk text — which is the markdownified version of HTML. If the model quotes from rendered prose that has been transformed by markdownify, the verbatim check could fail spuriously on edge cases (markdown escaping, link rewriting). Live testing will tell us if this is real. | Open — observe | Live data needed. Fix would be to chunk the raw HTML/text directly when source is non-HTML, only markdownify for display. |
 | V70-3 | **Morning brief and /validate need integration spine tests.** v0.6 #8 added 4 integration tests. v0.7 added morning-brief and /validate paths that haven't been hit by the integration spine. A "scheduled brief fires → outbox → drainer delivers" + "/donna_validate <url> → fetch → chunk → grounded → outbox" pair would close the loop. | Open — v0.7.x | Worth ~2 hours when energy is fresh. |
 | V70-4 | **JobContext.tool_step extraction (ToolExecutionService).** Codex-recommended refactor; tightly coupled to ctx.state. Risky to bundle into autonomous work without a focused design pass. v0.7.2 explicitly defers. | Deferred | Pick up in a dedicated session with full design first. |
+| V70-5 | **`/donna_alert_settings` interval change is process-local.** v0.7.3 ships the runtime toggle by mutating the cached `Settings` instance via `object.__setattr__`. A worker restart reverts to the env-var value. Permanent changes still require editing env. | Open — v0.7.x | Persist the override in `runtimes` (or a tiny `bot_state` table) so a restart reads it back. ~1h. |
+| V70-6 | **Batch consent "Show details" expansion produces N sequential prompts.** v0.7.3 ships the expansion path by clearing `batch_id` so the legacy single-tool drainer takes over — N posts in sequence. UX-correct but not as elegant as one ephemeral with N inline approve/decline buttons. | Open — v0.7.x | Replace expansion with an ephemeral chat.postEphemeral that renders all N tools as a single Block Kit message with per-tool action_ids. ~2h plus design pass. |
 
 **Validation:** v0.5.0 smoke 4/4 green in operator's personal Slack workspace. DM intake, `/donna_ask` grounded with citations, `/donna_schedule` modal + delivery, Block Kit consent buttons all work. 373 tests pass, ruff clean.
 

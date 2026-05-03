@@ -19,6 +19,7 @@ from .adapter.slack_adapter import build_bot
 from .config import settings
 from .logging import configure_logging, get_logger
 from .observability import otel
+from .observability.alert_digest import AlertDigestFlusher
 from .observability.budget import BudgetWatcher
 from .observability.watchdog import Watchdog
 from .tools import register_all_v1_tools
@@ -65,6 +66,12 @@ async def _run() -> None:
 
     budget_watcher = BudgetWatcher(notify)
     ops_watchdog = Watchdog(notify)
+    # v0.7.3: alert digest flusher (Codex #11). When the digest interval
+    # is 0 (default), this loop runs but does nothing — `route_alert`
+    # DMs immediately and the queue stays empty. When the operator
+    # opts in via DONNA_ALERT_DIGEST_INTERVAL_MIN or
+    # /donna_alert_settings, this loop drains the queue on cadence.
+    alert_flusher = AlertDigestFlusher(notify)
 
     async def _budget_loop() -> None:
         # No equivalent of discord.py's `wait_until_ready` here —
@@ -78,8 +85,13 @@ async def _run() -> None:
         await asyncio.sleep(5.0)
         await ops_watchdog.loop(interval_seconds=300)
 
+    async def _alert_flusher_loop() -> None:
+        await asyncio.sleep(5.0)
+        await alert_flusher.loop(poll_seconds=60)
+
     asyncio.create_task(_budget_loop())
     asyncio.create_task(_watchdog_loop())
+    asyncio.create_task(_alert_flusher_loop())
 
     await bot.start()
 
