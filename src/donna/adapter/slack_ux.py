@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 
 from ..config import settings
 from ..logging import get_logger
+from ..memory import brief_runs as brief_runs_mod
 from ..memory import cost as cost_mod
 from ..memory import jobs as jobs_mod
 from ..memory import prompts as prompts_mod
@@ -159,9 +160,15 @@ def _disable_schedule_by_id(conn, sid: str) -> str:
     - schedule not found
     - already disabled
     - newly disabled (success)
+
+    V70-1 (v0.7.3): for kind='morning_brief' schedules, also flip any
+    active (queued/running) brief_runs rows to 'failed'. Disabling the
+    schedule means the operator wants the brief stopped — leaving the
+    brief_runs row at perma-'running' would lie. Same transaction as
+    the disable so the two writes are atomic.
     """
     row = conn.execute(
-        "SELECT enabled FROM schedules WHERE id = ?", (sid,),
+        "SELECT enabled, kind FROM schedules WHERE id = ?", (sid,),
     ).fetchone()
     if row is None:
         return f"schedule `{sid[:20]}` not found"
@@ -169,6 +176,22 @@ def _disable_schedule_by_id(conn, sid: str) -> str:
         return f"schedule `{sid[:20]}` already disabled"
     with transaction(conn):
         sched_mod.disable_schedule(conn, sid)
+        # `kind` defaults to 'task' for pre-v0.7.0 rows; only fan out
+        # to brief_runs for the morning_brief discriminator.
+        try:
+            kind = row["kind"]
+        except (KeyError, IndexError):
+            kind = "task"
+        if kind == "morning_brief":
+            conn.execute(
+                """
+                UPDATE brief_runs
+                SET status = 'failed'
+                WHERE schedule_id = ?
+                  AND status IN ('queued', 'running')
+                """,
+                (sid,),
+            )
     return f"🔕 disabled schedule `{sid[:20]}` (no further fires)"
 
 
@@ -178,6 +201,10 @@ def _cancel_job_by_id(conn, jid: str) -> str:
     Existence check before set_status so a typo'd / non-existent ID
     doesn't silently succeed (pre-fix `jobs_mod.set_status` returned
     True regardless of rowcount when worker_id was None).
+
+    V70-1 (v0.7.3): also mirror onto brief_runs.status='failed' for
+    the matching run (if any). A cancelled brief didn't deliver, so
+    the operator panel should reflect that. No-op for non-brief jobs.
     """
     job = jobs_mod.get_job(conn, jid)
     if job is None:
@@ -187,6 +214,9 @@ def _cancel_job_by_id(conn, jid: str) -> str:
         )
     with transaction(conn):
         jobs_mod.set_status(conn, jid, JobStatus.CANCELLED)
+        brief_runs_mod.update_status_by_job_id(
+            conn, job_id=jid, status="failed",
+        )
     return f"cancelled job `{jid[:20]}`"
 
 

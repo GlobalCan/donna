@@ -1,8 +1,58 @@
 # Changelog
 
-## [Unreleased]
+## [0.7.3] — 2026-05-03 — V70-1 brief_runs.status mirrors job state + V70-3 integration spine for v0.7 surfaces
 
-### V70-3 — integration spine for v0.7 surfaces (morning brief + /validate)
+Two parallel tracks landed together as the first post-v0.7.2 release.
+Both are post-incident hardening per Codex's 2026-05-02 review on the
+overnight plan ("during the 24h soak window: restore drill, V70-3
+integration spine, V70-1 brief_runs.status, #11 operator fatigue").
+
+### V70-1 — brief_runs.status mirrors job state
+
+`brief_runs` (added in migration 0013 for the v0.7.0 morning-brief
+slice) had a `status` column that was always 'queued' regardless of
+what the underlying chat job did. `botctl brief-runs list` was
+effectively lying to operators: a job that finished (or crashed) two
+days ago still rendered as 'queued'. This release wires the four
+state-flip points so brief_runs.status mirrors the job's lifecycle.
+
+`src/donna/memory/brief_runs.py` — new helper:
+
+- `update_status_by_job_id(conn, *, job_id, status) -> int`: a
+  one-line `UPDATE brief_runs SET status = ? WHERE job_id = ?` that
+  the four mirror sites call. Returns rowcount so callers can
+  observe whether anything matched. Most jobs aren't brief jobs, so
+  the UPDATE matches 0 rows for them — that IS the
+  is-this-a-brief-job filter, no caller-side check needed.
+
+Mirror points wired:
+
+- `agent/context.py::JobContext.finalize` — after the DONE write
+  succeeds, if `self.job.schedule_id` is truthy, fan out to
+  brief_runs.status='done'. Inside the existing `with transaction(conn):`
+  block, so a finalize rollback also rolls back the brief_runs flip.
+  Honors Codex's "don't let services open their own transaction
+  during finalize" pitfall.
+- `jobs/runner.py::Worker._tick` — on claim_next_queued (job →
+  running), mirror onto brief_runs.status='running'. Same transaction
+  as the claim itself.
+- `jobs/runner.py::Worker._run_one` exception path — when the agent
+  loop raises, the owner-guarded set_status(FAILED) now wraps a
+  brief_runs flip too. Inside one transaction so a lease-lost
+  set_status (ok=False) doesn't accidentally flip brief_runs of the
+  new owner.
+- `adapter/slack_ux.py::_cancel_job_by_id` — `/donna_cancel job_Y`
+  flips brief_runs.status='failed' for the matching run. A cancelled
+  brief didn't deliver, so the operator panel reflects that.
+- `adapter/slack_ux.py::_disable_schedule_by_id` — `/donna_cancel sch_X`
+  on a kind='morning_brief' schedule flips any active (queued/running)
+  brief_runs to 'failed'. Historical 'done' rows for the same schedule
+  are left alone. Legacy kind='task' schedules skip the fan-out.
+
+10 new tests in `tests/test_brief_runs_status_flow.py` (mirror points
++ negative cases + helper rowcount contract).
+
+### V70-3 — integration spine for v0.7 surfaces
 
 Extends the v0.6 #8 integration spine (4 cross-process roundtrip tests
 in `tests/test_integration_spine.py`) with five more tests covering the
@@ -16,49 +66,38 @@ flagged in 2026-05-01 review.
 Five new tests, all real SQLite + real migrations + mocked Slack
 client + mocked model:
 
-- **scheduler-fired morning brief end-to-end** (`test_scheduler_morning_brief_finalize_outbox_drainer_to_target_channel`):
-  `Scheduler._fire` on a `kind='morning_brief'` schedule creates a
-  `brief_runs` row + a chat-mode job back-linked to the schedule.
-  After the agent loop's simulated finish, finalize writes to outbox,
-  the drainer resolves `schedules.target_channel_id` ("C_BRIEF") and
-  posts there. Pre-v0.7 there was no such path at all.
+- **scheduler-fired morning brief end-to-end**: `Scheduler._fire` on a
+  `kind='morning_brief'` schedule creates a `brief_runs` row + a
+  chat-mode job back-linked to the schedule. Finalize → outbox →
+  drainer resolves `schedules.target_channel_id` ("C_BRIEF") and posts
+  there.
+- **within-minute scheduler dedup**: two `Scheduler._fire` calls 30s
+  apart in the same minute (wall time pinned via `patch.object`)
+  produce exactly one `brief_runs` row, one job, one outbox row.
+  Locks the `claim_brief_run` UNIQUE(schedule_id, fire_key) contract
+  at the scheduler level, not just the helper level.
+- **/donna_validate refusal end-to-end**: `JobMode.VALIDATE` job with
+  `http://localhost/admin` hits the SSRF refusal path, sets
+  `final_text` starting with `[validate · refused]`, finalize delivers
+  via outbox + drainer. `model_step` asserted never awaited.
+- **/donna_validate happy path**: monkeypatched `_ssrf_safe_fetch` +
+  `_build_chunks_from_text` + `assert_safe_url` + `ctx.model_step`
+  returning canned `GROUNDED_RESPONSE_SCHEMA` JSON with verbatim
+  `quoted_span`. Asserts tainted artifact saved, prose + ✅ validated
+  badge in `final_text`, drainer posts with unfurls disabled.
+- **target_channel_id resolver end-to-end**: legacy `kind='task'`
+  schedule with `target_channel_id="C_NEW"` but thread in `C_OLD`
+  (the half-wired bug v0.6.3 fixed). Resolver returns `C_NEW`; drainer
+  posts there. Locks the v0.6.3 fix end-to-end.
 
-- **within-minute scheduler dedup** (`test_two_scheduler_ticks_same_minute_produce_one_brief`):
-  Two `Scheduler._fire` calls 30s apart in the same minute (wall time
-  pinned via `patch.object(scheduler, "datetime", ...)`) produce
-  exactly one `brief_runs` row, one job, one outbox row. Locks the
-  `claim_brief_run` UNIQUE(schedule_id, fire_key) contract at the
-  scheduler level, not just the helper level.
+Helper `_drain_one(bot, *, job_id, expected_channel)` encapsulates the
+per-row drainer iteration so each new test reads as one integration
+scenario.
 
-- **/donna_validate refusal end-to-end** (`test_validate_refusal_finalize_outbox_drainer`):
-  `JobMode.VALIDATE` job with task `http://localhost/admin` runs
-  `run_validate(ctx)`, hits the SSRF refusal path, sets
-  `final_text` starting with `[validate · refused]`, then finalize
-  delivers via outbox + drainer. `model_step` asserted as never
-  awaited.
+### Tests + validation
 
-- **/donna_validate happy path** (`test_validate_happy_path_with_mocked_fetch_delivers_validated_badge`):
-  Monkeypatches `_ssrf_safe_fetch` (returns canned markdown),
-  `_build_chunks_from_text` (returns deterministic chunk for
-  citation-stable mocking), `assert_safe_url` (no-op for offline
-  test), and `ctx.model_step` (returns canned `GROUNDED_RESPONSE_SCHEMA`
-  JSON with verbatim `quoted_span`). Asserts: tainted artifact saved,
-  `ctx.state.tainted=True`, prose + ✅ validated badge in `final_text`,
-  finalize delivers to outbox, drainer posts with `unfurl_links=False`
-  / `unfurl_media=False` (tainted-content guard).
-
-- **target_channel_id resolver end-to-end** (`test_legacy_task_schedule_drainer_posts_to_target_channel_id`):
-  Legacy `kind='task'` schedule with `target_channel_id="C_NEW"` but
-  thread pointing to `C_OLD` (the half-wired bug v0.6.3 fixed). After
-  `Scheduler._fire`, the resolver returns `C_NEW`; finalize + drainer
-  post to `C_NEW` not `C_OLD`. Locks the v0.6.3 fix end-to-end through
-  the full delivery spine, not just the unit-level resolver.
-
-Helper extracted: `_drain_one(bot, *, job_id, expected_channel)`
-encapsulates the per-row drainer iteration (resolve channel, post,
-handle result) so each new test reads as a single integration scenario.
-
-Test count: 591 → 596. Full suite passes; ruff clean.
+606 total green (591 v0.7.2 baseline + 10 V70-1 + 5 V70-3). Ruff
+clean. Migration linter green on 13 migrations.
 
 ## [0.7.2] — 2026-05-02 — OutboxService extraction (JobContext refactor, phase 1)
 
