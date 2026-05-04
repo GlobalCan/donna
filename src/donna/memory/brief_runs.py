@@ -86,3 +86,30 @@ def update_status(
     conn.execute(
         "UPDATE brief_runs SET status = ? WHERE id = ?", (status, run_id),
     )
+
+
+def update_status_by_job_id(
+    conn: sqlite3.Connection, *, job_id: str, status: str,
+) -> int:
+    """V70-1 (v0.7.3): mirror a job's status flip onto its brief_runs row.
+
+    The transitions chat-job-running, finalize-DONE, runner-FAILED, and
+    /donna_cancel-CANCELLED all fire `UPDATE jobs SET status = ?`. The
+    matching brief_runs row (if any) carries the same job_id, so a
+    parallel `UPDATE brief_runs SET status = ? WHERE job_id = ?` keeps
+    `botctl brief-runs list` in sync.
+
+    Most jobs aren't brief jobs — they have NO brief_runs row, so the
+    UPDATE matches 0 rows. That's intentional: the SQL is the
+    is-this-a-brief-job? filter. Callers don't need a separate check.
+
+    Returns the rowcount so finalize() can decide whether to log.
+    Caller must wrap in a transaction; this is a no-op outside one if
+    the connection is already in autocommit (still safe — the UPDATE is
+    a single statement).
+    """
+    cur = conn.execute(
+        "UPDATE brief_runs SET status = ? WHERE job_id = ?",
+        (status, job_id),
+    )
+    return cur.rowcount

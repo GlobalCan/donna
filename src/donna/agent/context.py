@@ -24,6 +24,7 @@ from typing import Any
 
 from ..config import settings
 from ..logging import get_logger
+from ..memory import brief_runs as brief_runs_mod
 from ..memory import jobs as jobs_mod
 from ..memory import outbox as outbox_mod
 from ..memory import tool_calls as tool_calls_mod
@@ -469,9 +470,24 @@ class JobContext:
                     if self.state.tainted:
                         self.assistant_message_id = asst_mid
                         self.assistant_content = capped_assistant
-                return jobs_mod.set_status(
+                ok = jobs_mod.set_status(
                     conn, self.state.job_id, JobStatus.DONE, worker_id=self.worker_id,
                 )
+                if ok and self.job.schedule_id:
+                    # V70-1 (v0.7.3): keep brief_runs.status in sync with
+                    # the underlying job. Most jobs aren't brief jobs and
+                    # don't have a brief_runs row — the UPDATE matches 0
+                    # rows for them, which is the intended is-this-a-brief
+                    # filter. Inside the same transaction so a finalize
+                    # rollback also rolls back the brief_runs flip; Codex's
+                    # pitfall is "don't let services open their own
+                    # transaction during finalize" — we don't.
+                    brief_runs_mod.update_status_by_job_id(
+                        conn,
+                        job_id=self.state.job_id,
+                        status="done",
+                    )
+                return ok
         finally:
             conn.close()
 
