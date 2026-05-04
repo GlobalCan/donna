@@ -56,6 +56,17 @@ class Settings(BaseSettings):
     max_tool_calls_per_job: int = Field(default=60, alias="DONNA_MAX_TOOL_CALLS_PER_JOB")
     compact_every_n: int = Field(default=20, alias="DONNA_COMPACT_EVERY_N")
 
+    # v0.7.3 (Codex #11 operator fatigue): alert digest interval. When 0,
+    # alerts (delivery dead-letter, budget, stuck-job, recent-failures)
+    # DM the operator immediately — preserving v0.7.x soak behavior.
+    # Set to >= 1 to opt in to queued-and-batched alert delivery: each
+    # alert lands in `alert_digest_queue`; a background flusher posts
+    # one merged DM per interval if there's anything to send. Suggested
+    # operator value: 30 (one digest every 30 min).
+    alert_digest_interval_min: int = Field(
+        default=0, alias="DONNA_ALERT_DIGEST_INTERVAL_MIN",
+    )
+
     # v0.6 #7: HARD caps that gate new job intake. Soft alerts at
     # daily_budget_alerts thresholds remain (they DM the operator).
     # Hard caps go further: when exceeded, intake refuses new jobs with

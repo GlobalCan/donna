@@ -1,4 +1,9 @@
-"""Budget watcher — sends Discord DM when daily spend crosses thresholds."""
+"""Budget watcher — alerts the operator when daily spend crosses thresholds.
+
+v0.7.3 (Codex #11): alerts now route through `alert_digest.route_alert`
+so they participate in the opt-in digest. Default behavior unchanged
+(immediate DM) when `DONNA_ALERT_DIGEST_INTERVAL_MIN = 0`.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -8,6 +13,7 @@ from ..config import settings
 from ..logging import get_logger
 from ..memory import cost as cost_mod
 from ..memory.db import connect
+from . import alert_digest
 
 log = get_logger(__name__)
 
@@ -28,10 +34,17 @@ class BudgetWatcher:
                 self._crossed.add(threshold)
                 msg = f"💰 Daily spend crossed ${threshold:.2f} — current: ${spend:.2f}"
                 log.info("budget.alert", threshold=threshold, spend=spend)
-                try:
-                    await self.notifier(msg)
-                except Exception as e:
-                    log.warning("budget.notify_failed", error=str(e))
+                # `dedup_key` is per-threshold so two ticks crossing the
+                # same threshold within one digest window collapse into
+                # one digest line — defense-in-depth on top of the
+                # in-memory _crossed set.
+                await alert_digest.route_alert(
+                    self.notifier,
+                    kind="budget",
+                    message=msg,
+                    severity="warning",
+                    dedup_key=f"budget:{threshold}",
+                )
 
     async def loop(self, interval_seconds: int = 60) -> None:
         while True:

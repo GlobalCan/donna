@@ -132,6 +132,10 @@ features:
       description: Approve heuristic
       should_escape: false
 
+    - command: /donna_alert_settings
+      description: Inspect or change the alert digest interval (v0.7.3)
+      should_escape: false
+
 oauth_config:
   scopes:
     bot:

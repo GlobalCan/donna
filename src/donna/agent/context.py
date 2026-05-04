@@ -31,8 +31,10 @@ from ..memory import tool_calls as tool_calls_mod
 from ..memory.db import connect, transaction
 from ..observability import otel
 from ..security import consent as consent_mod
+from ..security import consent_batch as consent_batch_mod
+from ..security.taint import effective_confirmation
 from ..tools.registry import REGISTRY
-from ..types import JobState, JobStatus, ModelTier
+from ..types import ConfirmationMode, JobState, JobStatus, ModelTier
 from .model_adapter import GenerateResult, model
 
 log = get_logger(__name__)
@@ -180,14 +182,25 @@ class JobContext:
     # -- tool step ------------------------------------------------------------
     async def tool_step(self, tool_uses: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Execute parallel tool calls with pre-taint + consent + checkpoint.
-        Returns the tool_result blocks to append to messages."""
+        Returns the tool_result blocks to append to messages.
+
+        v0.7.3 (Codex #11 operator fatigue): when 2+ fresh tools in this
+        batch each require a fresh consent prompt, we collapse them into
+        one batched prompt via `consent_batch.create_batch`. The bot's
+        drainer detects the batch_id link and renders a single Block Kit
+        message with "Approve all" / "Decline all" / "Show details"
+        actions instead of N separate prompts. Single-tool turns and
+        tools auto-approved via existing job-scope grants are unaffected.
+        """
         already_done = _already_executed_tool_use_ids(self.state)
         fresh = [tu for tu in tool_uses if tu.get("id") not in already_done]
         if len(fresh) != len(tool_uses):
             log.info("agent.resume.dedup", job_id=self.job.id,
                      skipped=len(tool_uses) - len(fresh))
 
-        # Pre-scan: taint the job if any fresh tool is taint-marking
+        # Pre-scan: taint the job if any fresh tool is taint-marking.
+        # We do this BEFORE consent so the batch-time taint flag matches
+        # what each individual `_execute_one`'s consent path would see.
         for tu in fresh:
             e = REGISTRY.get(tu.get("name", ""))
             if e is not None and e.taints_job and not self.state.tainted:
@@ -197,8 +210,15 @@ class JobContext:
                 otel.set_attr("agent.taint.source_tool", self.state.taint_source_tool)
                 break
 
+        # Pre-scan: figure out which fresh tools actually need a fresh
+        # consent prompt. Skip ones that auto-approve (NEVER mode) or
+        # have an existing job-scope grant (ONCE_PER_JOB with prior yes).
+        # The batch is only worthwhile if 2+ tools clear this filter.
+        prebatch_pending: dict[str, str] = self._maybe_create_batch(fresh)
+
         fresh_results = await asyncio.gather(*[
-            self._execute_one(tu) for tu in fresh
+            self._execute_one(tu, batched_pending_id=prebatch_pending.get(tu["id"]))
+            for tu in fresh
         ])
 
         # Rebuild full ordered list, synthesizing replayed markers for skipped
@@ -218,7 +238,83 @@ class JobContext:
         self.state.tool_calls_count += len(tool_uses)
         return full
 
-    async def _execute_one(self, tu: dict[str, Any]) -> dict[str, Any]:
+    def _maybe_create_batch(
+        self, fresh: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        """Pre-create one consent_batches row covering N fresh tools that
+        each independently require a fresh consent prompt. Returns the
+        per-tool {tool_use_id: pending_id} map, or `{}` if no batch was
+        created (single tool, all tools auto-approved, or lease lost).
+
+        Rules:
+          - Skip tools with no registry entry (caller will surface the
+            error from `_execute_one`'s usual unknown-tool path).
+          - Skip tools whose effective confirmation is NEVER.
+          - Skip ONCE_PER_JOB tools that already have a job-scope grant.
+          - Anything else counts as "needs prompt." We batch only if 2+.
+        """
+        from ..memory import permissions as perm_mod
+        members: list[tuple[Any, dict[str, Any], str]] = []
+        scope = self.job.agent_scope
+        conn = connect()
+        try:
+            for tu in fresh:
+                entry = REGISTRY.get(tu.get("name", ""))
+                if entry is None:
+                    continue
+                if "*" not in entry.agents and scope not in entry.agents:
+                    continue
+                mode = effective_confirmation(
+                    entry, job_tainted=self.state.tainted,
+                )
+                if mode == ConfirmationMode.NEVER:
+                    continue
+                if (
+                    mode == ConfirmationMode.ONCE_PER_JOB
+                    and perm_mod.has_grant(
+                        conn, job_id=self.job.id, tool_name=entry.name,
+                    )
+                ):
+                    continue
+                args = tu.get("input", {}) or {}
+                members.append((entry, args, tu["id"]))
+        finally:
+            conn.close()
+
+        if len(members) < 2:
+            return {}
+
+        # Build the (entry, args) list in tool-use order; remember the
+        # tool_use_ids so we can map pending_ids back into the dict.
+        ordered_pairs = [(entry, args) for entry, args, _ in members]
+        try:
+            result = consent_batch_mod.create_batch(
+                job_id=self.job.id,
+                worker_id=self.worker_id,
+                members=ordered_pairs,
+                job_tainted=self.state.tainted,
+            )
+        except Exception as e:  # noqa: BLE001
+            # If batching itself fails (DB pressure, schema mismatch, etc.)
+            # fall back to the legacy single-tool path. Each _execute_one
+            # will re-discover that consent is needed and run its own
+            # prompt — slower for the operator but functionally correct.
+            log.warning(
+                "consent.batch_create_failed",
+                job_id=self.job.id, error=str(e),
+            )
+            return {}
+        if result is None:
+            # Lease lost during batch creation. Each _execute_one's
+            # subsequent consent.check will return lease_lost too.
+            log.info("consent.batch_lease_lost", job_id=self.job.id)
+            return {}
+        _batch_id, pending_ids = result
+        return {tu_id: pid for (_e, _a, tu_id), pid in zip(members, pending_ids, strict=True)}
+
+    async def _execute_one(
+        self, tu: dict[str, Any], *, batched_pending_id: str | None = None,
+    ) -> dict[str, Any]:
         name = tu["name"]
         args = tu.get("input", {}) or {}
         scope = self.job.agent_scope
@@ -237,10 +333,27 @@ class JobContext:
                                   f"tool {name} not allowed for scope {scope}")
             return _err_block(tu["id"], f"tool {name} not allowed for scope {scope}")
 
-        consent_res = await consent_mod.check(
-            job_id=self.job.id, entry=entry, arguments=args,
-            tainted=self.state.tainted, worker_id=self.worker_id,
-        )
+        if batched_pending_id is not None:
+            # Pre-batched path (v0.7.3): the batch coordinator already
+            # inserted this row's pending_consents entry under a
+            # consent_batches link, so we wait on the pre-existing id
+            # instead of inserting a new row. The bot drainer renders
+            # the merged batch prompt; resolution flows back into this
+            # row's `approved` column the same way a single prompt does.
+            mode = effective_confirmation(
+                entry, job_tainted=self.state.tainted,
+            )
+            consent_res = await consent_mod.wait_for_pending(
+                pending_id=batched_pending_id,
+                job_id=self.job.id,
+                tool_name=name,
+                grant_on_approve=(mode == ConfirmationMode.ONCE_PER_JOB),
+            )
+        else:
+            consent_res = await consent_mod.check(
+                job_id=self.job.id, entry=entry, arguments=args,
+                tainted=self.state.tainted, worker_id=self.worker_id,
+            )
         if not consent_res.approved:
             # "lease_lost" means we're a stale worker (Codex #8). The next
             # guarded checkpoint will raise LeaseLost so JobContext.open

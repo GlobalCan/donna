@@ -1,8 +1,13 @@
-"""Ops watchdog — DMs on stuck jobs and unresolved pending consents.
+"""Ops watchdog — alerts on stuck jobs and unresolved pending consents.
 
 Codex review #13 fix: Phoenix is a debugger, not an ops story. This adds
 lightweight active monitoring so you find out *before* you notice the bot
 has been silently stuck for hours.
+
+v0.7.3 (Codex #11): alerts route through `alert_digest.route_alert` so
+they participate in the opt-in digest. The 12h in-memory dedup map is
+preserved as a defense-in-depth so the same kind+id never produces a
+duplicate digest line within a half-day either.
 """
 from __future__ import annotations
 
@@ -12,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 
 from ..logging import get_logger
 from ..memory.db import connect
+from . import alert_digest
 
 log = get_logger(__name__)
 
@@ -108,8 +114,15 @@ class Watchdog:
         if last and now - last < timedelta(hours=12):
             return
         self._already_alerted[key] = now
-        try:
-            await self.notifier(message)
-            log.info("watchdog.alerted", kind=kind, id=id_)
-        except Exception as e:  # noqa: BLE001
-            log.warning("watchdog.notify_failed", kind=kind, id=id_, error=str(e))
+        # Severity heuristic: stuck consent / running jobs are warnings
+        # (the operator can resolve via /donna_cancel); recent_failures
+        # is an error (something is genuinely breaking).
+        sev = "error" if kind == "recent_failures" else "warning"
+        await alert_digest.route_alert(
+            self.notifier,
+            kind=kind,
+            message=message,
+            severity=sev,
+            dedup_key=f"{kind}:{id_}",
+        )
+        log.info("watchdog.alerted", kind=kind, id=id_)

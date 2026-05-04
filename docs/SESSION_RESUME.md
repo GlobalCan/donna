@@ -25,9 +25,19 @@ Before anything else, read these files. Everything below assumes you have.
 
 ## 1 · Where we are
 
-**Donna v0.7.2 — Overnight push SHIPPED (2026-05-02 → 2026-05-03).**
+**Donna v0.7.3 — Operator fatigue UX fixes SHIPPED (2026-05-02).**
 
-Five releases shipped overnight in response to a Slack incident +
+Track A.3 (#11 operator fatigue) closed: consent batching for
+multi-tool turns + opt-in alert digest. Default behavior unchanged
+(immediate DM, single-prompt-per-tool); operators opt in via
+`DONNA_ALERT_DIGEST_INTERVAL_MIN` or the new `/donna_alert_settings`
+slash command. Two paths the operator was tapping 8+ buttons on or
+muting the bot to escape are now solved cleanly with backwards
+compatibility intact. 33 new tests; 601 total green.
+
+---
+
+Six releases shipped overnight in response to a Slack incident +
 operator's "do it all" + "continue overnight" directive:
 
 - **v0.6.2** (incident response) — V60-4 slack-doctor `missing_scope`
@@ -51,8 +61,14 @@ operator's "do it all" + "continue overnight" directive:
   `memory.outbox.enqueue_update` / `enqueue_ask` consolidate 4
   duplicated INSERT callsites. Other 3 services explicitly deferred
   with reasoning (already extracted or risky to bundle).
+- **v0.7.3** — Operator fatigue (Codex #11). Consent batching:
+  `consent_batch.create_batch` collapses N consent prompts into one
+  Block Kit message with Approve-All / Decline-All / Show-Details.
+  Alert digest: opt-in `alert_digest_queue` with
+  `DONNA_ALERT_DIGEST_INTERVAL_MIN` env / `/donna_alert_settings`
+  slash command. Default behavior unchanged. Migration 0014.
 
-**591 tests green** (was 503 at v0.6.1). Ruff clean. 13 migrations.
+**601 tests green** (was 568 at v0.7.2). Ruff clean. 14 migrations.
 
 Codex's 2026-05-02 review on the overnight plan rewrote significant
 parts of my original design — adopted verbatim:

@@ -59,7 +59,9 @@ from ..logging import get_logger
 from ..memory import dead_letter as dl_mod
 from ..memory import jobs as jobs_mod
 from ..memory.db import connect, transaction
+from ..observability import alert_digest as alert_digest_mod
 from ..security import consent as consent_mod
+from ..security import consent_batch as consent_batch_mod
 from ..tools import registry as tool_registry
 from . import slack_ux
 from .slack_errors import (
@@ -485,12 +487,14 @@ class DonnaSlackBot:
         job_id: str,
         attempt_count: int,
     ) -> None:
-        """Throttled DM to the allowed operator about a terminal/unknown
+        """Throttled alert to the allowed operator about a terminal/unknown
         delivery failure. Throttle key is (channel, error_code) so 100
         jobs targeting one broken channel produce one alert, not 100.
 
-        If the alert send itself fails (operator's own DM channel broken
-        somehow), we log and bail — never loop.
+        v0.7.3: routes through `alert_digest.route_alert`, so when the
+        digest is enabled the alert is queued instead of DM'd; the
+        in-memory throttle is preserved as defense-in-depth (we don't
+        want 100 identical digest lines either).
         """
         key = (channel, error_code)
         now = time.time()
@@ -509,22 +513,33 @@ class DonnaSlackBot:
             f"(channel, error_code) per "
             f"{int(_OPERATOR_ALERT_THROTTLE_S/60)}min."
         )
-        try:
+
+        async def _send_immediate(msg: str) -> None:
             await self.client.chat_postMessage(
-                channel=operator_id,
-                text=text,
-                unfurl_links=False,
-                unfurl_media=False,
+                channel=operator_id, text=msg,
+                unfurl_links=False, unfurl_media=False,
             )
-            # Record AFTER successful send; if the send fails we'll retry
-            # the next time the same key fires (still throttled by the
-            # next attempt's failure cadence, not by this map).
-            self._alert_throttle[key] = now
+
+        try:
+            ok = await alert_digest_mod.route_alert(
+                _send_immediate,
+                kind="delivery_failure",
+                message=text,
+                severity="error",
+                dedup_key=f"delivery_failure:{channel}:{error_code}",
+            )
         except Exception as e:  # noqa: BLE001
             log.warning(
                 "slack.operator_alert_failed",
                 error=str(e), channel=channel, error_code=error_code,
             )
+            return
+        # Record AFTER confirmed delivery (immediate) or enqueue
+        # (digest). If route_alert returned False, the alert wasn't
+        # delivered anywhere — leave the throttle empty so the next
+        # failure attempt retries the alert.
+        if ok:
+            self._alert_throttle[key] = now
 
     async def _post_update(
         self,
@@ -775,14 +790,22 @@ class DonnaSlackBot:
     # ------------------------------------------------------------------
 
     async def _drain_consent(self) -> None:
+        # v0.7.3: drains both the legacy single-tool prompts AND the new
+        # consent_batches. Single rows whose batch_id IS NULL still flow
+        # through the per-tool path (one Block Kit message per tool);
+        # batched rows are surfaced via _drain_batch_prompts and skipped
+        # here.
         while True:
             await asyncio.sleep(_DRAIN_POLL_S)
+            await self._drain_batch_prompts()
             conn = connect()
             try:
                 rows = conn.execute(
                     "SELECT id, job_id, tool_name, arguments, tainted "
                     "FROM pending_consents "
-                    "WHERE posted_message_id IS NULL AND approved IS NULL "
+                    "WHERE posted_message_id IS NULL "
+                    "  AND approved IS NULL "
+                    "  AND batch_id IS NULL "
                     "ORDER BY created_at LIMIT 10"
                 ).fetchall()
             finally:
@@ -866,6 +889,90 @@ class DonnaSlackBot:
                     )
             finally:
                 conn.close()
+
+    async def _drain_batch_prompts(self) -> None:
+        """v0.7.3: pump the consent_batches queue. One Block Kit message
+        per batch covering all member tools, with Approve-All / Decline-All
+        and a "Show details" overflow that flips the batch to individual
+        mode (so the standard per-tool drainer takes over).
+        """
+        for batch_row in consent_batch_mod.list_unposted_batches()[:10]:
+            members = consent_batch_mod.load_batch_members(batch_row["id"])
+            if not members:
+                # Stale batch row with no members (shouldn't happen, but be
+                # defensive). Mark approved=0 so it doesn't loop forever.
+                consent_batch_mod.resolve_batch(
+                    batch_id=batch_row["id"], approved=0,
+                )
+                continue
+            await self._post_batch_consent_prompt(
+                batch=batch_row, members=members,
+            )
+
+    async def _post_batch_consent_prompt(
+        self, *, batch: dict, members: list[dict],
+    ) -> None:
+        """Render and post one merged consent prompt for a batch.
+
+        On post failure: same fallback as the single-tool path — flip the
+        batch (and its member rows) to declined so the worker doesn't
+        wait forever on a prompt that never reached the operator.
+        """
+        ch = await self._resolve_channel_for_job(batch["job_id"])
+        if ch is None:
+            consent_batch_mod.resolve_batch(
+                batch_id=batch["id"], approved=0,
+            )
+            return
+        # Hydrate ToolEntry references from the registry. If a tool has
+        # been removed since the batch was created, treat it like the
+        # single-tool path's unknown_tool branch — auto-decline the batch
+        # so we don't render a half-broken prompt.
+        rendered: list[tuple[str, dict, bool]] = []
+        for m in members:
+            entry = tool_registry.get(m["tool_name"])
+            if entry is None:
+                log.warning(
+                    "consent.batch.unknown_tool",
+                    tool_name=m["tool_name"],
+                    pending_id=m["id"],
+                    batch_id=batch["id"],
+                )
+                consent_batch_mod.resolve_batch(
+                    batch_id=batch["id"], approved=0,
+                )
+                return
+            try:
+                args = json.loads(m["arguments"])
+            except json.JSONDecodeError:
+                args = {}
+            rendered.append((entry.name, args, bool(m["tainted"])))
+        blocks = slack_ux.batch_consent_blocks(
+            batch_id=batch["id"],
+            tainted=bool(batch["tainted"]),
+            members=rendered,
+        )
+        try:
+            resp = await self.client.chat_postMessage(
+                channel=ch,
+                blocks=blocks,
+                text=f"Approve {len(rendered)} tool calls?",
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+            consent_batch_mod.mark_batch_posted(
+                batch_id=batch["id"],
+                channel_id=ch,
+                message_id=resp["ts"],
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "slack.consent_batch_failed",
+                error=str(e), batch_id=batch["id"],
+            )
+            consent_batch_mod.resolve_batch(
+                batch_id=batch["id"], approved=0,
+            )
 
     # ------------------------------------------------------------------
     # Channel resolution

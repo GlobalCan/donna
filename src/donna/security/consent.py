@@ -238,3 +238,71 @@ def list_unresolved_pendings() -> list[dict]:
     finally:
         conn.close()
     return [dict(r) for r in rows]
+
+
+async def wait_for_pending(
+    *, pending_id: str, job_id: str, tool_name: str,
+    grant_on_approve: bool = False,
+) -> ConsentResult:
+    """Poll an already-inserted pending_consents row for resolution.
+
+    Used by the batched-consent path: the batch coordinator persists
+    N pending_consents rows up front (via `consent_batch.create_batch`),
+    then each `_execute_one` calls this helper to wait for its row's
+    decision. The bot's drainer collapses all N rows into one merged
+    Block Kit prompt; resolution cascades back into each row's
+    `approved` column.
+
+    Mirrors `check`'s polling loop semantics exactly:
+      - Polls every `_POLL_INTERVAL_S` seconds up to `_CONSENT_TIMEOUT_S`
+      - Honors mid-wait `/cancel` (job.status flips to CANCELLED)
+      - Records a once_per_job grant on approval if `grant_on_approve`
+      - Cleans up: best-effort row delete + status flip back to running
+
+    Returns a ConsentResult identical in shape to `check`'s.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + _CONSENT_TIMEOUT_S
+    try:
+        while loop.time() < deadline:
+            await asyncio.sleep(_POLL_INTERVAL_S)
+            conn = connect()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT pc.approved, j.status AS job_status
+                    FROM pending_consents pc
+                    JOIN jobs j ON j.id = pc.job_id
+                    WHERE pc.id = ?
+                    """,
+                    (pending_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+            if row is None:
+                return ConsentResult(approved=False, reason="cleared")
+            if row["job_status"] == "cancelled":
+                return ConsentResult(approved=False, reason="job cancelled")
+            if row["approved"] is not None:
+                approved = bool(row["approved"])
+                if approved and grant_on_approve:
+                    conn = connect()
+                    try:
+                        perm_mod.insert_grant(
+                            conn,
+                            job_id=job_id,
+                            tool_name=tool_name,
+                            scope="job",
+                        )
+                    finally:
+                        conn.close()
+                return ConsentResult(
+                    approved=approved,
+                    reason=(
+                        "user approved" if approved else "user declined"
+                    ),
+                )
+        return ConsentResult(approved=False, reason="timeout")
+    finally:
+        _clear_pending(pending_id)
+        _resume_job_status(job_id)
