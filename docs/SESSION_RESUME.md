@@ -25,15 +25,31 @@ Before anything else, read these files. Everything below assumes you have.
 
 ## 1 · Where we are
 
-**Donna v0.7.3 — Operator fatigue UX fixes SHIPPED (2026-05-02).**
+**Donna v0.7.3 — Post-incident hardening trio SHIPPED (2026-05-04).**
 
-Track A.3 (#11 operator fatigue) closed: consent batching for
-multi-tool turns + opt-in alert digest. Default behavior unchanged
-(immediate DM, single-prompt-per-tool); operators opt in via
-`DONNA_ALERT_DIGEST_INTERVAL_MIN` or the new `/donna_alert_settings`
-slash command. Two paths the operator was tapping 8+ buttons on or
-muting the bot to escape are now solved cleanly with backwards
-compatibility intact. 33 new tests; 601 total green.
+Track A's three deferred items landed together as a single combined
+release (V70-1 brief_runs.status + V70-3 integration spine + #11
+operator fatigue). Spawned as 3 parallel background agents in
+isolated worktrees, rebased and merged in order. All three are direct
+execution of Codex's 2026-05-02 review on the overnight plan ("during
+the 24h soak window: restore drill, V70-3 integration spine, V70-1
+brief_runs.status, #11 operator fatigue").
+
+- **V70-1**: brief_runs.status now mirrors job lifecycle (queued →
+  running → done/failed) at four state-flip points; pre-fix
+  `botctl brief-runs list` lied to operators. +10 tests.
+- **V70-3**: 5 new integration tests covering scheduler-fired brief →
+  outbox → drainer to target_channel_id, within-minute scheduler
+  dedup, /validate refusal + happy path, and the v0.6.3
+  target_channel_id resolver end-to-end. +5 tests.
+- **#11 operator fatigue**: consent batching (one Block Kit prompt
+  with Approve-All / Decline-All when multiple tools need consent in
+  the same turn) + opt-in alert digest (`DONNA_ALERT_DIGEST_INTERVAL_MIN`
+  + `/donna_alert_settings`). Default behavior unchanged. Migration
+  0014. +33 tests.
+
+639 total tests green (591 v0.7.2 baseline + 48 new). Ruff clean.
+14 migrations.
 
 ---
 
@@ -68,7 +84,7 @@ operator's "do it all" + "continue overnight" directive:
   `DONNA_ALERT_DIGEST_INTERVAL_MIN` env / `/donna_alert_settings`
   slash command. Default behavior unchanged. Migration 0014.
 
-**601 tests green** (was 568 at v0.7.2). Ruff clean. 14 migrations.
+**639 tests green** (was 591 at v0.7.2). Ruff clean. 14 migrations.
 
 Codex's 2026-05-02 review on the overnight plan rewrote significant
 parts of my original design — adopted verbatim:
