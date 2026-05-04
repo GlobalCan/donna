@@ -71,3 +71,4 @@ desktop.ini
 # Build artifacts
 *.tar
 *.tar.gz
+.claude/worktrees/
