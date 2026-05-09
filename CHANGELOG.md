@@ -1,5 +1,46 @@
 # Changelog
 
+## [Unreleased] — 2026-05-09 — Phase 0 artifacts (no runtime change)
+
+Three documents/scripts shipped to support the planned migration to a
+greenfield personal-AI system on P920. None alter Donna's runtime
+behavior — they encode operational discipline, set governance, and
+gate Phase 1.
+
+- **`docs/PATH_3_INVARIANTS.md` (v0.2)** — the spec the new system
+  will implement. §1-23 invariants. §8.x relay-cache locked per
+  Codex tiebreak ("P920 may precompute. Relay may disclose. Relay
+  may not derive."). Authored in this repo while Donna is the
+  active version-controlled codebase; migrates to the new system's
+  repo when bootstrapped. Numbered-invariant changes require Codex
+  review + sign-off (§23).
+
+- **Freeze hook (DZ-1, DZ-2)** — `scripts/donna-freeze.sh` +
+  `scripts/install-freeze-hook.sh` + `scripts/test-freeze-hook.sh`.
+  Git commit-msg hook rejects messages not prefixed
+  `fix:` / `chore:` / `docs:` / `security:`. Auto-generated Merge
+  and Revert commits exempt. `--no-verify` bypass = conscious
+  operator choice. 19/19 test cases pass. Operator runs
+  `bash scripts/install-freeze-hook.sh` once after pulling to wire
+  it into local `.git/hooks/`.
+
+- **Restore drill (Phase 0 gate, PATH_3 §17 / §21)** —
+  `scripts/donna-restore-drill.sh` + `docs/RESTORE_DRILL.md`. Six-
+  phase script: prerequisites → provision $0.01 throwaway DO
+  droplet → bootstrap (docker, repo, backup transfer w/ sha256
+  verify) → restore (extract + alembic upgrade head) → smoke
+  (alembic_version, integrity_check, foreign_key_check, artifact
+  hashes) → full pytest suite (expect 639). `trap`-based cleanup
+  destroys droplet on success; `KEEP_ON_FAIL=true` (default)
+  preserves on failure for inspection. Per-phase exit codes
+  (10/20/30/40/50/60). Runbook covers prerequisites,
+  per-phase troubleshooting, security notes.
+
+This entry is a `docs:` change — no test count impact (639 still
+green), no migrations (still at 0014), no behavior change. The
+freeze-rule artifacts and restore drill are operational tooling +
+documentation, not features.
+
 ## [0.7.3] — 2026-05-04 — Post-incident hardening trio: V70-1 + V70-3 + #11 operator fatigue
 
 Three parallel tracks landed together as the post-v0.7.2 hardening
