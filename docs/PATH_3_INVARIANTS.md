@@ -1,6 +1,6 @@
 # PATH_3_INVARIANTS.md
 
-**Status:** Draft v0.1 · 2026-05-09
+**Status:** Draft v0.3 · 2026-05-09
 **Authoring repo:** `donna` (active, version-controlled). **Migration target:** new system repo when bootstrapped.
 **Audience:** the new system implementation, Donna v0.7.3 maintenance work, and any future Codex audit pass.
 
@@ -148,14 +148,33 @@ CREATE TABLE capability_ownership (
 
 ### Invariants
 
-- **CO-1**: Donna v0.7.3 reads `capability_ownership` on every scheduled fire and skips if `owned_by != 'donna'`.
+- **CO-1**: Donna v0.7.3 reads `capability_ownership` on every scheduled fire and skips if `owned_by != 'donna'`. Implementation defers to Phase 2 — when the new system bootstraps the table and exposes a Tailscale-mounted view to Donna. Adding the read in Donna at that point classifies as `chore:` per DZ-1 and does not violate DZ-3 (it's reading the new system's authoritative table, not a new Donna integration). During Phase 0 / Phase 1 (table absent), Donna's existing scheduler behavior is unchanged.
 - **CO-2**: New system reads same on every capability dispatch and rejects if `owned_by != 'new_system'`.
 - **CO-3**: `'both'` is allowed only during explicit A/B test windows with an end date in `cutover_reason`. Audit must show what each branch produced and how the operator chose.
 - **CO-4**: Default `owned_by = 'donna'` for capabilities Donna currently provides; default `'new_system'` for net-new.
 - **CO-5**: Cutover is a single insert: append a row with the new owner. Forward-only (matches migration discipline).
+- **CO-6** (new in v0.3, **fail-closed-in-Phase-2+ post-Codex round-2 sign-off** 2026-05-09): Donna's read of the ownership table is **fail-closed** in Phase 2 and beyond. When the Tailscale-mounted view is unreachable for any reason (link down, P920 unreachable, view not yet bootstrapped, table missing), Donna **skips the scheduled fire, enqueues to the encrypted-unreadable queue if available, alerts via ntfy + slack-doctor, and exits the fire path.** Donna does NOT fall back to last-known ownership; that is insufficient consensus to safely fire.
 
-### Acceptance for Phase 1
-Table exists. Donna's morning brief and `/donna_ask` rows present. Both Donna and the new system query and respect the table. Test: insert `(/morning_brief, new_system, NOW())`; Donna's next fire is skipped (logged); new system fires.
+  **Why fail-closed (Codex's round-2 catch):** the round-1 "bounded fail-open per last-known ownership" still races. Sequence: (1) Donna last read `owned_by='donna'`, persists locally; (2) Donna loses Tailscale link; (3) operator inserts cutover row `owned_by='new_system'`; (4) new system reads + fires; (5) Donna sees table unreachable, last-known still says `donna`, fails open, also fires. Both deliver.
+
+  **The simple resolution:** Phase 2 Donna treats any table-unreachable as "owner unknown, do not fire." Cost: scheduled briefs may be skipped during Tailscale blips; operator must manually trigger via `/donna_brief_run_now` if recovery is urgent. Acceptable because (a) cutover events are rare (once per capability migration); (b) Tailscale blips are rare; (c) the manual-trigger path exists; (d) skipping a brief is the safe failure mode — duplicate-firing is the dangerous one.
+
+  **Phase 1 specifics (still as previous):** Donna does NOT read the table in Phase 1. The Tailscale-mounted view doesn't exist yet. Donna's existing scheduler behavior is unchanged. CO-6 fail-closed applies starting the moment Donna's read code lands (Phase 2 cutover prep) and persists thereafter.
+
+  **A more elegant alternative (deferred to v0.4 only if cutover frequency justifies):** CO-7 two-phase handoff barrier — new system inserts cutover with `status='pending_ack'`; doesn't fire until Donna acks via existing message channel. More availability but adds schema + envelope + TTL surface. Don't ship this until the simple fail-closed approach demonstrates it's actually painful in practice.
+
+### Acceptance (split per phase, tightened post-Codex 2026-05-09)
+
+**Phase 1:**
+- Table exists on T0. New system reads the table and respects ownership. Donna's morning brief and `/donna_ask` rows are present (default `owned_by='donna'`). New system honors `CO-2` rejection. Donna does NOT yet read the table — that's Phase 2 because the Tailscale-mounted view isn't bootstrapped until then.
+
+**Phase 2:**
+- Tailscale-mounted view of `capability_ownership` exposed to Donna. Donna's read enforced per `CO-1` (Phase 2 implementation). Donna's read is fail-closed on any unavailability per `CO-6`. Test sequence:
+  1. **Initial state:** insert `(/morning_brief, donna, NOW())`. Donna reads, sees `donna`, fires. New system rejects per `CO-2`.
+  2. **Cutover:** insert `(/morning_brief, new_system, NOW() + interval)`. Donna's next read sees `new_system`, skips. New system reads, sees `new_system`, fires. Exactly one delivery.
+  3. **Network cut after cutover (round-1 race we caught earlier):** simulate Tailscale link down AFTER cutover row is in place. Donna's next scheduled fire fails the read, fails closed, skips + alerts. New system fires (link is one-way Tailscale; new system's local table read still works). Exactly one delivery.
+  4. **Network cut BEFORE cutover, then cutover attempted (post-Codex round-2 acceptance variant):** simulate the worst case — Donna last read `donna` cleanly, then loses the link; operator inserts cutover row while Donna can't see it; new system reads, fires; Donna's next fire attempts the read, fails the read (link down), fails closed, skips + alerts. **Verify exactly one delivery (the new system's). Donna does NOT fire on stale last-known.** Codex round-2's specific test case.
+  5. **Network restored:** Donna re-reads, confirms `new_system`, continues to skip cleanly. New system continues firing.
 
 ---
 
@@ -212,7 +231,7 @@ Schema deployed. Empty `vault/test_secrets/` folder fixture: every secret patter
 ### Invariants
 
 - **TT-1**: Every capability declares its tier in the registry. No tier ambiguity.
-- **TT-2**: Read agent's tool registry is **a strict subset** of capabilities (only Tier-0 and Tier-1). Tier-2 capabilities are not even *importable* from the read agent's module.
+- **TT-2**: Read agent's tool registry is **a strict subset** of capabilities (only Tier-0 and Tier-1). Tier-2 capability *invocation paths* are not importable from the read agent's module. Tier-2 capability *schema definitions* MAY be imported for display purposes only — and **must be declarative/non-executable** (post-Codex 2026-05-09): pure data, no validators that import upstream model objects, no default factories, no callbacks, no registry builders, no class hooks that pull in Tier-2 callables transitively. Schemas live in `contracts/` as JSON Schema or Protobuf; generated bindings (TS/Pydantic/serde) are pure data containers. The read agent imports from `contracts/` only. If a schema needs to invoke logic to render (e.g., an enum lookup with database-backed labels), that lookup is itself a Tier-1 capability with its own audited boundary, not a side-effect of schema import.
 - **TT-3**: A Tier-1 tool call from retrieved content (e.g., a model proposes a tool call after reading an email body) is **silently rejected** if the call originated from the read path. Audit logs the attempt.
 - **TT-4**: Tier-2 calls require: (a) act agent process, (b) consent token bound to action signature (§9), (c) approval gate matching capability's `approval` field.
 
@@ -277,20 +296,26 @@ If a question requires ranking, summarization, intent inference, judgment, or an
 - **Every response begins with degradation status**: *"P920 is unreachable, last sync Xh ago. Cached answer follows."*
 - Cache populated only by P920 push during normal ops (relay never fetches)
 - Cache content is a strict SUBSET of what operator already sees in Slack/Calendar/Gmail directly
-- Cache encrypted at rest with key held by P920 (relay decrypts only for serving)
+- **Cache encryption-at-rest, key handling (clarified v0.3, tightened post-Codex 2026-05-09):** P920 pushes cache content encrypted with a per-epoch key the relay receives via the same authenticated push channel and **holds in process memory only** (process address space, not on-disk, not in environment variables, not in tmpfs).
+  - **Cache epoch + key rotation:** every push from P920 carries an `epoch` integer; the cache key is bound to the epoch. P920 rotates the key on a schedule (default every 24h) and on every operator-initiated key rotation. Old-epoch ciphertext is unreadable once the new epoch's key is in use; relay zeroes the old key from memory before storing the new one.
+  - **Key zeroization on lifecycle events:** when the relay enters fallback exit (P920 reclaims lease), exits the relay process (SIGTERM, restart, shutdown), or the cache TTL expires, the relay overwrites the key buffer with zeros before releasing memory. Best-effort — Python/Go don't guarantee in-place buffer overwrite — but the discipline is the contract.
+  - **Honest threat model:** encryption-at-rest blocks disk-image extraction without process compromise. It does NOT block live-process compromise. The epoch + zeroization narrow the live-compromise window: an attacker who reaches the relay process gets the *current* epoch's key only, not historical epochs. This is defense-in-depth on a relay that's intentionally minimal — primary boundary remains "no spine state on relay."
 - Cache size capped: ≤ 50 events, ≤ 100 email metadata entries, ≤ 1 brief
-- Cache schema is allowlisted (versioned), and P920 controls what fields are populated
+- **Cache schema versioning (clarified v0.3):** every push envelope carries `cache_schema_version`. Relay holds its own `supported_schema_versions` set. Mismatch → relay refuses to serve from cache and responds: *"P920 is unreachable, cached schema mismatch — relay needs upgrade."* Forces P920/relay schema-version compatibility to be a deploy-time concern, never a runtime ambiguity.
+- **Tie-break determinism (clarified v0.3):** when multiple cached items satisfy a request equally (e.g., two emails with `importance=5`), relay applies a deterministic tie-break: **newest by timestamp first, then alphabetical by ID**. Tie-breaks that would require contextual judgment ("which is more relevant to operator's current focus") are forbidden — relay returns all tied results, not one selected.
 - All cache reads audit-logged on relay; logs replayed to P920 after reconnect for unified audit
 - No cache extension during outage — cache shrinks (TTL-expires) only, never grows
 - **Stale cutoff**: after max age (default: 24h), relay refuses factual answers and only queues. Status remains available.
 
-**Forbidden capability creep:**
+**Forbidden capability creep + escalation procedure (clarified v0.3):**
 - Relay must NEVER perform triage, ranking, prioritization, or interpretation. The next requested exception will be "let the relay summarize subjects and rank likely-urgent emails." That is the moment the relay becomes Donna. Deny categorically.
+- **Escalation**: any request to expand cache contents, response shapes, allowlisted fields, or relay behavior requires (a) PATH_3_INVARIANTS.md revision with explicit §8.x amendment, (b) Codex review per §23, and (c) versioned schema migration on both P920 and relay. **Per-request exceptions are forbidden.** Do not approve a one-off "just this once" — the next conversation about it is "we already approved one, why not this one."
 
 ### Switching mode (lease/state-machine, not heartbeat)
 
 - **Lease**: P920 holds a lease (`primary_lease`) renewed every 30s.
 - Relay activates fallback mode only when lease expires AND a confirming probe to P920 fails.
+- **Probe specification (clarified v0.3):** 3 probe attempts, 2-second timeout each, 1-second backoff between attempts. **All three must fail** for the relay to enter fallback. Lease expiry alone is insufficient — this avoids flapping on transient network blips (Tailscale reconnect, brief P920 GC pause). Total time-to-fallback: lease_ttl + ~10s probe window.
 - P920 reclaims the lease on reconnect; relay flushes cache and exits fallback mode.
 - Operator visibility: every mode transition pushes to ntfy with high-confidence wording.
 
@@ -317,7 +342,12 @@ Slack 👍 alone is too weak for high-risk mutation.
   - exact action signature (canonical hash of `{capability_id, version, args_canonical, target_immutable_ids}`)
   - immutable target identifiers (full email + display name, not just display name)
   - content_hash (of the action's content to be sent)
-  - expiry (≤ 5 min)
+  - expiry (tiered by risk class — clarified v0.3):
+    - critical: 5 min
+    - high: 15 min
+    - medium: 30 min
+    - low: 60 min
+    - In all cases, "expiring in 1 min, refresh approval?" prompt fires before final expiry. Tight bounds on critical avoid stale signatures; longer bounds on lower classes avoid training the operator to approve fast (which makes approval ceremonial rather than considered).
   - risk class (low / medium / high / critical)
   - approval identity (operator user ID, device, hardware-key attestation present?)
 - **AE-2**: Approval token is single-use. Recorded in `pending_consents`. Replay = hard reject.
@@ -326,6 +356,7 @@ Slack 👍 alone is too weak for high-risk mutation.
 - **AE-5**: Approval surface is the PWA on a T1 trusted device. Slack initiates ("approval pending; open secure review"); Slack cannot complete a critical-class approval.
 - **AE-6**: Approvals show: full target identity, content snippet, **source content snippet that triggered this proposal** (so operator sees what bot was reacting to), action signature digest prefix, daily approval counter for this risk class.
 - **AE-7**: Cross-surface global consent ID — if approval is resolved via PWA, Slack `chat.update` disables the button immediately and logs duplicate-decision attempts.
+- **AE-8** (new in v0.3): **Denial cool-down.** Same action signature denied → 4-hour cool-down before re-proposing the same target. Different signature for the same target = new proposal allowed (e.g., bot may re-propose with a smaller scope). Without a cool-down, denial doesn't actually stop the bot; it just trains the operator that "no" doesn't take.
 
 ### Acceptance for Phase 3
 Test: bot drafts an email; PWA shows full preview + WebAuthn prompt; operator approves; relay receives approval signal; act agent verifies signature; sends. Test variant: replay the same approval token after success → rejected.
@@ -388,12 +419,17 @@ CREATE TABLE relationships (
 
 ### Invariants
 
-- **EN-1**: Every entity has a stable ID. Renames create aliases, never new entities.
+- **EN-1**: Every entity has a stable ID. Renames create aliases, never new entities. **First-mention creation is conservative (clarified v0.3, tightened post-Codex 2026-05-09):**
+  - **Primary identifier match is sufficient** to bind a new mention to an existing entity, **even if the display name has changed** (a person rename, a document re-titled). Primary identifier = email address for `person`, calendar event UID for `event`, document URI for `document`.
+  - **Same display name alone is NEVER sufficient.** Two different people can share a name; two different documents can share a title. Name-only matches create distinct entities.
+  - **Missing primary identifier** (extraction surfaces a name with no email/UID/URI) creates an **unresolved/provisional mention** — stored in `mentions` with a sentinel `entity_id` like `provisional:<hash>`, not auto-merged into a durable entity. Operator review (or higher-confidence subsequent extraction with primary ID) promotes it.
+  - This errs on the side of fragmentation (over-creation of duplicate entities) rather than over-merging (collapsing distinct entities into one). Fragmentation hurts recall but is recoverable by operator merge; over-merging corrupts action safety + privacy (a "send to Sarah" action might reach the wrong Sarah) and is much harder to unwind.
 - **EN-2**: Every mention is recorded with provenance (source URI, position, classifier version).
 - **EN-3**: Every relationship is first-class with provenance and confidence.
 - **EN-4**: Schema is "graph-ready relational" — recursive CTEs over `relationships` traverse the graph; no separate graph DB.
 - **EN-5**: Phase 1 ships with `kind ∈ {person, document, event}` only. Adding `org`, `place`, `account`, etc. requires eval evidence of need.
 - **EN-6**: Eval ratchet: golden corpus of N personal-domain queries; precision-recall tracked per release; no entity-type addition without ≥10% improvement on relevant slice.
+- **EN-7** (new in v0.3): **Confidence display thresholds.** Relationships with `confidence ≥ 0.7` are surfaced to the operator in answers and the entity panel. `0.5 ≤ confidence < 0.7` are stored but hidden from default views (visible via "show low-confidence" toggle). `confidence < 0.5` are not stored; the extraction discards them. Thresholds are tunable in `procedural_facts` (`scope: 'global', name: 'entity_confidence_thresholds'`) and adjusted via eval-ratchet pass.
 
 ### Acceptance for Phase 2
 Gmail + Calendar ingestion populates entities, mentions, relationships. Test queries: "Last meeting with Sarah" → relationships filtered by attendees → events ordered by date. "What did I commit to in Sarah's last email?" → mentions of Sarah → claims in those messages → ranked by recency.
@@ -505,6 +541,12 @@ Prompts are DB rows, not code-in-files. Tunable via operator panel without redep
 ### 14.9 Slash-command stub forwarders (D-SF)
 When relay drops Donna's slash commands, replace with PWA-deep-link forwarders for 30 days. *"Use PWA: <link>"*. Don't 404. Then remove.
 
+### 14.10 Cross-process notification outbox (D-OB) — new in v0.3
+Cross-process delivery from a worker to a relay/UI requires an outbox table, not in-memory queues. Lessons from Donna's v0.5.0 P1-2 cross-process incident: writer (worker) and reader (relay/PWA push) live in different processes; an in-memory `asyncio.Queue` loses messages when either process restarts. **Pattern:** atomic SQL write of `(envelope_id UNIQUE, payload, target, sensitivity, created_at)` from writer; atomic claim + delete (or status flip) from reader; SQL `UNIQUE` on dedup key catches double-writes from retries; per-target cool-down on transient delivery failure. Mandatory for Phase 1 — every notification path uses this shape, not ad-hoc queues.
+
+### 14.11 Supervised async-task work queue (D-AT) — new in v0.3
+"Fire something async, don't lose it on crash" requires a DB-backed queue with lease + heartbeat + dead-letter, NOT `asyncio.create_task`. Lesson from Donna v0.5.2 → v0.6 #2: fire-and-forget tasks die on worker restart, leaving operator-visible artifacts (safe_summary backfill never completes; alert DM never delivered). **Pattern:** `tasks(id, kind, payload, status, lease_owner, lease_until, attempts, last_error)`. Atomic claim via `UPDATE ... RETURNING`. Heartbeat extends lease every N seconds. `recover_stale` reclaims abandoned leases. MAX_ATTEMPTS=3 then route to dead-letter table. Each task `kind` has a registered handler. **Phase 1 mandatory** for any "send this asynchronously" path: notification fanout, OCR/STT/embedding pipelines, scheduled sanitization, alert digest delivery.
+
 ---
 
 ## 15. Cost-Guard Blended Budget
@@ -540,6 +582,7 @@ cost_budgets (
 - **CG-1**: Every capability call records its cost across all relevant resource classes.
 - **CG-2**: Caps enforced per resource class, not just dollars. Hitting any cap = capability refusal + operator notification.
 - **CG-3**: Operator dashboard shows blended consumption across all classes, not aggregated to false-precision dollars.
+- **CG-4** (new in v0.3): **Soft alerts at 50/75/90% of any cap.** Hard-refuse only at 100%. Alerts route through alert digest (§ operator fatigue) — they accumulate, they don't stack as N immediate DMs. Hitting 50% generates one alert; hitting 75% updates the digest; hitting 90% bumps urgency. Operator gets graduated visibility instead of waking up to a "cap exceeded" surprise.
 
 ---
 
@@ -576,7 +619,7 @@ Six runbooks must exist and be executed at least once before the gate passes.
 | **DR-1** | Hardware failure (P920 dies / disk fails) | Restore-drill executed; new P920 (or temporary hardware) reaches Phase-1 spine state from latest backup within target RTO |
 | **DR-2** | Postgres corruption | Point-in-time recovery from WAL + base backup tested |
 | **DR-3** | Lost hardware key | Recovery path documented (secondary key, paper recovery codes, where they're stored, who has access if operator incapacitated) |
-| **DR-4** | Bad migration | Rollback procedure tested; alembic linter prevents destructive forward-only violations |
+| **DR-4** | Bad migration | Rollback procedure tested; alembic linter prevents destructive forward-only structural violations; **migration semantic smoke-test** (new in v0.3, trust-bounded post-Codex): every migration runs in **T0-local CI** (or against a sanitized production-shaped fixture) — never in cloud CI, never against raw T1+ personal data. Post-migration smoke checks verify expected rows still queryable, expected counts within tolerance. Linter catches structure (revision IDs, branches, missing docstrings); semantic smoke catches "this migration drops a column we depend on." Trust boundary: T1+ data does NOT leave T0 to satisfy CI. |
 | **DR-5** | Bad model weights (silent behavior change) | Pinned hashes (§18), eval baseline regression test catches drift |
 | **DR-6** | Operator lockout (forgot passphrase, biometric fails, etc.) | Recovery codes + secondary identity path documented |
 
@@ -594,6 +637,7 @@ A local AI spine that can silently change model behavior is not actually control
 - **SC-4**: Container images are SHA-pinned. `:latest` tags are forbidden in production references.
 - **SC-5**: Pip dependencies hash-pinned via pip-tools. Dependabot for visibility.
 - **SC-6**: New model artifacts (e.g., HuggingFace downloads) verified against expected hash before write.
+- **SC-7** (new in v0.3): **Local model artifacts pinned by manifest hash.** Ollama pulls (`ollama pull gemma3:27b`) are mutable — tags can re-point. The `model_runtimes` row for any local model carries `pinned_manifest_hash`. On model load, the runtime verifies the actual manifest hash matches `pinned_manifest_hash`; mismatch = refuse to activate, alert. Updating to a new local model version is an explicit `model_runtimes` update + Codex review (per §23 — model is part of the spine).
 
 ---
 
@@ -602,6 +646,8 @@ A local AI spine that can silently change model behavior is not actually control
 Operationally earned via 1.8M-token quota burn (2026-04-30). Every architectural review pass via Codex MUST embed content inline in the prompt. Never let Codex grep file paths — costs run away.
 
 This rule applies to: pre-audit, security audit, post-audit per enabled capability, decision reviews. Documented in operator runbook.
+
+**Codex review output is an audit artifact (new in v0.3):** every Codex review pass is captured as text and stored in T0 as an audit-class artifact, linked to the capability/decision it reviewed via `correlation_id` and `capability_id`. Without this, "what did Codex say about capability X" is a chat-history search that may not survive session compaction. With this, it's a query: `SELECT * FROM audit_artifacts WHERE kind = 'codex_review' AND capability_id = ?`.
 
 ---
 
@@ -659,11 +705,18 @@ Per Codex staged rollout, each phase satisfying invariants and Codex post-audit 
 
 ## 22. Open / Deferred
 
-- ~~**Pushback 1 status**~~: **RESOLVED 2026-05-09 — Codex tiebreak: accept with modifications.** §8.x is locked with the additional constraints (precompute/disclose/never-derive line, fixed-template-only synthesis, allowlisted schema, stale cutoff, capability-creep prohibition).
+- ~~**Pushback 1 status**~~: **RESOLVED 2026-05-09 — Codex tiebreak: accept with modifications.** §8.x is locked with the additional constraints (precompute/disclose/never-derive line, fixed-template-only synthesis, allowlisted schema, stale cutoff, capability-creep prohibition). v0.3 (2026-05-09) further clarified cache key handling, schema versioning, tie-break determinism, capability-creep escalation procedure, and lease/probe spec.
 - **GraphRAG community detection / community reports**: Phase 6+ if eval-ratchet evidence demonstrates need. Not deferred indefinitely; gated on demonstrated demand.
 - **Home voice satellites**: Phase 3+ design. Wyoming protocol, ESP32/Pi hardware, ambient surveillance discipline required.
 - **DR runbooks DR-2, DR-5, DR-6**: must exist by Phase 2; full execution by Phase 3.
 - **Cloud-routed inference policy**: `cloud_routed_consent_class` is privacy-tier-2 (separate consent class from local). Never auto-routes T1+ data. Detailed consent flow specified in Phase 2 build.
+- **Donna data archive at decommission (new in v0.3, tightened post-Codex 2026-05-09):** when Donna is fully retired (per §20 DZ-5):
+  1. **Revoke / rotate live credentials FIRST.** Slack bot token (`xoxb-`), app token (`xapp-`), Anthropic API key, Tavily, Voyage, sops age private key. These are usable secrets; archiving them as-is creates a forever-recoverable attack surface. After rotation, the archive contains only data, not active credentials. Use the documented `docs/slack/TOKEN_ROTATION.md` and equivalent for each provider.
+  2. **Then export.** SQLite database + artifacts directory as an encrypted cold-storage tarball. Encryption key held with the same hierarchy as other T0 backup keys.
+  3. **Sanitize before write.** Strip any tables that contain credential material (e.g., `secrets.enc.yaml` shouldn't be in the artifact dir, but verify; redact rows that captured tokens during testing).
+  4. Stored in T0's backup hierarchy. Indexed in the new system's `episodic_events` for retrieval if the operator needs historical recall ("what did we discuss in 2026?").
+  5. Retention: indefinite (`immutable_audit` class, §12).
+  6. Decommission checklist as a runbook — `docs/DONNA_DECOMMISSION.md` to be written when Phase 3 late triggers retirement. Mirrors §20 DZ-5 but with the rotation-first ordering Codex flagged.
 
 ---
 
@@ -673,7 +726,23 @@ This document is committed to Donna's repo while she runs. It moves to the new s
 
 - v0.1 — 2026-05-09 — initial draft from planning conversation synthesis
 - v0.2 — 2026-05-09 — §8.x locked after Codex tiebreak: accept-with-modifications, "precompute/disclose/never-derive" rule added
+- v0.3 — 2026-05-09 — Donna's pushback absorbed (5 §8.x clarifications + 8 nits). Material additions:
+  - §5: CO-1 implementation deferred to Phase 2; **CO-6 changed to fail-closed Phase 2 onward**: any ownership-table unavailability makes Donna skip + alert, with no last-known fallback. CO-7 two-phase handoff barrier deferred to v0.4 only if cutover frequency justifies it.
+  - §5 acceptance split into Phase 1 (table on T0 + new system reads) vs Phase 2 (Tailscale view + Donna read enforced + fail-closed test variants including network-cut-before-cutover)
+  - §7: TT-2 schema-vs-invocation distinction; schema imports must be declarative/non-executable
+  - §8.x: cache key in process memory only with epoch + rotation + zeroization on lifecycle events; cache_schema_version envelope; tie-break determinism (newest first, then alphabetical); capability-creep escalation procedure; lease/probe specification (3×2s with 1s backoff)
+  - §9: AE-1 tiered approval expiry by risk class; AE-8 denial cool-down (4hr same-signature)
+  - §11: EN-1 conservative entity creation — primary identifier match sufficient even after rename, name alone never sufficient, missing primary ID = provisional mention not durable entity; EN-7 confidence display thresholds
+  - §14.10: cross-process notification outbox pattern (D-OB)
+  - §14.11: supervised async-task work queue pattern (D-AT)
+  - §15: CG-4 soft alerts at 50/75/90%
+  - §17: DR-4 migration semantic smoke-test, T0-local CI or sanitized fixture only (no T1+ data exfiltration)
+  - §18: SC-7 local-model manifest hash pinning (Ollama mutability)
+  - §19: Codex review output stored as audit artifact
+  - §22: Donna data archive policy at decommission with credential rotation FIRST, then sanitize, then archive
+
+  Codex review pass per §23 governance: round 1 revisions requested 2026-05-09 (split-brain in CO-6, §5 acceptance/timing, DR-4 trust boundary, TT-2 declarative-only, EN-1 primary-ID logic, §8 key lifecycle, §22 archive secret hygiene). All 7 absorbed. Round 2 caught a residual split-brain in CO-6's bounded fail-open (network-cut-before-cutover sequence): even with last-known persistence, Donna can fail-open while new system has a fresher row. Resolved by changing CO-6 to fail-closed Phase 2 onwards (Donna skips + alerts on any table-unreachable; manual `/donna_brief_run_now` for urgent recovery). Round-2 acceptance variant added to §5 Phase 2 test sequence.
 
 ---
 
-*End of PATH_3_INVARIANTS v0.1.*
+*End of PATH_3_INVARIANTS v0.3.*
