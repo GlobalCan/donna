@@ -1,11 +1,30 @@
 # Changelog
 
-## [Unreleased] — 2026-05-09 — Phase 0 artifacts (no runtime change)
+## [Unreleased] — 2026-05-09 — Phase 0 artifacts + PATH_3 v0.3 (no runtime change)
 
 Three documents/scripts shipped to support the planned migration to a
-greenfield personal-AI system on P920. None alter Donna's runtime
-behavior — they encode operational discipline, set governance, and
+greenfield personal-AI system on P920, plus PATH_3_INVARIANTS upgraded
+to v0.3 across three Codex review rounds. None alter Donna's runtime
+behavior — these encode operational discipline, set governance, and
 gate Phase 1.
+
+### PATH_3_INVARIANTS v0.3 — Codex-approved (PR #65, 2026-05-09)
+
+- 13 numbered changes absorbing Donna's strategic-briefing pushback
+  (5 §8.x clarifications + 8 nits).
+- Material additions: CO-6 fail-closed Phase 2+ (split-brain prevention);
+  TT-2 declarative-only schema imports; §8.x cache key process-memory-only
+  with epoch + zeroization; §9 AE-1 tiered approval expiry; AE-8 denial
+  cool-down; EN-1 conservative entity creation; §14.10 D-OB outbox
+  pattern; §14.11 D-AT async-task queue; §15 CG-4 soft alerts; §17 DR-4
+  T0-local CI; §18 SC-7 model hash pinning; §22 archive-with-rotation.
+- Codex review took 3 rounds. Round 1: 7 fixes (3 blockers + 4
+  tightenings). Round 2: residual CO-6 split-brain (network-cut-BEFORE-
+  cutover sequence) — resolved by changing to fail-closed in Phase 2+
+  rather than complex two-phase handoff. Round 3: §23 audit log
+  consistency fix → APPROVED v0.3.
+- Per §23 governance: numbered-invariant updates require Codex sign-off.
+  This was the inaugural exercise of that procedure.
 
 - **`docs/PATH_3_INVARIANTS.md` (v0.2)** — the spec the new system
   will implement. §1-23 invariants. §8.x relay-cache locked per

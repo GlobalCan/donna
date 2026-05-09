@@ -25,7 +25,29 @@ Before anything else, read these files. Everything below assumes you have.
 
 ## 1 · Where we are
 
-**Donna v0.7.3 — Post-incident hardening trio SHIPPED (2026-05-04).**
+**Donna FROZEN at v0.7.3 (2026-05-04). Strategic pivot to greenfield Path 3 system on P920 in progress (2026-05-09 onward).**
+
+### What changed strategically
+
+Three planning-session iterations (pre-audit / security audit / decision review) produced a verdict: stop evolving Donna. Build a greenfield personal-AI system on the operator's P920 workstation. Retire Donna per-capability as the new system absorbs each. Donna stays running on the droplet as the bridge. This is **Path 3** (extract patterns, build greenfield, retire-per-capability) — chosen over Path 1 (evolve in place) and Path 2 (freeze + alongside).
+
+The constitution for the new system is `docs/PATH_3_INVARIANTS.md`. Codex-approved at v0.3 across 3 review rounds (PR #65, 2026-05-09). 23 sections covering trust zones, capability registry, taint propagation, approval engine, entity store, cost guards, schema lifecycle, supply chain, etc.
+
+### Phase 0 artifacts (PR #64, 2026-05-09)
+
+- **`scripts/donna-freeze.sh`** + git commit-msg hook. Donna can no longer accept new features. Only `fix:` / `chore:` / `docs:` / `security:` prefixed commits. 19/19 hook test cases pass. Hook installed on this checkout; operator must `bash scripts/install-freeze-hook.sh` on theirs.
+- **`scripts/donna-restore-drill.sh`** + `docs/RESTORE_DRILL.md`. 6-phase script that provisions a $0.01 throwaway DO droplet, restores from backup, runs 639 tests, tears down. Phase 0 gate that must pass before P920 work begins.
+- **`docs/PATH_3_INVARIANTS.md` v0.3** — the spec the new system implements. Per §23, numbered-invariant changes require Codex review.
+
+### Phase 0 gate status (BLOCKING Phase 1 spine work on P920)
+
+| Gate item | Status |
+|---|---|
+| Freeze hook installed locally on operator's checkout | PENDING (operator action) |
+| Restore drill executed + passed | PENDING (operator action, ~$0.01 + 20 min) |
+| `donna-update.timer` enabled post-drill | PENDING (operator action) |
+
+### Track A v0.7.3 release (2026-05-04, the last functional change to Donna)
 
 Track A's three deferred items landed together as a single combined
 release (V70-1 brief_runs.status + V70-3 integration spine + #11
@@ -99,19 +121,21 @@ parts of my original design — adopted verbatim:
 - Idempotency via `brief_runs(schedule_id, fire_key)` UNIQUE before
   shipping.
 
-**Live state on the droplet:** at the time of overnight push, droplet
-was still running v0.6.0 + CMD-SHELL hotfix. Operator needs to deploy
-v0.7.2 image (`docker compose pull bot worker && up -d`) to pick up
-all overnight changes — including V60-5 (the Slack-callable schedule
-disable that would have prevented the runaway-schedule incident).
+**Live state on the droplet (as of 2026-05-09):**
+- v0.7.3 deployed 2026-05-05 (operator ran `docker compose pull bot worker && up -d` from `/home/bot/donna`).
+- Schema at migration 0014. Bot, worker, jaeger all Up.
+- Manifest reinstalled — 17 slash commands registered including the v0.7.3 additions (`/donna_schedule_disable`, `/donna_brief_setup`, `/donna_brief_run_now`, `/donna_validate`, `/donna_alert_settings`).
+- #donna-test channel quiet since 2026-05-03 16:43:32 EDT (last operator message after the runaway-schedule incident was resolved). No incidents observed since deploy.
+- Soak policy clock: complete (>24h since deploy).
 
-**Open**: V70-1 (brief_runs.status), V70-2 (validate chunk substrate
-edge cases), V70-3 (integration spine for brief + validate),
-V70-4 (ToolExecutionService extraction), plus the v0.6 deferred items
-still in `KNOWN_ISSUES.md`.
+**What's open (post-Path-3 framing, all deferred to new system):**
+- The v0.6 follow-up items (V70-2 validate edge cases, V70-4 ToolExecutionService, #9, #10, #11 deeper, #14, #15, #17) are de-prioritized. Path 3 deprecates Donna per-capability rather than enriching her further.
+- `docs/DONNA_DECOMMISSION.md` runbook to be written when Phase 3-late triggers retirement (per PATH_3 §22). Not now.
 
-See `docs/POST_COMPACTION_2026_05_02.md` for the prior
-post-compaction bootstrap (frozen at v0.6.1 state).
+**Phase 1 spine work on P920** is the next major track but BLOCKED on the Phase 0 gate (drill must pass). Not in this repo. New system will live in a separate codebase.
+
+See `docs/PATH_3_INVARIANTS.md` for the full Path 3 spec.
+See `docs/POST_COMPACTION_2026_05_02.md` for the prior pre-Path-3 post-compaction bootstrap (frozen at v0.6.1 state).
 
 ---
 
