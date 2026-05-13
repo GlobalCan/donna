@@ -1,6 +1,6 @@
 # PATH_3_INVARIANTS.md
 
-**Status:** Draft v0.3 · 2026-05-09
+**Status:** Draft v0.3.2 · 2026-05-10 (companion: `PHASE_1_ARCHITECTURE.md` v1.0.1)
 **Authoring repo:** `donna` (active, version-controlled). **Migration target:** new system repo when bootstrapped.
 **Audience:** the new system implementation, Donna v0.7.3 maintenance work, and any future Codex audit pass.
 
@@ -373,7 +373,9 @@ Test: bot drafts an email; PWA shows full preview + WebAuthn prompt; operator ap
 - **BC-4**: Type changes are forward-only: never break consumers, always add new fields as optional, deprecate old fields with explicit timeline before removal.
 
 ### Acceptance for Phase 1
-`contracts/` package exists. `system.ping` request/response schema generates valid TypeScript, Python (Pydantic), and Rust (serde) bindings. Round-trip test: TS-encoded request decoded by Python equals original.
+`contracts/` package exists. `system.ping` request/response schema generates valid TypeScript and Python (Pydantic) bindings. Round-trip test: TS-encoded request decoded by Python equals original.
+
+**Future Rust option (preserved per PHASE_1_ARCHITECTURE §1):** canonical audit test vectors are stored alongside the Python audit-chain implementation. If Rust is added later for a narrow integrity-sensitive component, it must reproduce the same vectors byte-for-byte. This preserves the future-option without paying three-toolchain cost in Phase 1.
 
 ---
 
@@ -635,7 +637,7 @@ A local AI spine that can silently change model behavior is not actually control
 - **SC-2**: Prompt files are versioned; `agent_prompts` table (§14.7) tracks prompt content hash per version.
 - **SC-3**: Eval baselines exist for every enabled model + tier intent. Regression test on every model upgrade. Significant regression blocks promotion.
 - **SC-4**: Container images are SHA-pinned. `:latest` tags are forbidden in production references.
-- **SC-5**: Pip dependencies hash-pinned via pip-tools. Dependabot for visibility.
+- **SC-5** (amended v0.3.2 post-Codex 2026-05-10): Python dependencies must be **hash-pinned in a lockfile-first toolchain** with deterministic builds, reproducible installs, and visibility into upstream changes. The invariant is tool-neutral — what matters is hash-pinning + lockfile + supply-chain monitoring. Phase 1 implementation: `uv` (per PHASE_1_ARCHITECTURE §1, ~10× faster than pip-tools, native hash-pinning, modern lockfile format). Dependabot or equivalent (renovate, Snyk) for visibility into transitive CVE alerts. Swapping the toolchain later (e.g., back to `pip-tools`) requires PHASE update + soak; the invariant doesn't care which tool, only that the discipline holds.
 - **SC-6**: New model artifacts (e.g., HuggingFace downloads) verified against expected hash before write.
 - **SC-7** (new in v0.3): **Local model artifacts pinned by manifest hash.** Ollama pulls (`ollama pull gemma3:27b`) are mutable — tags can re-point. The `model_runtimes` row for any local model carries `pinned_manifest_hash`. On model load, the runtime verifies the actual manifest hash matches `pinned_manifest_hash`; mismatch = refuse to activate, alert. Updating to a new local model version is an explicit `model_runtimes` update + Codex review (per §23 — model is part of the spine).
 
@@ -678,7 +680,7 @@ This rule applies to: pre-audit, security audit, post-audit per enabled capabili
 - Tailscale-only network access verified
 - Postgres + pgvector + alembic migrations + linter operational
 - Hash-chained audit ledger writes verified end-to-end
-- Boundary-crossing schemas exercised across TS/Python/Rust
+- Boundary-crossing schemas exercised across TS/Python (Rust preserved as future option per PHASE_1_ARCHITECTURE §1)
 - DR runbooks DR-1, DR-3, DR-4 executed and documented
 
 ### Phase 2 — Read-only personal oracle + push-to-talk voice
@@ -726,6 +728,8 @@ This document is committed to Donna's repo while she runs. It moves to the new s
 
 - v0.1 — 2026-05-09 — initial draft from planning conversation synthesis
 - v0.2 — 2026-05-09 — §8.x locked after Codex tiebreak: accept-with-modifications, "precompute/disclose/never-derive" rule added
+- v0.3.1 — 2026-05-09 — minor patch aligning §10 acceptance + §21 Phase 1 acceptance with the locked Phase 1 tooling stack (Python primary + TS PWA, Rust deferred). Companion document `PHASE_1_ARCHITECTURE.md` v1.0 added to docs/ for the full tooling lock. No numbered-invariant changes; Codex sign-off via architecture-lock pass 2026-05-09 (job bh85z3oxx).
+- v0.3.2 — 2026-05-10 — Codex ratification round (fresh review of v0.3.1 + PHASE_1_ARCHITECTURE v1.0) caught one blocking numbered-invariant conflict: SC-5 named `pip-tools` while PHASE_1_ARCHITECTURE locked `uv`. Amended SC-5 to a tool-neutral hash-pinning + lockfile invariant with `uv` as the Phase 1 implementation. Codex round-2 sign-off pending. Companion PHASE_1_ARCHITECTURE.md bumped to v1.0.1 with four advisory tightenings (Ollama loopback hardening with firewall + correlation IDs + nmap acceptance check; Pushover strictly-opaque-pointer payloads; OAuth refresh-token records marked `secret_taint` + `model_forbidden` with audit-on-decrypt; GPU passthrough acceptance split into pass / explicit-waiver paths).
 - v0.3 — 2026-05-09 — Donna's pushback absorbed (5 §8.x clarifications + 8 nits). Material additions:
   - §5: CO-1 implementation deferred to Phase 2; **CO-6 changed to fail-closed Phase 2 onward**: any ownership-table unavailability makes Donna skip + alert, with no last-known fallback. CO-7 two-phase handoff barrier deferred to v0.4 only if cutover frequency justifies it.
   - §5 acceptance split into Phase 1 (table on T0 + new system reads) vs Phase 2 (Tailscale view + Donna read enforced + fail-closed test variants including network-cut-before-cutover)
@@ -745,4 +749,4 @@ This document is committed to Donna's repo while she runs. It moves to the new s
 
 ---
 
-*End of PATH_3_INVARIANTS v0.3.*
+*End of PATH_3_INVARIANTS v0.3.2.*
