@@ -31,20 +31,22 @@ Before anything else, read these files. Everything below assumes you have.
 
 Three planning-session iterations (pre-audit / security audit / decision review) produced a verdict: stop evolving Donna. Build a greenfield personal-AI system on the operator's P920 workstation. Retire Donna per-capability as the new system absorbs each. Donna stays running on the droplet as the bridge. This is **Path 3** (extract patterns, build greenfield, retire-per-capability) — chosen over Path 1 (evolve in place) and Path 2 (freeze + alongside).
 
-The constitution for the new system is `docs/PATH_3_INVARIANTS.md`. Codex-approved at v0.3 across 3 review rounds (PR #65, 2026-05-09). 23 sections covering trust zones, capability registry, taint propagation, approval engine, entity store, cost guards, schema lifecycle, supply chain, etc.
+The constitution for the new system is `docs/PATH_3_INVARIANTS.md`, **currently at v0.3.2** (Codex-approved across 5 review rounds total: 3 for v0.3 in PR #65, 2 for v0.3.2 in PR #66). 23 sections covering trust zones, capability registry, taint propagation, approval engine, entity store, cost guards, schema lifecycle, supply chain, etc.
+
+Its companion is `docs/PHASE_1_ARCHITECTURE.md` **v1.0.1** (PR #66) — the tooling lock for the Phase 1 build: Python 3.13+ control plane, TypeScript PWA, Postgres 18 + pgvector, FastAPI, FastMCP, WSL2/systemd host on P920, hybrid local-model serving (Ollama + llama.cpp + TEI), YubiKey enrollment order. PHASE_1_ARCHITECTURE is governed outside §23 (tooling evolves via PR + soak); numbered PATH invariants take precedence over any tooling pick.
 
 ### Phase 0 artifacts (PR #64, 2026-05-09)
 
 - **`scripts/donna-freeze.sh`** + git commit-msg hook. Donna can no longer accept new features. Only `fix:` / `chore:` / `docs:` / `security:` prefixed commits. 19/19 hook test cases pass. Hook installed on this checkout; operator must `bash scripts/install-freeze-hook.sh` on theirs.
-- **`scripts/donna-restore-drill.sh`** + `docs/RESTORE_DRILL.md`. 6-phase script that provisions a $0.01 throwaway DO droplet, restores from backup, runs 639 tests, tears down. Phase 0 gate that must pass before P920 work begins.
-- **`docs/PATH_3_INVARIANTS.md` v0.3** — the spec the new system implements. Per §23, numbered-invariant changes require Codex review.
+- **`scripts/donna-restore-drill.sh`** + `docs/RESTORE_DRILL.md`. 6-phase script that provisions a $0.01 throwaway DO droplet, restores from backup, runs 639 tests, tears down. Phase 0 gate that must pass before P920 work begins. **PR #67 (2026-05-14) fixed a PEP 668 blocker** (system `pip3 install` fails on Ubuntu 24.04 — now venv-routed), removed an unused docker dependency, and corrected a header overclaim. The drill is now logic-reviewed and de-risked but still **never executed** — that's the operator's pending Phase 0 action.
+- **`docs/PATH_3_INVARIANTS.md` v0.3.2** + **`docs/PHASE_1_ARCHITECTURE.md` v1.0.1** — the spec + tooling lock the new system implements. Per §23, numbered-invariant changes require Codex review.
 
 ### Phase 0 gate status (BLOCKING Phase 1 spine work on P920)
 
 | Gate item | Status |
 |---|---|
 | Freeze hook installed locally on operator's checkout | PENDING (operator action) |
-| Restore drill executed + passed | PENDING (operator action, ~$0.01 + 20 min) |
+| Restore drill executed + passed | PENDING (operator action, ~$0.01 + 20 min; de-risked by PR #67) |
 | `donna-update.timer` enabled post-drill | PENDING (operator action) |
 
 ### Track A v0.7.3 release (2026-05-04, the last functional change to Donna)

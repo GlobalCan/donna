@@ -1,12 +1,62 @@
 # Changelog
 
-## [Unreleased] — 2026-05-09 — Phase 0 artifacts + PATH_3 v0.3 (no runtime change)
+## [Unreleased] — 2026-05-09 → 2026-05-14 — Phase 0 artifacts + Path 3 governance (no runtime change)
 
-Three documents/scripts shipped to support the planned migration to a
-greenfield personal-AI system on P920, plus PATH_3_INVARIANTS upgraded
-to v0.3 across three Codex review rounds. None alter Donna's runtime
-behavior — these encode operational discipline, set governance, and
-gate Phase 1.
+Documents/scripts supporting the planned migration to a greenfield
+personal-AI system on P920. None alter Donna's runtime behavior — they
+encode operational discipline, set governance, and gate Phase 1.
+Donna's code is frozen at v0.7.3; everything below is `docs:` / `fix:`
+to ops tooling.
+
+Spans PRs #64 → #67:
+- **#64** — PATH_3_INVARIANTS v0.2 + freeze hook + restore drill
+- **#65** — PATH_3_INVARIANTS v0.3 (Codex-approved, 3 rounds)
+- **#66** — PATH_3_INVARIANTS v0.3.2 + PHASE_1_ARCHITECTURE v1.0.1 (Codex-ratified, 2 rounds)
+- **#67** — restore drill PEP 668 fix + dead-docker removal + honest header
+
+### PR #67 — restore drill correctness fix (2026-05-14)
+
+Logic review of the (never-yet-executed) restore drill caught one
+blocking bug + two doc-drift issues before the operator's first run:
+
+- **PEP 668 blocker** — Phase 4 ran a system-wide `pip3 install`.
+  Ubuntu 24.04 (the drill's default image) enforces
+  externally-managed-environment; that call hard-fails. Would have
+  died in Phase 4 looking like a restore failure. Fixed: venv-routed,
+  reuses Donna's own `.[dev]` deps; Phase 6 reuses the Phase 4 venv.
+- **Dead docker dependency** — bootstrap installed + started docker
+  but nothing in Phases 4-6 used it. Removed (~300MB apt pull saved,
+  smaller throwaway-droplet surface). `python3-venv` added.
+- **Header overclaim** — script claimed it proves "bot starts,
+  connects to Slack." It does no such thing (deliberately — no Slack
+  creds on a throwaway droplet). Header + `RESTORE_DRILL.md` now
+  honest about what the drill does / does not prove.
+
+### PR #66 — PATH_3 v0.3.2 + PHASE_1_ARCHITECTURE v1.0.1 (2026-05-10)
+
+- **PATH_3_INVARIANTS v0.3 → v0.3.2** — Codex ratification round
+  caught a blocking numbered-invariant conflict: SC-5 named
+  `pip-tools` while the new companion architecture doc locked `uv`.
+  SC-5 amended to a tool-neutral hash-pinning + lockfile invariant
+  with `uv` as the Phase 1 implementation.
+- **PHASE_1_ARCHITECTURE.md v1.0 → v1.0.1 (NEW companion doc)** — the
+  tooling lock for Phase 1 build (Python 3.13+ control plane, TS PWA,
+  Postgres 18 + pgvector, FastAPI, FastMCP, WSL2/systemd host, YubiKey
+  enrollment order, etc.). Four advisory tightenings absorbed from
+  Codex: Windows-native Ollama loopback hardening (localhost-only
+  bind + firewall + correlation_id + nmap acceptance check); Pushover
+  strictly-opaque-pointer payloads; OAuth refresh tokens marked
+  `secret_taint` + `model_forbidden` with audit-on-decrypt; GPU
+  passthrough acceptance split into verified-or-explicit-waiver.
+- Governance: PHASE_1_ARCHITECTURE is explicitly outside §23 (tooling,
+  not invariants) — it evolves via PR + soak. Numbered PATH invariants
+  take precedence over any tooling pick.
+
+### PR #65 — PATH_3_INVARIANTS v0.3 — Codex-approved (2026-05-09)
+
+- 13 numbered changes absorbing Donna's strategic-briefing pushback
+  (5 §8.x clarifications + 8 nits).
+- Material additions: CO-6 fail-closed Phase 2+ (split-brain prevention);
 
 ### PATH_3_INVARIANTS v0.3 — Codex-approved (PR #65, 2026-05-09)
 
@@ -55,10 +105,10 @@ gate Phase 1.
   (10/20/30/40/50/60). Runbook covers prerequisites,
   per-phase troubleshooting, security notes.
 
-This entry is a `docs:` change — no test count impact (639 still
-green), no migrations (still at 0014), no behavior change. The
-freeze-rule artifacts and restore drill are operational tooling +
-documentation, not features.
+This whole span is `docs:` / `fix:` to ops tooling — no test count
+impact (639 still green), no migrations (still at 0014), no runtime
+behavior change. Donna stays frozen at v0.7.3; the work here is
+governance, the Phase 1 spec, and de-risking the Phase 0 gate.
 
 ## [0.7.3] — 2026-05-04 — Post-incident hardening trio: V70-1 + V70-3 + #11 operator fatigue
 
