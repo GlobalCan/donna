@@ -11,11 +11,16 @@
 #   - Backup tarballs are recoverable end-to-end.
 #   - alembic_version on restored DB matches expected.
 #   - Schema integrity preserved (foreign_key_check + integrity_check).
-#   - Bot starts, connects to Slack, healthcheck passes.
+#   - Core tables + artifact blobs survive the round-trip.
 #   - All 639 tests pass against restored data.
 #   - Operator's muscle memory on disaster recovery is exercised.
 #
 # WHAT THIS DOES NOT PROVE
+#   - Live bot startup / Slack connectivity. The drill deliberately
+#     does NOT put Slack credentials on the throwaway droplet — that
+#     would be a credential-on-disposable-host risk for no gain. The
+#     drill validates DATA recoverability + the test suite; live-bot
+#     startup is a separate concern.
 #   - Slack-side credential rotation (use TOKEN_ROTATION runbook for that).
 #   - Multi-day operational soak (this is point-in-time validation).
 #   - Off-droplet backup discipline (test the backup PIPELINE separately).
@@ -323,15 +328,19 @@ scp_drill() {
 phase "BOOTSTRAP"
 PHASE_FAILED="bootstrap"
 
-log "Installing docker + dependencies..."
+# The drill validates DATA recovery + the test suite — it does not
+# start the live bot, so docker is not needed. Install only what the
+# restore + alembic + pytest path actually uses. python3-venv is
+# required because Ubuntu 24.04 enforces PEP 668 (externally-managed
+# environment) — a bare `pip3 install` system-wide fails. Every Python
+# install in this drill goes through a venv.
+log "Installing dependencies (sqlite3, git, python venv tooling)..."
 if ! ssh_drill "
     set -euo pipefail
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
     apt-get install -y -qq \
-        docker.io docker-compose-v2 sqlite3 git python3 python3-pip
-    systemctl enable docker
-    systemctl start docker
+        sqlite3 git python3 python3-pip python3-venv
 " >"$LOG_DIR/bootstrap.log" 2>&1; then
     err "Bootstrap failed."
     err "  See $LOG_DIR/bootstrap.log"
@@ -404,12 +413,32 @@ if ! ssh_drill "
 fi
 log "Backup extracted."
 
+# Build the venv + install Donna here (not in Phase 6). This serves
+# two purposes: it provides alembic for the upgrade below, and it
+# front-loads the dependency install so Phase 6 just runs pytest.
+# `.[dev]` already pulls alembic + sqlalchemy + everything pytest
+# needs — no separate `pip install alembic sqlalchemy` required.
+# Bare system `pip3 install` would fail here: Ubuntu 24.04 enforces
+# PEP 668. The venv is the fix.
+log "Building venv + installing Donna (provides alembic + test deps)..."
+if ! ssh_drill "
+    set -euo pipefail
+    cd /opt/donna
+    python3 -m venv .venv
+    .venv/bin/pip install --quiet --upgrade pip
+    .venv/bin/pip install --quiet -e '.[dev]'
+" >>"$LOG_DIR/restore.log" 2>&1; then
+    err "venv build / Donna install failed."
+    err "  See $LOG_DIR/restore.log"
+    exit 40
+fi
+log "venv built, Donna installed."
+
 log "Running alembic upgrade head against restored DB..."
 if ! ssh_drill "
     set -euo pipefail
     cd /opt/donna
-    pip3 install --quiet alembic sqlalchemy
-    DONNA_DATA_DIR=/data/donna python3 -m alembic -c alembic.ini upgrade head
+    DONNA_DATA_DIR=/data/donna .venv/bin/python -m alembic -c alembic.ini upgrade head
 " >>"$LOG_DIR/restore.log" 2>&1; then
     err "alembic upgrade head failed."
     err "  See $LOG_DIR/restore.log"
@@ -497,19 +526,8 @@ log "Sample artifact hashes verified."
 phase "FULL TEST SUITE"
 PHASE_FAILED="tests"
 
-log "Installing test dependencies..."
-if ! ssh_drill "
-    set -euo pipefail
-    cd /opt/donna
-    apt-get install -y -qq python3-venv
-    python3 -m venv .venv
-    .venv/bin/pip install --quiet -e '.[dev]'
-" >"$LOG_DIR/test-install.log" 2>&1; then
-    err "Test install failed."
-    err "  See $LOG_DIR/test-install.log"
-    exit 60
-fi
-
+# venv + `.[dev]` were built in Phase 4 (restore). Reuse it — no
+# second install pass.
 log "Running pytest -q (this takes ~6 minutes)..."
 if ! ssh_drill "
     cd /opt/donna

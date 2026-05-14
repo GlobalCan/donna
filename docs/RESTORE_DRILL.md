@@ -38,8 +38,8 @@ Donna first.
 |------:|------|---------------------:|
 | 1 | Prerequisites — doctl, SSH key, backup file | 10 |
 | 2 | Provision throwaway droplet (~30s) | 20 |
-| 3 | Bootstrap (docker, repo clone, backup transfer + sha256 verify) | 30 |
-| 4 | Restore (extract tarball, alembic upgrade head) | 40 |
+| 3 | Bootstrap (apt deps, repo clone, backup transfer + sha256 verify) | 30 |
+| 4 | Restore (extract tarball, build venv, alembic upgrade head) | 40 |
 | 5 | Smoke checks (alembic_version, integrity_check, foreign_key_check, artifact hashes) | 50 |
 | 6 | Full pytest suite against restored DB (expect 639 passed) | 60 |
 
@@ -304,7 +304,7 @@ SSH in and start with:
 ```bash
 # What state is the droplet in?
 ls -la /opt/donna /data/donna
-docker ps -a
+ls -la /opt/donna/.venv/bin           # venv built? (Phase 4)
 sqlite3 /data/donna/donna.db 'SELECT version_num FROM alembic_version'
 ```
 
